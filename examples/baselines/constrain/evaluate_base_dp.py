@@ -220,6 +220,7 @@ class BaseDPEvaluator:
         output_dir: Path = _REPO_ROOT / "outputs" / "base_dp_eval",
         video: bool = True,
         adapter: BaseDPAdapter = None,
+        video_scene_indexes=None,
     ):
         self.num_episodes = num_episodes
         self.max_steps = max_steps
@@ -230,6 +231,10 @@ class BaseDPEvaluator:
         self.output_dir = Path(output_dir) if output_dir is not None else None
         self.video = video
         self.adapter = adapter
+        self.video_scene_indexes = (
+            set(video_scene_indexes) if video_scene_indexes is not None else None
+        )
+        self.scenes_provided = False
         self.scenes = None
         self.run_dir = None
         self._env = None
@@ -259,6 +264,32 @@ class BaseDPEvaluator:
 
     def _base_env(self):
         return self._env.envs[0].unwrapped
+
+    def _checkpoint_setting(self) -> str:
+        """The checkpoint actually behind the adapter: the explicit one when
+        given, else the adapter's own recorded checkpoint, else the base DP
+        default. Works for any adapter exposing the documented metadata."""
+        if self.checkpoint is not None:
+            return str(self.checkpoint)
+        adapter_ckpt = self.adapter.metadata.get("checkpoint")
+        if adapter_ckpt is not None:
+            return str(adapter_ckpt)
+        return str(DEFAULT_CKPT)
+
+    def _weights_key_setting(self):
+        metadata = self.adapter.metadata
+        return metadata.get("weights_subkey", metadata.get("weights"))
+
+    @staticmethod
+    def _jsonable_metadata(metadata: dict) -> dict:
+        def jsonable(value):
+            try:
+                json.dumps(value)
+                return True
+            except (TypeError, ValueError):
+                return False
+
+        return {k: v for k, v in metadata.items() if jsonable(v)}
 
     # -- per-episode rollout ------------------------------------------------- #
 
@@ -372,9 +403,7 @@ class BaseDPEvaluator:
                 max_steps=self.max_steps,
                 base_seed=self.base_seed,
                 device=self.device,
-                checkpoint=str(
-                    self.checkpoint if self.checkpoint is not None else DEFAULT_CKPT
-                ),
+                checkpoint=self._checkpoint_setting(),
             ),
         )
 
@@ -426,10 +455,10 @@ class BaseDPEvaluator:
                 "before policy inference"
             ),
             network_device=self.device,
-            checkpoint=str(
-                self.checkpoint if self.checkpoint is not None else DEFAULT_CKPT
-            ),
-            weights_subkey=self.adapter.metadata["weights_subkey"],
+            checkpoint=self._checkpoint_setting(),
+            weights_subkey=self._weights_key_setting(),
+            adapter_metadata=self._jsonable_metadata(self.adapter.metadata),
+            scenes_provided=self.scenes_provided,
             sim_backend="physx_cpu",
             num_envs=1,
             control_mode="pd_ee_delta_pose",
@@ -444,35 +473,46 @@ class BaseDPEvaluator:
                 endpoint_slack=CYLINDER_ENDPOINT_SLACK,
             ),
             video=self.video,
+            video_scene_indexes=(
+                sorted(self.video_scene_indexes)
+                if self.video_scene_indexes is not None else None
+            ),
         )
 
-    def evaluate_all(self) -> dict:
-        """Sample the fixed seed list, evaluate every scene, write outputs."""
+    def evaluate_all(self, scenes: list = None) -> dict:
+        """Sample the fixed seed list (or evaluate an externally provided,
+        shared scene list) and evaluate every scene, writing outputs.
+
+        ``scenes`` is the paired-evaluation seam: passing one sampled list to
+        two evaluators feeds both policies the exact same scene configs.
+        """
         if self.output_dir is not None:
             self.run_dir = unique_path(self.output_dir)
             self.run_dir.mkdir(parents=True)
-        self.scenes = []
+        self.scenes = list(scenes) if scenes is not None else []
+        self.scenes_provided = scenes is not None
         sampling_failures = []
         try:
-            for index, seed in enumerate(scene_seeds(self.base_seed, self.num_episodes)):
-                scene, reason = sample_scene(np.random.default_rng(seed), self.scene_cfg)
-                if scene is None:
-                    sampling_failures.append(
-                        dict(
-                            scene_index=index,
-                            seed=seed,
-                            status="sampling_exhausted",
-                            reason=reason,
-                            attempts_used=self.scene_cfg.max_attempts,
+            if not self.scenes_provided:
+                for index, seed in enumerate(scene_seeds(self.base_seed, self.num_episodes)):
+                    scene, reason = sample_scene(np.random.default_rng(seed), self.scene_cfg)
+                    if scene is None:
+                        sampling_failures.append(
+                            dict(
+                                scene_index=index,
+                                seed=seed,
+                                status="sampling_exhausted",
+                                reason=reason,
+                                attempts_used=self.scene_cfg.max_attempts,
+                            )
                         )
-                    )
-                    raise SceneSamplingError(
-                        f"scene {index} (seed {seed}) sampling failed after "
-                        f"{self.scene_cfg.max_attempts} attempts: {reason}"
-                    )
-                scene["scene_index"] = index
-                scene["seed"] = seed
-                self.scenes.append(scene)
+                        raise SceneSamplingError(
+                            f"scene {index} (seed {seed}) sampling failed after "
+                            f"{self.scene_cfg.max_attempts} attempts: {reason}"
+                        )
+                    scene["scene_index"] = index
+                    scene["seed"] = seed
+                    self.scenes.append(scene)
             self.setup()
             self._write_json(
                 "manifest.json",
@@ -483,7 +523,9 @@ class BaseDPEvaluator:
             writer, temporary = self._open_writer()
             try:
                 for scene in self.scenes:
-                    record = self.run_episode(scene, writer=writer)
+                    record = self.run_episode(
+                        scene, writer=self._writer_for(writer, scene["scene_index"])
+                    )
                     self._write_json(
                         f"episodes/episode_{record['scene_index']:03d}.json", record
                     )
@@ -521,6 +563,14 @@ class BaseDPEvaluator:
                     ),
                 )
             raise
+
+    def _writer_for(self, writer, scene_index):
+        """The writer only when this episode is a designated video scene."""
+        if writer is None:
+            return None
+        if self.video_scene_indexes is None or scene_index in self.video_scene_indexes:
+            return writer
+        return None
 
     def _settings_if_built(self) -> dict:
         settings = {

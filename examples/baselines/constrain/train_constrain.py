@@ -390,6 +390,8 @@ def main(argv=None):
     args = parse_args(argv)
     from diffusion_policy.utils import IterationBasedBatchSampler
 
+    from examples.baselines.constrain.train_logging import RunLogger
+
     run_dir = args.run_dir if args.run_dir is not None else (
         _REPO_ROOT / "outputs" / "constrain_runs" / f"run_seed{args.seed}_iters{args.total_iters}"
     )
@@ -409,6 +411,40 @@ def main(argv=None):
     )
     trainer.setup()
 
+    logger = RunLogger(run_dir)
+    if args.resume is not None:
+        removed = logger.truncate_after(trainer.step)
+        print(
+            f"resumed at step {trainer.step}: truncated {removed} stale log "
+            "lines past the checkpoint step",
+            flush=True,
+        )
+    dataset = trainer.dataset
+    logger.write_config(dict(
+        training=dict(
+            demo_path=str(trainer.demo_path),
+            total_iters=args.total_iters,
+            batch_size=args.batch_size,
+            lr=args.lr,
+            warmup=args.warmup,
+            ema_power=args.ema_power,
+            seed=args.seed,
+            device=args.device,
+            loss_log_size=args.loss_log_size,
+            resumed_from=str(args.resume) if args.resume is not None else None,
+            start_step=trainer.step,
+        ),
+        data=dict(
+            num_demos=len(dataset.trajectory_lengths),
+            num_windows=len(dataset),
+            obs_horizon=dataset.obs_horizon,
+            pred_horizon=dataset.pred_horizon,
+        ),
+        base_weights=dict(trainer.base_info),
+        outputs=dict(run_dir=str(run_dir), checkpoints=str(Path(run_dir) / "checkpoints")),
+    ))
+    print(f"run config written: {run_dir / 'run_config.json'}", flush=True)
+
     sampler = RandomSampler(trainer.dataset, replacement=False)
     batch_sampler = BatchSampler(sampler, batch_size=args.batch_size, drop_last=True)
     batch_sampler = IterationBasedBatchSampler(batch_sampler, args.total_iters)
@@ -417,10 +453,36 @@ def main(argv=None):
 
     # ``--total-iters`` is the target total update count for both fresh runs
     # and resumes (a resume fast-forwards the sampler to the saved step).
+    import time
+
+    started = time.time()
+    last_log = started
     for iteration, batch in enumerate(dataloader):
         if iteration < trainer.step:
             continue
-        trainer.train_batch(batch, scheduler)
+        loss = trainer.train_batch(batch, scheduler)
+        logger.log_step(
+            trainer.step, float(loss.item()),
+            lr=float(trainer.lr_scheduler.get_last_lr()[0]),
+        )
+        now = time.time()
+        if now - last_log >= 30.0 or trainer.step == args.total_iters:
+            recent = trainer.loss_history[-100:]
+            logger.log_progress(
+                trainer.step, args.total_iters,
+                extra=dict(
+                    mean_loss_last100=(
+                        sum(recent) / len(recent)) if recent else None,
+                    elapsed_sec=round(now - started, 1),
+                ),
+            )
+            print(
+                f"step {trainer.step}/{args.total_iters} "
+                f"mean_loss(last100)={sum(recent) / len(recent):.5f} "
+                f"elapsed={(now - started) / 60:.1f}min",
+                flush=True,
+            )
+            last_log = now
         if args.save_every is not None and (iteration + 1) % args.save_every == 0:
             path = trainer.save_checkpoint(Path(run_dir) / "checkpoints" / "periodic.pt")
             print(f"saved periodic checkpoint at step {trainer.step}: {path}", flush=True)

@@ -15,6 +15,7 @@ weights fail loudly instead of silently continuing training.
 """
 
 import hashlib
+import os
 from pathlib import Path
 
 import torch
@@ -53,7 +54,13 @@ def save_constrain_checkpoint(
     rng=None,
     config=None,
 ):
-    """Write the standalone checkpoint atomically enough for repeated saves."""
+    """Write the standalone checkpoint atomically enough for repeated saves.
+
+    The payload is written to a ``.tmp`` sibling and moved into place with
+    :func:`os.replace`, so an interrupted save (process crash mid-write) can
+    never leave a partial file at the target path; a leftover ``.tmp`` from a
+    previous crash is simply replaced by the next save.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(
@@ -66,7 +73,9 @@ def save_constrain_checkpoint(
         rng=rng if rng is not None else {},
         config=config,
     )
-    torch.save(payload, path)
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
     return path
 
 

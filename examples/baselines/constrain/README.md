@@ -112,9 +112,12 @@ environment construction.
 | `constrain_condition.py` | Relative obstacle condition: latest-frame `[obstacle_x - tcp_x, obstacle_y - tcp_y, radius]`, fixed configurable normalization (shared train/inference) |
 | `constrain_denoiser.py` | ControlNet-style ConstrainNet: frozen official DP UNet + trainable control copy, hint encoder, zero-init multiscale skip/mid residuals |
 | `constrain_dataset.py` | Raw 100-trajectory demo reader: zero-rotation check, 7d->4d mapping, official DP windowing/padding |
-| `train_constrain.py` | Training CLI (frozen base, epsilon objective) with standalone checkpoints and resume |
+| `train_constrain.py` | Training CLI (frozen base, epsilon objective) with standalone checkpoints, durable run logging (`run_config.json`, per-step `logs/loss.jsonl`, atomic `progress.json`), atomic checkpoint saves and resume |
+| `train_logging.py` | `RunLogger`: per-step JSONL loss log, atomic progress/config files, crash-recovery log truncation on resume |
 | `constrain_adapter.py` | `ConstrainDPAdapter`: the constrain policy on the identical rollout/evaluator seam (`base_cond`/`get_action`/`map_action_ee_delta_pose`) |
 | `rollout_constrain.py` | Reproducible single-episode closed-loop rollout from a standalone constrain checkpoint |
+| `verify_constrain.py` | Post-training verification against the *independently loaded* official base: frozen-base bit equality + disabled-control epsilon/rollout equivalence at identical inputs |
+| `evaluate_paired.py` | Paired evaluation driver: one shared sampled scene list fed to base DP and ConstrainNet, merged `paired_summary.json` with scene-equality evidence and timings |
 
 ```bash
 python -m pytest examples/baselines/constrain/tests -q
@@ -397,3 +400,53 @@ base sha verification).
 The 350-update budget is deliberately small (full 30000-update training and
 the 100-episode randomized evaluation are Ticket 04 work); the rollout is a
 behavior record, not an avoidance acceptance gate.
+
+## Full training, verification and paired evaluation (Ticket 04)
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+
+# full training run: all 100 demos, 30000 updates, official defaults
+# (batch 1024, lr 1e-4, warmup 500, cosine, EMA power 0.75, seed 1), CUDA net
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.train_constrain \
+    --total-iters 30000 --batch-size 1024 --seed 1 --device cuda --save-every 1000 \
+    --run-dir outputs/constrain_runs/full30000_seed1
+
+# resume any interrupted run from a checkpoint (periodic.pt is replaced
+# atomically every --save-every steps; final.pt is always written at the end);
+# --total-iters stays the target total update count
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.train_constrain \
+    --resume outputs/constrain_runs/full30000_seed1/checkpoints/periodic.pt \
+    --total-iters 30000 --batch-size 1024 --seed 1 --device cuda --save-every 1000 \
+    --run-dir outputs/constrain_runs/full30000_seed1
+
+# post-training verification in an independent process, loading final.pt from
+# disk and the official base from its own checkpoint file: frozen-base bit
+# equality, disabled-control epsilon equivalence and disabled-control rollout
+# equivalence at identical inputs; writes verify_evidence.json next to the run
+python -m examples.baselines.constrain.verify_constrain \
+    --checkpoint outputs/constrain_runs/full30000_seed1/checkpoints/final.pt --device cpu
+
+# paired evaluation: 100 fresh random scenes (base_seed 10000, scene i uses
+# seed 10000+i), sampled ONCE and fed to BOTH policies, 500-step cap, one CPU
+# env, serial; preview videos recorded only for predesignated scene indexes
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 python -m examples.baselines.constrain.evaluate_paired \
+    --constrain-checkpoint outputs/constrain_runs/full30000_seed1/checkpoints/final.pt \
+    --num-episodes 100 --max-steps 500 --seed 10000 --device cuda \
+    --output-dir outputs/constrain_runs/paired_eval_full30000 \
+    --video-episodes 0,17,42,77
+```
+
+Each training run dir contains `run_config.json` (exact hyperparameters, demo
+path, data counts, base checkpoint + sha16), `logs/loss.jsonl` (one JSON line
+per update, flushed per step), `progress.json` (atomic step/elapsed/loss
+progress), `checkpoints/periodic.pt` (rolling, atomic) and
+`checkpoints/final.pt` (standalone, incl. EMA), plus `train_summary.json` with
+the evidence block. The paired evaluation writes `scenes_manifest.json` (the
+shared scene configs), per-policy `base_dp/` and `constrain_dp/` evaluator
+outputs and a merged `paired_summary.json` (metrics, scene-equality evidence,
+actual completed counts, timings, per-policy adapter metadata incl.
+checkpoint+normalization).
+
+Results of the completed Ticket 04 runs: [RESULTS.md](RESULTS.md).
