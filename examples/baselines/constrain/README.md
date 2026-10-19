@@ -108,6 +108,7 @@ environment construction.
 | `render_dataset_video.py` | Streaming preview rendering from saved states |
 | `base_dp.py` | Base DP policy adapter: strict checkpoint load, 51d->48d condition trim, 4d->7d action mapping |
 | `rollout_base_dp.py` | Reproducible single-episode closed-loop rollout of the base policy in the obstacle env |
+| `evaluate_base_dp.py` | Randomized-scene serial evaluation: fixed-seed scene sampling, filtering, per-episode closed-loop runs, summary metrics, preview video, replay |
 
 ```bash
 python -m pytest examples/baselines/constrain/tests -q
@@ -191,3 +192,99 @@ mismatched-weight rejection, and a separate physical controller-mapping check
 that verifies the mapped 7d action in real `StackCubeObstacle-v1` physics:
 axis-predominant TCP translation, constant TCP orientation for zero rotation
 deltas, and real finger open/close behavior).
+
+## Randomized-scene base DP evaluation
+
+`evaluate_base_dp.py` serially evaluates the base DP policy on a fixed seed
+list of fresh random scenes in one CPU `StackCubeObstacle-v1` environment
+(503 steps of policy inference per call make CPU runs slow; plan run sizes
+accordingly). Actions come only from the policy closed loop through
+`BaseDPAdapter.base_cond` / `get_action` / `map_action_ee_delta_pose` on the
+full 2x51 stacked history — no expert, demonstration action, demonstration
+replay, or training-demonstration holdout is involved, and the same adapter
+seam accepts a future ConstrainNet checkpoint.
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+
+# default: 100 episodes, 500 control steps each (the Ticket 04 full run)
+python -m examples.baselines.constrain.evaluate_base_dp --device cpu
+
+# small smoke run
+python -m examples.baselines.constrain.evaluate_base_dp \
+    --num-episodes 3 --max-steps 100 --device cpu
+
+# reproduce one recorded episode exactly from its manifest entry
+python -m examples.baselines.constrain.evaluate_base_dp \
+    --replay-episode outputs/base_dp_eval/episodes/episode_000.json
+```
+
+Outputs go to a new unique run directory (`outputs/base_dp_eval`,
+`base_dp_eval-1`, ...; existing assets are never overwritten):
+
+| File | Contents |
+| --- | --- |
+| `manifest.json` | Run settings (seeds, device, checkpoint, env params, filter rules) + exact world-coordinate scenes |
+| `episodes/episode_XXX.json` | Per-episode scene, applied geometry (real collision radius read back), result flags, first action |
+| `summary.json` | Aggregate metrics: stack success, obstacle contact, forbidden crossing, safe stack success rates |
+| `preview.mp4` | Preview video rendered from the real rollouts |
+
+### Scene sampling and geometric filters
+
+Scene `i` uses seed `base_seed + i` (fixed configurable seed list via
+`--seed` / `--num-episodes`); the same rng also seeds the env reset and the
+torch noise stream for that episode, so replaying a recorded episode entry
+reproduces the exact layout and result. Cube positions, yaws, cylinder centre
+and radius are drawn uniformly inside the `collect_constructive` generator
+ranges — `cube_xy_range` `(-0.15, 0.05, 0.18, 0.30)`, `obstacle_xy_range`
+`(-0.15, 0.15, 0.18, 0.30)`, radius `0.02-0.04` m, obstacle height `0.18` m —
+and then filtered (all recorded in `manifest.json`):
+
+1. **Cube separation:** `0.25 m <= |cubeB - cubeA| <= 0.30 m`.
+2. **No initial overlap:** cylinder centre at least `radius + cube corner
+   radius` from both cube centres.
+3. **Endpoint clearance:** at least `radius + cube corner radius +
+   safety_margin (0.005) + 0.005` from both cube centres.
+4. **Blocks the direct route:** the cylinder centre lies within
+   `radius + cube corner radius + safety_margin - min_segment_clearance
+   (0.01)` of the direct cubeA-cubeB segment, so a straight carry would enter
+   the forbidden disk.
+
+Sampling has a finite retry budget (5000 candidate draws per scene). Exhaustion
+raises `SceneSamplingError` and is recorded under `sampling_failures` — the
+requested episode count is never silently reduced and a sampling failure is
+never counted as a policy failure.
+
+### Metrics and limits
+
+Per episode: stack success (stack achieved at any step), obstacle contact and
+forbidden crossing accumulated over the whole episode, and safe success =
+stack success AND no contact AND no crossing. Episodes end on env safe success
+or the control-step cap.
+
+Geometric validity is **not** expert solvability: the filters only guarantee a
+physically sensible blocking layout, not that any policy can solve the scene.
+The evaluation distribution (uniform random valid layouts) is also not the
+action-first demonstration distribution used for training, which constructs
+scenes around successful expert motions. The base policy has no obstacle
+awareness, so contact/crossing rates measure behavior, not an acceptance gate.
+
+### Verified smoke run (2026-10-19)
+
+`outputs/base_dp_eval-1/` — 3 scenes (seeds 0-2), max 100 control steps each,
+base DP checkpoint on CPU net, CPU physics, with preview video:
+
+| Metric | Value |
+| --- | --- |
+| Stack success rate | 0/3 |
+| Obstacle contact rate | 2/3 (first contact steps 89 and 18) |
+| Forbidden crossing rate | 0/3 |
+| Safe stack success rate | 0/3 |
+
+The base policy does not avoid the sampled cylinders (expected: it is
+obstacle-blind). Replay of `episodes/episode_000.json` reproduced the recorded
+result exactly (elapsed steps, contact step, all flags), verifying scene
+manifest replay. CPU inference costs roughly 30-45 s per 8-step DP chunk on
+this machine under load; the full 100x500 run (Ticket 04) should use a
+proportionate time budget or the CUDA device for network inference.

@@ -44,7 +44,7 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def build_env(args, obstacle_radius):
+def build_env(seed, max_steps, obstacle_height, obstacle_radius):
     import gymnasium as gym
 
     import examples.baselines.constrain.stackcube_obstacle  # noqa: F401 (registers env)
@@ -61,15 +61,15 @@ def build_env(args, obstacle_radius):
             render_mode="rgb_array",
             sim_backend="physx_cpu",
             num_envs=1,
-            max_episode_steps=args.max_steps,
+            max_episode_steps=max_steps,
             obstacle_radius=obstacle_radius,
-            obstacle_height=args.obstacle_height,
+            obstacle_height=obstacle_height,
             human_render_camera_configs=dict(shader_pack="default"),
         )
         env = FrameStack(env, num_stack=2)
         env = CPUGymWrapper(env, ignore_terminations=True, record_metrics=True)
-        env.action_space.seed(args.seed)
-        env.observation_space.seed(args.seed)
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
         return env
 
     return gym.vector.SyncVectorEnv([make_env])
@@ -100,7 +100,7 @@ def main(argv=None):
     )
     torch.manual_seed(args.seed)
 
-    env = build_env(args, args.obstacle_radius)
+    env = build_env(args.seed, args.max_steps, args.obstacle_height, args.obstacle_radius)
     obs, _ = env.reset(seed=args.seed)
 
     result = {
