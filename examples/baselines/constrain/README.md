@@ -109,6 +109,12 @@ environment construction.
 | `base_dp.py` | Base DP policy adapter: strict checkpoint load, 51d->48d condition trim, 4d->7d action mapping |
 | `rollout_base_dp.py` | Reproducible single-episode closed-loop rollout of the base policy in the obstacle env |
 | `evaluate_base_dp.py` | Randomized-scene serial evaluation: fixed-seed scene sampling, filtering, per-episode closed-loop runs, summary metrics, preview video, replay |
+| `constrain_condition.py` | Relative obstacle condition: latest-frame `[obstacle_x - tcp_x, obstacle_y - tcp_y, radius]`, fixed configurable normalization (shared train/inference) |
+| `constrain_denoiser.py` | ControlNet-style ConstrainNet: frozen official DP UNet + trainable control copy, hint encoder, zero-init multiscale skip/mid residuals |
+| `constrain_dataset.py` | Raw 100-trajectory demo reader: zero-rotation check, 7d->4d mapping, official DP windowing/padding |
+| `train_constrain.py` | Training CLI (frozen base, epsilon objective) with standalone checkpoints and resume |
+| `constrain_adapter.py` | `ConstrainDPAdapter`: the constrain policy on the identical rollout/evaluator seam (`base_cond`/`get_action`/`map_action_ee_delta_pose`) |
+| `rollout_constrain.py` | Reproducible single-episode closed-loop rollout from a standalone constrain checkpoint |
 
 ```bash
 python -m pytest examples/baselines/constrain/tests -q
@@ -288,3 +294,106 @@ result exactly (elapsed steps, contact step, all flags), verifying scene
 manifest replay. CPU inference costs roughly 30-45 s per 8-step DP chunk on
 this machine under load; the full 100x500 run (Ticket 04) should use a
 proportionate time budget or the CUDA device for network inference.
+
+## Obstacle-conditional ConstrainNet (Ticket 03)
+
+`constrain_denoiser.py` reuses the official ManiSkill DP UNet as a frozen base
+and adds a ControlNet-style trainable control branch — no LeRobot policy
+classes, no image inputs, no velocity mode, no collision loss, no inference
+safety projection:
+
+- The frozen base is the official `ConditionalUnet1D` loaded from the Ticket 01
+  checkpoint source (`outputs/runs/dp_StackCube-v1_980_1/checkpoints/
+  best_eval_success_at_end.pt`, `ema_agent` subkey). All 148 base tensors are
+  frozen (`requires_grad=False`) and verified bit-unchanged during and after
+  training (sha16 of the frozen state stored in every checkpoint and
+  re-verified on resume).
+- The control branch is an exact weight copy of the base `down_modules` and
+  `mid_modules` plus a small hint encoder mapping the repeated 3d relative
+  condition to the UNet input channels. Zero-initialized 1x1 residual
+  convolutions add control features to every decoder-consumed down-path skip
+  connection and to the frozen mid output. Note: the official (colab-derived)
+  UNet's up path pops only the last two down-level skip connections, so the
+  first down-level skip is dead in the base architecture and correctly
+  carries no residual.
+- At initialization the control residuals are exactly zero, so the denoiser
+  output and the disabled-control output both equal the base DP output at the
+  same sample/timestep/global condition (tested). Only the zero convs update
+  on the first step; from the second update on, gradients reach the upstream
+  control branch (standard ControlNet dynamic, tested).
+- The condition is `[obstacle_x - tcp_x, obstacle_y - tcp_y, radius]` in
+  meters read from each window's *latest* observation frame of the proven
+  flat layout (TCP world xy at indices 18/19; appended obstacle
+  center/radius at 48-51; verified against the real environment), centered on
+  the TCP but keeping world XY axes (never rotated into the TCP frame), and
+  repeated over all 16 predicted steps. Normalization is a fixed, configurable
+  affine map to [-1, 1] with clipping — `rel_xy_range (-1, 1)` m,
+  `radius_range (0, 0.08)` m preserving real radius semantics; no per-batch
+  statistics, and the exact transform is recorded in the checkpoint and shared
+  verbatim by training and inference.
+
+### Training data and objective
+
+`constrain_dataset.py` reads the raw 100-trajectory
+`outputs/stackcube_obstacle/trajectory.h5` directly (no holdout, no rewritten
+files), verifies all three rotation channels are zero at load, maps the 7d
+`pd_ee_delta_pose` actions to the base 4d `[x, y, z, gripper]`, and keeps the
+official DP windowing: `(traj_idx, start, end)` slices, pad-before repeats the
+first observation/action, pad-after zeroes the xyz delta and holds the last
+gripper value. The loss is the official epsilon objective in
+`compute_epsilon_loss` (MSE against the sampled noise).
+
+### Checkpoints and commands
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+
+# tests (all constrain + prior tickets, 32s)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest examples/baselines/constrain/tests -q
+
+# short training run (defaults mirror official config; full 30000-iter budget
+# is the Ticket 04 run)
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.train_constrain \
+    --total-iters 300 --batch-size 256 --device cuda \
+    --run-dir outputs/constrain_runs/short300 --save-every 150
+
+# resume: --total-iters is the target total update count; the frozen base and
+# its recorded checksum, optimizer/EMA/scheduler states, step and RNG streams
+# are restored and re-verified from the standalone checkpoint
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.train_constrain \
+    --resume outputs/constrain_runs/short300/checkpoints/final.pt \
+    --total-iters 350 --batch-size 256 --device cuda --run-dir outputs/constrain_runs/short350
+
+# closed-loop rollout from the saved checkpoint in an independent process
+# (CPU sim; CUDA net allowed); --disable-control runs the base-DP behavior
+# under the same seeds for comparison
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.rollout_constrain \
+    --checkpoint outputs/constrain_runs/short350/checkpoints/final.pt \
+    --seed 11 --device cuda --max-steps 300
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m examples.baselines.constrain.rollout_constrain \
+    --checkpoint outputs/constrain_runs/short350/checkpoints/final.pt \
+    --seed 11 --device cuda --max-steps 300 --disable-control
+```
+
+Each checkpoint (`checkpoints/final.pt` / `periodic.pt`) is standalone: model
+(incl. frozen base), EMA, optimizer, lr scheduler, step, RNG streams, model
+config, policy horizons, normalization config and the base weight source
+(path + subkey + sha16). Reloads are strict and inference depends only on the
+checkpoint file. `train_summary.json` in each run dir records the evidence
+block (finite-loss guarantee, zero-conv movement, upstream gradients, frozen
+base sha verification).
+
+### Evidence (2026-10-19)
+
+| Artifact | Result |
+| --- | --- |
+| Short training `outputs/constrain_runs/short300/` | 300 updates on all 100 demos (batch 256, CUDA net, CPU sim unused), all recorded losses finite, loss history 0.139 -> 0.083 |
+| Training evidence block | zero convs moved, gradients reach `control_down_modules` / `control_mid_modules` / `hint_encoder`, frozen base sha unchanged |
+| Resume run `outputs/constrain_runs/short350/` | steps 300 -> 350 from `--resume`, all invariants re-verified green, loss 0.076 |
+| Rollout (constrain, CPU sim + CUDA net) | `outputs/constrain_rollout/rollout_constrain_seed11_cuda.json`: 300-step cap, no obstacle contact, no forbidden crossing; stack not yet achieved at this tiny training budget |
+| Rollout (disabled control, same seeds) | `outputs/constrain_rollout/rollout_disabled_seed11_cuda.json`: safe stack success at step 110 — identical behavior class to the base DP evidence above |
+
+The 350-update budget is deliberately small (full 30000-update training and
+the 100-episode randomized evaluation are Ticket 04 work); the rollout is a
+behavior record, not an avoidance acceptance gate.

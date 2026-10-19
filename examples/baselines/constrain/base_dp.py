@@ -90,6 +90,18 @@ def build_official_agent(
     return agent.to(device)
 
 
+def map_action_4d_to_7d(base_seq):
+    """Map a 4d base action (xyz delta + gripper) to the 7d pd_ee_delta_pose
+    action by appending three zero rotations on the same device."""
+    base_seq = torch.as_tensor(base_seq)
+    zeros = torch.zeros(
+        (*base_seq.shape[:-1], 3),
+        dtype=base_seq.dtype,
+        device=base_seq.device,
+    )
+    return torch.cat([base_seq[..., :3], zeros, base_seq[..., 3:4]], dim=-1)
+
+
 class BaseDPAdapter:
     """Reusable base policy adapter consumable by later tickets at the
     obstacle environment rollout seam."""
@@ -168,15 +180,7 @@ class BaseDPAdapter:
     def map_action_ee_delta_pose(self, base_seq):
         """Execute the 4d base action (xyz delta + gripper) in the 7d
         pd_ee_delta_pose env: [xyz, zeros(3) rotations, gripper]."""
-        base_seq = torch.as_tensor(base_seq)
-        zeros = torch.zeros(
-            (*base_seq.shape[:-1], 3),
-            dtype=base_seq.dtype,
-            device=base_seq.device,
-        )
-        return torch.cat(
-            [base_seq[..., :3], zeros, base_seq[..., 3:4]], dim=-1
-        )
+        return map_action_4d_to_7d(base_seq)
 
     def select_executed(self, pred_seq):
         """Keep the official executed horizon start=end+act_horizon slices off the
