@@ -106,6 +106,8 @@ environment construction.
 | `stackcube_obstacle.py` | Cylinder environment, state restoration, contact/crossing validity |
 | `obstacle_record.py` | Official recording wrapper with per-episode geometry and validity |
 | `render_dataset_video.py` | Streaming preview rendering from saved states |
+| `base_dp.py` | Base DP policy adapter: strict checkpoint load, 51d->48d condition trim, 4d->7d action mapping |
+| `rollout_base_dp.py` | Reproducible single-episode closed-loop rollout of the base policy in the obstacle env |
 
 ```bash
 python -m pytest examples/baselines/constrain/tests -q
@@ -124,3 +126,68 @@ That run took about 24.2 s for generation: 1.1 s sanity, 5.3 s templates,
 7.6 s cylinder sampling, and 10.1 s obstacle execution. All 10 obstacle physics
 attempts passed. Video rendering time is excluded; this is one small-run result,
 not a general success-rate guarantee.
+
+## Base DP policy adapter and closed-loop rollout
+
+`base_dp.py` reuses the official ManiSkill `BC_Diffusion_state_UNet` DP for the
+obstacle environment without touching ManiSkill core code:
+
+- Loads the trained checkpoint
+  `outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt`
+  with its EMA copy (`ema_agent` subkey, configurable weight source recorded in
+  `BaseDPAdapter.metadata`). `load_state_dict` is strict: mismatched weight
+  tensors fail the build instead of being silently ignored.
+- Keeps the official semantics exactly: epsilon prediction, squared-cos DDPM
+  scheduler with 100 diffusion steps, two-frame obs history, 16-step prediction
+  horizon, and 8-step executed horizon. The network channels come from the
+  checkpoint itself (the condition encoder reads a 160-wide input, i.e.
+  `obs_horizon * obs_dim = 2 * 48` plus the 64-d diffusion embedding).
+- Trims the queued 2x51 obstacle flat obs to the base 2x48 condition (the
+  appended obstacle x/y/radius features map nowhere), and maps the 4d base
+  action (xyz delta + gripper) to the 7d `pd_ee_delta_pose` action by
+  appending three zero rotations on the same device.
+- Device notes: the official `Agent.get_action` samples noise on
+  `obs_seq.device`, so inference is correct on CPU or CUDA without editing
+  official source; only training (`compute_loss`) uses a module-global device
+  and is never called here.
+
+### Verification commands
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+
+# adapter seam + tests (57 tests incl. the base DP adapter)
+python -m pytest examples/baselines/constrain/tests -q
+
+# independent denoise equivalence: a separate official Agent built and loaded
+# straight from the checkpoint on disk, compared at identical noise streams,
+# epsilon inputs and diffusion timesteps with the adapter network
+
+# reproducible single-episode closed-loop rollout (CPU sim; network device configurable)
+python -m examples.baselines.constrain.rollout_base_dp --seed 11 --device cpu
+python -m examples.baselines.constrain.rollout_base_dp --seed 11 --device cuda
+```
+
+`rollout_base_dp` runs one real `StackCubeObstacle-v1` episode with CPU physics
+on the 500-step cap, obstacle height 0.18 m and radius sampled in 0.02-0.04 m,
+and records termination reason, stack/contact/crossing flags and the safe
+success flag in a JSON file under `outputs/base_dp_rollout/` (rolls a numbered
+suffix instead of overwriting existing files). This is a behavior record, not
+an avoidance acceptance gate.
+
+### Recorded rollout evidence (2026-10-19)
+
+| Run | JSON | Result |
+| --- | --- | --- |
+| seed 11, net CPU | `outputs/base_dp_rollout/rollout_seed11_cpu.json` | success at step 98, no contact, no crossing, `safe_success: true`, radius 0.0226 |
+| seed 11, net CUDA | `outputs/base_dp_rollout/rollout_seed11_cuda.json` | success at step 110, no contact, no crossing, `safe_success: true`, radius 0.0226 |
+
+The two runs sample the same deterministic noise stream per device; the
+step-count difference is the CPU/CUDA floating-point difference in the cached
+denoising stream. The 57-test suite passes with the base DP adapter tests
+included (numerical trim/mapping/epsilon/get_action equivalence, strict
+mismatched-weight rejection, and a separate physical controller-mapping check
+that verifies the mapped 7d action in real `StackCubeObstacle-v1` physics:
+axis-predominant TCP translation, constant TCP orientation for zero rotation
+deltas, and real finger open/close behavior).
