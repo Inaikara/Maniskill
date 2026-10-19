@@ -84,6 +84,30 @@ def unique_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}-{i}{path.suffix}")
 
 
+def unwrap_final_info(info: dict) -> dict:
+    """Return the real per-step info for one ``SyncVectorEnv`` step.
+
+    Gymnasium 0.29 auto-resets the sub-env on the step where the episode
+    ends: the top-level info becomes the *reset* info of the fresh episode
+    and the real final step info moves to ``info['final_info'][0]``, guarded
+    by the ``_final_info`` mask. Those final step values are raw unbatched
+    single-env (0-dimensional) arrays, so they are re-batched to the
+    ``(num_envs,)`` shape of the top-level info. Without unwrapping, flags
+    occurring exactly on the last step would be lost. Non-terminal steps
+    pass through unchanged.
+    """
+    mask = info.get("_final_info")
+    if mask is not None and np.asarray(mask)[0]:
+        final_info = info["final_info"][0]
+        if final_info is not None:
+            return {
+                key: np.asarray(value) if np.ndim(value) > 0
+                else np.asarray(value)[None]
+                for key, value in final_info.items()
+            }
+    return info
+
+
 def main(argv=None):
     args = parse_args(argv)
     if args.obstacle_radius is None:
@@ -132,7 +156,10 @@ def main(argv=None):
                 env_actions[0, k].cpu().numpy()[None]
             )
             elapsed += 1
-            info = {k: np.asarray(v) for k, v in info.items()}
+            info = {
+                key: np.asarray(value)
+                for key, value in unwrap_final_info(info).items()
+            }
             if info.get("obstacle_collision", np.array([False]))[0] and first_collision_step is None:
                 first_collision_step = elapsed
             if info.get("obstacle_crossing", np.array([False]))[0] and first_crossing_step is None:

@@ -14,7 +14,12 @@ loop, and geometric validity of a scene says nothing about expert solvability.
 Outputs (in a new unique run directory, never overwriting existing assets):
 ``manifest.json`` (settings + exact world-coordinate scenes), per-episode
 ``episodes/episode_XXX.json`` results, ``summary.json`` aggregate metrics, and
-a ``preview.mp4`` rendered from the real rollouts. Sampling-budget exhaustion
+a ``preview.mp4`` rendered from the real rollouts (the frame after the
+episode's final step is the fresh episode's auto-reset scene and is never
+appended, since the episode's final observation is a state vector that cannot
+be rendered). Episode flags are read from the gymnasium 0.29 ``final_info`` on
+the auto-reset step, so contact, crossing, stacking or success occurring
+exactly on the last step are recorded. Sampling-budget exhaustion
 is reported explicitly and recorded separately from policy failures; the
 requested episode count is never silently reduced. A recorded episode entry
 can be replayed with ``--replay-episode`` to reproduce the exact layout and
@@ -38,7 +43,11 @@ from examples.baselines.constrain.collect_constructive import (
     LayoutConfig,
     segment_point_distance,
 )
-from examples.baselines.constrain.rollout_base_dp import build_env, unique_path
+from examples.baselines.constrain.rollout_base_dp import (
+    build_env,
+    unique_path,
+    unwrap_final_info,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -294,11 +303,15 @@ class BaseDPEvaluator:
                 elapsed += 1
                 if first_action is None:
                     first_action = [float(v) for v in env_actions[0, k].cpu().numpy()]
-                info = {key: np.asarray(value) for key, value in info.items()}
+                # On the episode's final step gymnasium 0.29 auto-resets and
+                # returns the reset info at the top level; the real step info
+                # (and any flags occurring exactly there) lives in
+                # ``final_info``, guarded by the ``_final_info`` mask.
+                info = {
+                    key: np.asarray(value)
+                    for key, value in unwrap_final_info(info).items()
+                }
                 stack_ever |= bool(info.get("stack_success", np.array([False]))[0])
-                # Accumulate whole-episode flags per step: on the truncation
-                # step gymnasium 0.29 auto-resets and moves the real step info
-                # into ``final_info``, so the last info must not be trusted.
                 collision_ever |= bool(
                     info.get("obstacle_collision", np.array([False]))[0]
                 )
@@ -312,7 +325,13 @@ class BaseDPEvaluator:
                     first_crossing_step = elapsed
                 if success_ever:
                     termination_reason = "success"
-                if writer is not None:
+                # The returned observation on the auto-reset step is the fresh
+                # episode's reset scene, not the episode's final observation
+                # (a state vector that cannot be rendered), so it must not be
+                # appended to the video.
+                if writer is not None and not (
+                    bool(np.asarray(terminated)[0]) or bool(np.asarray(truncated)[0])
+                ):
                     writer.append_data(self._render())
                 if termination_reason == "success":
                     break
@@ -616,10 +635,6 @@ def main(argv=None):
     print(json.dumps(summary["metrics"], indent=2))
     print(f"saved: {summary['run_dir']}")
     return summary
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])
 
 
 if __name__ == "__main__":

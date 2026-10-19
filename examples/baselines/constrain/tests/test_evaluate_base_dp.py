@@ -19,6 +19,7 @@ limits; no expert, demonstration action, or solvability check is involved.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -293,3 +294,228 @@ def test_evaluate_all_records_sampling_failure_separately(tmp_path):
     assert failures[0]["scene_index"] == 0
     assert failures[0]["reason"] == "sampling_budget_exhausted"
     assert manifest["settings"]["num_episodes_requested"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# Terminal-step info regression: the gymnasium 0.29 SyncVectorEnv auto-reset  #
+# moves the real final step info into ``final_info`` and returns the reset    #
+# info at the top level, so flags occurring exactly on the last step must be  #
+# read from there.                                                            #
+# --------------------------------------------------------------------------- #
+
+EPISODE_FLAGS = ("success", "stack_success", "obstacle_collision", "obstacle_crossing")
+
+
+class _StubAdapter:
+    """Minimal stand-in at the documented BaseDPAdapter seam (no checkpoint)."""
+
+    def __init__(self, act_horizon=8):
+        self.metadata = dict(weights_subkey="stub", act_horizon=act_horizon)
+        self.act_horizon = act_horizon
+
+    def base_cond(self, stacked):
+        return stacked
+
+    def get_action(self, cond):
+        return torch.zeros(1, self.act_horizon, 4)
+
+    def map_action_ee_delta_pose(self, base_seq):
+        return torch.zeros(1, self.act_horizon, 7)
+
+
+class _FakeObstacleVectorEnv:
+    """Fake single-env ``SyncVectorEnv`` reproducing the gymnasium 0.29
+    auto-reset contract of the real evaluator env (built by ``build_env``):
+    on the step where the episode ends, the returned info is the *reset* info
+    of the fresh episode (sticky flags all False) plus ``final_info[0]`` /
+    ``_final_info`` holding the real final step info, and the observation is
+    the reset observation. ``step_flags[i]`` are the flags the real env would
+    report per step; the last step additionally truncates."""
+
+    def __init__(self, step_flags, max_steps):
+        self.envs = [SimpleNamespace(unwrapped=self)]
+        self._step_flags = step_flags
+        self._max_steps = max_steps
+        self._elapsed = 0
+        self._in_reset = False
+        self._applied = None
+
+    def obstacle_config(self):
+        return dict(self._applied)
+
+    def reset(self, seed=None, options=None):
+        self._elapsed = 0
+        self._in_reset = False
+        self._applied = dict(
+            radius=float(options["obstacle_radius"]),
+            center=np.asarray(options["obstacle_center"], dtype=float),
+            cube_layout=dict(options["cube_layout"]),
+        )
+        return self._obs(), self._reset_info()
+
+    def step(self, action):
+        self._elapsed += 1
+        real_flags = self._step_flags[self._elapsed - 1]
+        real_info = {
+            flag: np.asarray([value]) for flag, value in real_flags.items()
+        }
+        if self._elapsed < self._max_steps:
+            return (
+                self._obs(),
+                np.array([0.0]),
+                np.array([False]),
+                np.array([False]),
+                real_info,
+            )
+        # gymnasium 0.29 SyncVectorEnv: auto-reset and move the real step
+        # info into final_info, guarded by the _final_info mask; the CPUGymWrapper
+        # final step info holds raw unbatched (0-dimensional) values.
+        self._in_reset = True
+        info = self._reset_info()
+        info["final_observation"] = np.array([self._obs()], dtype=object)
+        info["_final_observation"] = np.array([True])
+        info["final_info"] = np.array(
+            [{flag: np.asarray(value) for flag, value in real_flags.items()}],
+            dtype=object,
+        )
+        info["_final_info"] = np.array([True])
+        return (
+            self._obs(),
+            np.array([0.0]),
+            np.array([False]),
+            np.array([True]),
+            info,
+        )
+
+    def _obs(self):
+        return np.zeros((1, 2, 51), dtype=np.float32)
+
+    def _reset_info(self):
+        return {flag: np.array([False]) for flag in EPISODE_FLAGS}
+
+    def render(self):
+        marker = 255.0 if self._in_reset else 0.0
+        return np.full((1, 4, 4, 3), marker, dtype=np.float32)
+
+    def close(self):
+        pass
+
+
+class _FakeWriter:
+    def __init__(self):
+        self.frames = []
+
+    def append_data(self, frame):
+        self.frames.append(frame)
+
+
+def make_fake_env_evaluator(tmp_path, fake_env, **overrides):
+    kwargs = dict(TINY_KWARGS)
+    kwargs.update(overrides)
+    evaluator = BaseDPEvaluator(
+        output_dir=tmp_path / "eval_run", adapter=_StubAdapter(), **kwargs
+    )
+    evaluator._env = fake_env
+    return evaluator
+
+
+def _all_false_flags():
+    return {flag: False for flag in EPISODE_FLAGS}
+
+
+def test_run_episode_records_flags_occurring_only_on_final_step(tmp_path):
+    """Contact, crossing and stack success landing exactly on the episode's
+    final (auto-reset) step must still be recorded, with the success
+    termination flag and the safe-success composition."""
+    max_steps = 3
+    step_flags = [
+        _all_false_flags(),
+        _all_false_flags(),
+        dict(
+            success=True,
+            stack_success=True,
+            obstacle_collision=True,
+            obstacle_crossing=True,
+        ),
+    ]
+    evaluator = make_fake_env_evaluator(
+        tmp_path, _FakeObstacleVectorEnv(step_flags, max_steps=max_steps),
+        max_steps=max_steps,
+    )
+    scene = sample_scenes(base_seed=0, num_episodes=1, cfg=EvalSceneConfig())[0]
+    try:
+        record = evaluator.run_episode(scene)
+    finally:
+        evaluator.close()
+    result = record["result"]
+    assert result["elapsed_steps"] == max_steps
+    assert result["truncated"] is True
+    assert result["termination_reason"] == "success"
+    assert result["success"] is True
+    assert result["stack_success"] is True
+    assert result["obstacle_collision"] is True
+    assert result["obstacle_crossing"] is True
+    assert result["first_collision_step"] == max_steps
+    assert result["first_crossing_step"] == max_steps
+    assert result["safe_success"] is False
+
+
+def test_run_episode_safe_success_when_final_step_is_clean(tmp_path):
+    """A clean stack achieved exactly on the final step counts as safe
+    success (stack success without contact or crossing)."""
+    max_steps = 3
+    step_flags = [
+        _all_false_flags(),
+        _all_false_flags(),
+        dict(
+            success=True,
+            stack_success=True,
+            obstacle_collision=False,
+            obstacle_crossing=False,
+        ),
+    ]
+    evaluator = make_fake_env_evaluator(
+        tmp_path, _FakeObstacleVectorEnv(step_flags, max_steps=max_steps),
+        max_steps=max_steps,
+    )
+    scene = sample_scenes(base_seed=0, num_episodes=1, cfg=EvalSceneConfig())[0]
+    try:
+        record = evaluator.run_episode(scene)
+    finally:
+        evaluator.close()
+    result = record["result"]
+    assert result["termination_reason"] == "success"
+    assert result["truncated"] is True
+    assert result["success"] is True
+    assert result["safe_success"] is True
+
+
+def test_run_episode_video_never_appends_the_auto_reset_frame(tmp_path):
+    """The frame after the final step is the auto-reset scene of the fresh
+    episode, not the episode's final observation (a state vector that cannot
+    be rendered); the video must not end with that reset-frame lie."""
+    max_steps = 3
+    step_flags = [
+        _all_false_flags(),
+        _all_false_flags(),
+        dict(
+            success=True,
+            stack_success=True,
+            obstacle_collision=False,
+            obstacle_crossing=False,
+        ),
+    ]
+    evaluator = make_fake_env_evaluator(
+        tmp_path, _FakeObstacleVectorEnv(step_flags, max_steps=max_steps),
+        max_steps=max_steps, video=True,
+    )
+    scene = sample_scenes(base_seed=0, num_episodes=1, cfg=EvalSceneConfig())[0]
+    writer = _FakeWriter()
+    try:
+        record = evaluator.run_episode(scene, writer=writer)
+    finally:
+        evaluator.close()
+    assert record["result"]["success"] is True
+    # reset frame + every real step except the auto-reset step
+    assert len(writer.frames) == max_steps
+    assert all(frame.max() == 0 for frame in writer.frames)
