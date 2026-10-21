@@ -34,6 +34,7 @@ def test_resume_checkpoint_identity_hashes_adapter_weight_file(tmp_path):
     ("unknown_current", False), ("changed_policy", False),
     ("changed_checkpoint", False), ("changed_scene_manifest", False),
     ("changed_seed", False), ("changed_runtime", False),
+    ("changed_scene_id", False),
 ])
 def test_run_all_reuses_only_complete_identity_matched_records(
     monkeypatch, tmp_path, identity_case, should_reuse
@@ -92,6 +93,8 @@ def test_run_all_reuses_only_complete_identity_matched_records(
         prior_record["seed"] = 101
     elif identity_case == "changed_runtime":
         prior_manifest["runtime"] = {**current_runtime, "max_steps": 499}
+    elif identity_case == "changed_scene_id":
+        prior_record["scene_id"] = "other-scene"
     elif identity_case in ("unknown_prior", "unknown_both"):
         prior_manifest.pop("checkpoint_sha256")
 

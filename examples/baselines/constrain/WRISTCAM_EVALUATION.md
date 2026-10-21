@@ -102,8 +102,8 @@ the 200 `episode_NNN.json` records; each policy also has `summary.json` and
 - Focused tests cover disjoint progress bins, fixed denominator on runtime
   errors, same-step stack plus obstacle violation, strict progress inputs, and
   checkpoint-file identity changing when weights change, and `run_all` resume
-  acceptance/rejection across checkpoint, policy, scene manifest, seed and
-  runtime identities. Public `run_one`
+  acceptance/rejection across checkpoint, policy, scene manifest, scene ID,
+  seed and runtime identities. Public `run_one`
   rollouts use a finite fake env/adapter to verify same-step unsafe stack
   accounting and no post-success actions, exact step-cap handling across a
   partial final chunk, fresh observation history on the next episode, and
@@ -114,8 +114,8 @@ the 200 `episode_NNN.json` records; each policy also has `summary.json` and
   conservatively re-executed because their mutable weight-source path cannot
   establish historical identity.
   `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest
-  examples/baselines/constrain/tests -q`: **171 passed** (focused module:
-  **18 passed**).
+  examples/baselines/constrain/tests -q`: **172 passed** (focused module:
+  **19 passed**).
 - A bounded audit re-read all 200 episode JSON files: 100 evaluated records per
   policy, zero runtime errors, 100 distinct scene-state hashes, and matching
   restored-state fingerprints for all 100 pairs. Checkpoint and scene identities
