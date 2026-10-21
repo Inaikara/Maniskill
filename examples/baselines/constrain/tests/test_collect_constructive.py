@@ -124,6 +124,60 @@ def test_wristcam_collision_geometry_is_retained_for_footprint_sampling():
         env.close()
 
 
+def test_record_episode_uses_constructed_obstacle_geometry_then_seeded_nonreconfigure_reset(
+    monkeypatch, tmp_path
+):
+    from examples.baselines.constrain.obstacle_record import ObstacleRecordEpisode
+
+    construction = {}
+    constructed_envs = []
+    resets = []
+    original_make = gym.make
+    original_reset = ObstacleRecordEpisode.reset
+
+    def capture_make(env_id, **kwargs):
+        construction.update(kwargs)
+        env = original_make(env_id, **kwargs)
+        constructed_envs.append(env)
+        return env
+
+    def capture_reset(self, *args, **kwargs):
+        resets.append((args, dict(kwargs)))
+        return original_reset(self, *args, **kwargs)
+
+    def stop_after_reset(*args, **kwargs):
+        raise cc.PolicyFailure("test_stop_after_reset")
+
+    monkeypatch.setattr(gym, "make", capture_make)
+    monkeypatch.setattr(ObstacleRecordEpisode, "reset", capture_reset)
+    monkeypatch.setattr(cc, "run_episode", stop_after_reset)
+    cylinder = dict(center_xy=[0.12, 0.24], radius=0.037, height=0.18)
+    cubes = make_cubes((-0.04, 0.02), (0.02, 0.30), 0.1, -0.2)
+
+    valid, attempt = cc.record_episode_once(
+        tmp_path,
+        "probe",
+        dict(
+            kind="obstacle", seed=19, template_index=2, reuse_index=0,
+            cylinder=cylinder, cubes=cubes, plan={},
+        ),
+        cc.Config(),
+    )
+
+    assert not valid and attempt["failure"] == "test_stop_after_reset"
+    assert construction["obstacle_center"] == cylinder["center_xy"]
+    assert construction["obstacle_radius"] == cylinder["radius"]
+    assert len(resets) == 1
+    _, kwargs = resets[0]
+    assert kwargs["seed"] == 19
+    assert kwargs["options"]["reconfigure"] is False
+    base = constructed_envs[0].unwrapped
+    assert float(base.obstacle_collision_radius) == pytest.approx(cylinder["radius"])
+    np.testing.assert_allclose(
+        cc.common.to_numpy(base._obstacle_center[0]), cylinder["center_xy"]
+    )
+
+
 def test_tracker_converges_records_errors_and_exhausts_budget():
     target = np.array([0.3, 0.0, 0.0])
     tracker = cc.WaypointTracker(target, 0.0, tolerance=0.004, max_steps=100)

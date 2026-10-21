@@ -441,3 +441,114 @@ it. The renderer produced the full 496-frame `dataset.mp4` within the 180s limit
 Validation passed, and the full constrain suite passed (149 tests in 40.48s).
 No formal collection, training, or merge was started; this report requests user
 review before Ticket 02.
+
+## End-to-end lifecycle optimization (round 5)
+
+Round-4 profiling showed 23 environment constructions but 46 resets and
+reconfigurations, because each construction initializes a native scene and the
+recording seam immediately reset/reconfigured it again. The profile also showed
+46 scene setups and 69 `gc.collect` calls across 23 episode attempts. The nested
+round-4 cumulative values were 15.73 s for reset/reconfigure, including 5.51 s
+scene setup and 6.60 s garbage collection. The 5.27 s of 11,170 per-substep
+forbidden-crossing checks and contact checks were preserved.
+
+### Change and regression test
+
+Each attempt still gets a fresh environment and recorder. `record_episode_once`
+now prepares request-specific cylinder center/radius before `gym.make`: the
+sanity and template environments are constructed with the far-away center and
+default radius, and obstacle attempts with the sampled center and actual sampled
+radius. It then performs the existing seeded reset with `reconfigure=False`,
+passing cube layout and obstacle center as reset options. The reset still runs
+the native seeded episode initialization, including robot noise, cube placement,
+controller reset, and task flags; only the second scene teardown/rebuild is
+avoided. Radius-dependent collision geometry is built natively at construction.
+
+Read-only inspection of `mani_skill/envs/scenes/base_env.py::reset` confirms an
+explicit `reconfigure=False` takes the non-reconfigure branch regardless of the
+single-env default `reconfiguration_freq=1`; seeded `super().reset` still runs.
+The regression test first failed against old behavior (`obstacle_center` was
+absent from construction kwargs). It now checks the requested cylinder center
+and radius at construction, exactly one seeded recorder reset with
+`reconfigure=False`, and the resulting live obstacle center/radius. The test
+also stops immediately after reset so it performs no policy execution. Targeted
+collector tests pass (25 tests).
+
+### Profile and same-workload collection
+
+The diagnostic cProfile run is
+`outputs/wristcam_pilot_20261021_round5_lifecycle_profile.prof`; its output
+dataset is `outputs/wristcam_pilot_20261021_round5_lifecycle_profile_run/`.
+Profiled function time (35.16 s) is diagnostic only. It records 23 calls to
+`SapienEnv._reconfigure` (14.00 cumulative seconds) and 46 `gc.collect` calls
+(4.91 s). This halves actual scene setup/reconfiguration count versus round 4
+(46 to 23); remaining GC includes cleanup during environment destruction.
+The reconfigure timing is nested and should not be added to other profile rows.
+
+The final unprofiled five-success run is
+`outputs/wristcam_pilot_20261021_round5_no_duplicate_reconfigure/`. Same seed,
+machine, and budgets as round 4: target 5, reuse 1, at most 96 templates, 100
+physical episodes, 40 cylinder sampler calls per reuse slot, and 500 control
+steps. Counts match round 4 exactly: 17 candidates and 17 no-obstacle successes,
+585 sampler calls (580 `no_feasible_cylinder`), five physical attempts/five safe
+successes, five distinct output templates, and 491 obstacle control steps.
+
+| Measure | Round-4 optimized | Round-5 no duplicate reconfigure | Difference |
+| --- | ---: | ---: | ---: |
+| Sanity / template / sampling / obstacle stages (s) | 1.344 / 21.601 / 1.783 / 5.914 | 1.267 / 20.599 / 1.802 / 5.629 | -5.7% / -4.6% / +1.1% / -4.8% |
+| Collector elapsed (s) | 30.703 | 29.361 | -4.4% |
+| Process start-to-exit wall (s) | 32.73 | 31.38 | -4.1% |
+| Profiled reconfigure calls | 46 | 23 | -50% |
+| Obstacle steps / obstacle stage second | 83.0 | 87.2 | +5.1% |
+
+The wall boundary includes Python startup/import, construction, collection,
+report serialization, and process exit. The collector field stops before final
+report serialization. End-to-end time decreased 1.35 s (4.1%) on this single
+matched trial; this is a modest lifecycle improvement, not a PhysX-kernel
+speedup. The actual sampling stage remains 1.80 s, below the 60 s target.
+
+### Behavioral equivalence and validation
+
+Against round-4 output `outputs/wristcam_pilot_20261021_round4_footprint_optimized/`,
+all datasets in all five HDF5 trajectories compare **exactly**: actions,
+observations, rewards, termination/success arrays, and every environment-state
+leaf (including wristcam articulation, both cubes, and obstacle). Episode
+lengths, candidate counts, selected output template indices
+`[0, 11, 12, 13, 16]`, and the five physical safety outcomes also match. Thus
+for this same-seed workload the seeded layouts, sampled cylinders, controls,
+observations, and saved states are identical, not merely within tolerance.
+
+The validator passed five unique templates, five stack successes with no
+collision/crossing, 7D actions, 51D observations, exact zero rotations, and T+1
+state rows. `ConstrainDemoDataset` loaded 486 training windows (validation only;
+no training). `dataset.mp4` rendered all 496 frames. The full constrain suite
+passed (150 tests in 41.82 s). `validation.json`, `report.json`, and the HDF5
+dataset retain machine-readable evidence. Round-4 and pre-change round-5 assets
+remain preserved.
+
+Reproduction from the repository root (each workload is bounded):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m cProfile -o outputs/wristcam_pilot_20261021_round5_lifecycle_profile.prof \
+  -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round5_lifecycle_profile_run \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round5_no_duplicate_reconfigure \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+timeout --kill-after=5s 30s python -m examples.baselines.constrain.validate_wristcam_pilot \
+  --dataset-dir outputs/wristcam_pilot_20261021_round5_no_duplicate_reconfigure
+timeout --kill-after=5s 180s python -m examples.baselines.constrain.render_dataset_video \
+  --dataset-dir outputs/wristcam_pilot_20261021_round5_no_duplicate_reconfigure
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 180s \
+  python -m pytest examples/baselines/constrain/tests -q
+```
+
+No formal collection, training, Ticket 02, or merge was started. This report
+requests user review before proceeding.

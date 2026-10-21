@@ -776,7 +776,33 @@ def record_episode_once(
 
     kind = request["kind"]
     seed = int(request["seed"])
-    env = gym.make(ENV_ID, **cfg.env_kwargs())
+    options = dict(reconfigure=False)
+    if kind == "sanity":
+        options["obstacle_center"] = [float(v) for v in cfg.sanity_obstacle_center]
+        options["obstacle_radius"] = float(cfg.obstacle_radius_default)
+    elif kind == "template":
+        options["obstacle_center"] = [float(v) for v in cfg.sanity_obstacle_center]
+        options["obstacle_radius"] = float(cfg.obstacle_radius_default)
+        options["cube_layout"] = {
+            "cubeA_xy": [float(v) for v in request["cubes"]["cubeA_xy"]],
+            "cubeB_xy": [float(v) for v in request["cubes"]["cubeB_xy"]],
+            "cubeA_yaw": float(request["cubes"]["cubeA_yaw"]),
+            "cubeB_yaw": float(request["cubes"]["cubeB_yaw"]),
+        }
+    else:
+        cylinder = request["cylinder"]
+        options["obstacle_center"] = [float(v) for v in cylinder["center_xy"]]
+        options["obstacle_radius"] = float(cylinder["radius"])
+        options["cube_layout"] = {
+            "cubeA_xy": [float(v) for v in request["cubes"]["cubeA_xy"]],
+            "cubeB_xy": [float(v) for v in request["cubes"]["cubeB_xy"]],
+            "cubeA_yaw": float(request["cubes"]["cubeA_yaw"]),
+            "cubeB_yaw": float(request["cubes"]["cubeB_yaw"]),
+        }
+    env_kwargs = cfg.env_kwargs()
+    env_kwargs["obstacle_center"] = options["obstacle_center"]
+    env_kwargs["obstacle_radius"] = options["obstacle_radius"]
+    env = gym.make(ENV_ID, **env_kwargs)
     recorder = ObstacleRecordEpisode(
         env,
         output_dir=str(scratch_dir),
@@ -815,29 +841,6 @@ def record_episode_once(
     started = time.perf_counter()
     valid = False
     try:
-        options = dict(reconfigure=True)
-        if kind == "sanity":
-            options["obstacle_center"] = [float(v) for v in cfg.sanity_obstacle_center]
-            options["obstacle_radius"] = float(cfg.obstacle_radius_default)
-        elif kind == "template":
-            options["obstacle_center"] = [float(v) for v in cfg.sanity_obstacle_center]
-            options["obstacle_radius"] = float(cfg.obstacle_radius_default)
-            options["cube_layout"] = {
-                "cubeA_xy": [float(v) for v in request["cubes"]["cubeA_xy"]],
-                "cubeB_xy": [float(v) for v in request["cubes"]["cubeB_xy"]],
-                "cubeA_yaw": float(request["cubes"]["cubeA_yaw"]),
-                "cubeB_yaw": float(request["cubes"]["cubeB_yaw"]),
-            }
-        else:
-            cylinder = request["cylinder"]
-            options["obstacle_center"] = [float(v) for v in cylinder["center_xy"]]
-            options["obstacle_radius"] = float(cylinder["radius"])
-            options["cube_layout"] = {
-                "cubeA_xy": [float(v) for v in request["cubes"]["cubeA_xy"]],
-                "cubeB_xy": [float(v) for v in request["cubes"]["cubeB_xy"]],
-                "cubeA_yaw": float(request["cubes"]["cubeA_yaw"]),
-                "cubeB_yaw": float(request["cubes"]["cubeB_yaw"]),
-            }
         recorder.reset(seed=seed, options=options, save=False)
         base = recorder.base_env
         cube_a = common.to_numpy(base.cubeA.pose.p[0]).reshape(3)
