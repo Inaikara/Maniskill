@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import torch
+import json
 from types import SimpleNamespace
 
 from examples.baselines.constrain import evaluate_fixed_scenes as fixed_eval
@@ -26,6 +27,90 @@ def test_resume_checkpoint_identity_hashes_adapter_weight_file(tmp_path):
     assert first == hashlib.sha256(b"first weights").hexdigest()
     checkpoint.write_bytes(b"different weights")
     assert _checkpoint_identity(adapter) != first
+
+
+@pytest.mark.parametrize("identity_case, should_reuse", [
+    ("matching", True), ("unknown_prior", False), ("unknown_both", False),
+    ("unknown_current", False), ("changed_policy", False),
+    ("changed_checkpoint", False), ("changed_scene_manifest", False),
+    ("changed_seed", False), ("changed_runtime", False),
+])
+def test_run_all_reuses_only_complete_identity_matched_records(
+    monkeypatch, tmp_path, identity_case, should_reuse
+):
+    import imageio.v2 as imageio
+
+    class Writer:
+        def append_data(self, frame):
+            raise AssertionError("video indexes are disabled")
+        def close(self):
+            pass
+
+    monkeypatch.setattr(imageio, "get_writer", lambda *args, **kwargs: Writer())
+    checkpoint = tmp_path / "weights.pt"
+    checkpoint.write_bytes(b"current weights")
+    adapter = SimpleNamespace(metadata={"checkpoint": str(checkpoint), "weights": "ema"})
+    scene = _scene(0)
+    scene.metadata["seed"] = 100
+    scene_set = SimpleNamespace(
+        manifest={"manifest_sha256": "scene-manifest"},
+        load=lambda index: scene,
+    )
+    current_runtime = {
+        "python": fixed_eval.platform.python_version(), "torch": torch.__version__,
+        "device": "cpu", "sim_backend": "physx_cpu", "num_envs": 1,
+        "obs_mode": "state", "control_mode": "pd_ee_delta_pose",
+        "robot_uids": "panda_wristcam", "reset_noise": 0.02,
+        "history_frames": 2, "rotation_action": [0, 0, 0], "max_steps": 500,
+        "control_chunk": 8,
+        "noise_seed_rule": "torch.manual_seed(scene.metadata.seed) per episode",
+    }
+    if identity_case in ("unknown_current", "unknown_both"):
+        adapter.metadata["checkpoint"] = str(tmp_path / "missing.pt")
+    expected_hash = fixed_eval._checkpoint_identity(adapter)
+    prior_hash = None if identity_case in ("unknown_prior", "unknown_both") else expected_hash
+    prior_manifest = {
+        "policy": "policy", "checkpoint_sha256": prior_hash,
+        "scene_manifest_sha256": "scene-manifest", "runtime": current_runtime,
+        "adapter_metadata": adapter.metadata,
+    }
+    prior_record = {
+        "status": "evaluated", "scene_id": scene.scene_id, "seed": 100,
+        "initial_state_sha256": "initial-0", "restored_observation_max_abs_error": 0.0,
+        "result": {"stack_success": False, "safe_success": False,
+                   "obstacle_collision": False, "obstacle_crossing": False,
+                   "termination_reason": "timeout", "ever_grasped": False,
+                   "ever_lifted": False},
+    }
+    if identity_case == "changed_policy":
+        prior_manifest["policy"] = "other"
+    elif identity_case == "changed_checkpoint":
+        prior_manifest["checkpoint_sha256"] = "0" * 64
+    elif identity_case == "changed_scene_manifest":
+        prior_manifest["scene_manifest_sha256"] = "other"
+    elif identity_case == "changed_seed":
+        prior_record["seed"] = 101
+    elif identity_case == "changed_runtime":
+        prior_manifest["runtime"] = {**current_runtime, "max_steps": 499}
+    elif identity_case in ("unknown_prior", "unknown_both"):
+        prior_manifest.pop("checkpoint_sha256")
+
+    resume_dir = tmp_path / "prior"
+    resume_dir.mkdir()
+    (resume_dir / "manifest.json").write_text(json.dumps(prior_manifest))
+    (resume_dir / "episode_000.json").write_text(json.dumps(prior_record))
+    evaluator = FixedSceneEvaluator(adapter, scene_set, "policy", tmp_path / "out",
+                                    device="cpu", video_indexes=())
+    executed = []
+    evaluator.run_one = lambda index, loaded_scene, writer=None: (
+        executed.append(index), {**prior_record, "seed": 100}
+    )[1]
+
+    evaluator.run_all(1, resume_dir=resume_dir)
+
+    assert executed == ([] if should_reuse else [0])
+    result = json.loads((tmp_path / "out" / "episode_000.json").read_text())
+    assert result["seed"] == 100
 
 
 class _RolloutAdapter:

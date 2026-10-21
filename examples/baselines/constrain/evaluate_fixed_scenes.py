@@ -81,6 +81,11 @@ def _checkpoint_identity(adapter):
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
 
 
+def _known_checkpoint_identity(value):
+    return (isinstance(value, str) and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value.lower()))
+
+
 class FixedSceneEvaluator:
     def __init__(self, adapter, scene_set, policy_name, output_dir, device="cpu",
                  max_steps=500, video_indexes=VIDEO_INDEXES):
@@ -226,11 +231,6 @@ class FixedSceneEvaluator:
                     prior_manifest = (json.loads(prior_manifest_path.read_text())
                                       if prior_manifest_path.is_file() else {})
                     prior_hash = prior_manifest.get("checkpoint_sha256")
-                    if prior_hash is None:
-                        prior_source = prior_manifest.get("adapter_metadata", {}).get(
-                            "checkpoint", prior_manifest.get("adapter_metadata", {}).get("weights_source"))
-                        if prior_source and Path(prior_source).is_file():
-                            prior_hash = hashlib.sha256(Path(prior_source).read_bytes()).hexdigest()
                     prior_config = {
                         "policy": prior_manifest.get("policy"),
                         "checkpoint_sha256": prior_hash,
@@ -245,7 +245,9 @@ class FixedSceneEvaluator:
                         "runtime": manifest["runtime"],
                         "adapter_metadata": self.adapter.metadata,
                     }
-                    if (previous.get("status") == "evaluated"
+                    if (_known_checkpoint_identity(manifest["checkpoint_sha256"])
+                            and _known_checkpoint_identity(prior_hash)
+                            and previous.get("status") == "evaluated"
                             and previous.get("scene_id") == scene.scene_id
                             and previous.get("seed") == int(scene.metadata["seed"])
                             and previous.get("initial_state_sha256") == scene.metadata["initial_state_sha256"]

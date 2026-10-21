@@ -101,17 +101,21 @@ the 200 `episode_NNN.json` records; each policy also has `summary.json` and
   recorded in `WRISTCAM_SCENES.md` / `roundtrip_validation.json`.
 - Focused tests cover disjoint progress bins, fixed denominator on runtime
   errors, same-step stack plus obstacle violation, strict progress inputs, and
-  checkpoint-file identity changing when weights change. Public `run_one`
+  checkpoint-file identity changing when weights change, and `run_all` resume
+  acceptance/rejection across checkpoint, policy, scene manifest, seed and
+  runtime identities. Public `run_one`
   rollouts use a finite fake env/adapter to verify same-step unsafe stack
   accounting and no post-success actions, exact step-cap handling across a
   partial final chunk, fresh observation history on the next episode, and
   environment recreation when scene radius changes. Resume requires
   matching policy/checkpoint SHA-256, scene manifest, seed, state evidence and
-  runtime/inference configuration; legacy records derive the checkpoint hash
-  from their recorded adapter weight source.
+  runtime/inference configuration. Reuse requires a known, valid current and
+  recorded checkpoint SHA-256; legacy manifests without the recorded hash are
+  conservatively re-executed because their mutable weight-source path cannot
+  establish historical identity.
   `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest
-  examples/baselines/constrain/tests -q`: **162 passed** (focused module:
-  **9 passed**).
+  examples/baselines/constrain/tests -q`: **171 passed** (focused module:
+  **18 passed**).
 - A bounded audit re-read all 200 episode JSON files: 100 evaluated records per
   policy, zero runtime errors, 100 distinct scene-state hashes, and matching
   restored-state fingerprints for all 100 pairs. Checkpoint and scene identities
@@ -139,9 +143,14 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 14400s \
 ```
 
 For an interrupted run, set `--resume-from` to the existing paired output root;
-only completed records matching current policy, checkpoint, scene, seed, and
-inference/runtime configuration are reused. The original completed scene-0
-records satisfy the strengthened identity guard:
+only completed records matching current policy, known checkpoint SHA-256, scene,
+seed, and inference/runtime configuration are reused. The existing 200 results
+were independently audited against the externally recorded checkpoint hashes
+above and are preserved; the historical manifests do not contain the recorded
+checkpoint SHA-256 required by the current strict resume guard. Their original
+scene-0 records therefore do not qualify for automatic reuse, and using the
+recovery command below will conservatively rerun all 100 scenes for each policy.
+No rerun is needed to validate the already audited results.
 
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 14400s \
