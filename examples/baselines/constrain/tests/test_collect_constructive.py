@@ -109,13 +109,17 @@ def test_wristcam_collision_geometry_is_retained_for_footprint_sampling():
     try:
         env.reset(seed=0)
         cache = cc._robot_shape_cache(env.unwrapped)
-        camera_shapes = [
-            shape
-            for link, shapes in cache if str(link.name) == "camera_link"
-            for shape in shapes
+        camera_vertices = [
+            vertices for link, vertices in cache if str(link.name) == "camera_link"
         ]
-        assert camera_shapes
-        assert sum(vertices.shape[0] for _, vertices in camera_shapes) > 0
+        assert len(camera_vertices) == 1
+        assert camera_vertices[0].ndim == 2 and camera_vertices[0].shape[1] == 4
+        assert len(camera_vertices[0]) >= 8
+        footprint = cc.collect_footprint(
+            env.unwrapped, cache, cc.Config().obstacle_height
+        )
+        assert footprint.ndim == 2 and footprint.shape[1] == 2
+        assert np.isfinite(footprint).all()
     finally:
         env.close()
 

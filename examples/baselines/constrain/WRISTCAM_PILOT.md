@@ -224,14 +224,16 @@ The new baseline was collected to
 - Process wall time is `/usr/bin/time` around Python process startup through
   process exit, including imports, environment creation, HDF5 recording,
   aggregate/report JSON serialization, and cleanup.
-- Collector elapsed is its existing `collect()` timer. Existing stage timers
-  cover sanity, no-obstacle template recorder calls, cylinder geometry sampling,
-  and obstacle recorder calls. Template/obstacle calls include env creation,
-  reconfigure/reset, control and safety checks, per-step recording, HDF5 flush,
-  and close; the recorder's `elapsed_seconds` is narrower and excludes env
-  creation and final flush. There is no separate timer in this version for each
-  operation inside a recorder call, so the stage values must not be interpreted
-  as isolated PhysX kernel or safety-check timings.
+- Collector elapsed is the `collect()` timer captured at the start of
+  `write_report()`, **before** final report JSON serialization and atomic rename.
+  The round-3 text above incorrectly called this “through report write”; it does
+  not include that final write. Process wall time does include it. Existing stage
+  timers cover sanity, no-obstacle template recorder calls, cylinder geometry
+  sampling, and obstacle recorder calls. Template/obstacle calls include env
+  creation, reconfigure/reset, control and safety checks, per-step recording,
+  HDF5 flush, and close; the recorder's `elapsed_seconds` is narrower and
+  excludes env creation and final flush. cProfile is needed to distinguish costs
+  within those stage boundaries.
 - The end-of-run `report.json` was 20,228,241 bytes. Its 17 successful template
   traces retained 165,597 unique swept-footprint points both in `trace` and in
   a duplicate top-level `footprint` field. This was repeated report data, not
@@ -241,7 +243,7 @@ The new baseline was collected to
 | Measure | Round-3 baseline | Optimized | Denominator / boundary |
 | --- | ---: | ---: | --- |
 | Process wall | 32.91 s | 33.03 s | process start through exit |
-| Collector elapsed | 30.68 s | 31.02 s | `collect()` start through report write |
+| Collector elapsed | 30.68 s | 31.02 s | `collect()` start through final report serialization start |
 | Sanity recorder stage | 1.39 s | 1.32 s | one sanity attempt |
 | Successful template recorder stage | 21.61 s | 21.76 s | 17 template attempts |
 | Cylinder geometry sampling | 1.79 s | 1.91 s | 585 sampler calls |
@@ -322,3 +324,120 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 180s \
 **Decision requested:** review the optimized pilot and decide whether to
 proceed to Ticket 02. No formal 100-trajectory collection, training, or merge
 was started; fresh user confirmation is required before any of them.
+
+## End-to-end profiling and measured footprint optimization (round 4)
+
+This round addresses the remaining request to profile the actual full collection
+and make a measured attempt at simulation/collection throughput. Ticket 02 and
+formal collection/training remain unstarted. It retains the round-3 baseline and
+optimized datasets. Round-4 output is
+`outputs/wristcam_pilot_20261021_round4_footprint_optimized/`.
+
+### Profile method and findings
+
+The full bounded seed-0, target-5 collection was run under `cProfile` at
+`outputs/wristcam_pilot_20261021_round4_profile_run/`; the binary
+`outputs/wristcam_pilot_20261021_round4_profile.prof` is the machine-readable
+profile. `cProfile` adds material overhead, so its 36.83s profiled function time
+is diagnostic only; unprofiled `/usr/bin/time` process wall is the comparison
+metric. The profile records 2,234 control calls and 11,170 physics-substep
+callbacks. Cumulative profile results (call counts and seconds) were:
+
+| Operation | Calls | Baseline cumulative s | Scope / interpretation |
+| --- | ---: | ---: | --- |
+| Env `__init__` / `gym.make` | 23 each | 13.85 | includes initial scene setup; nested work, do not add to other rows |
+| `reset` → `_reconfigure` | 46 | 15.95 / 15.73 | each attempt first resets then auto-reconfigures; nested cumulative values |
+| Scene setup | 46 | 5.51 | SAPIEN scene rebuild portion of reconfigure |
+| `gc.collect` during clear | 69 | 6.60 | Python GC invoked from environment clear |
+| Recorder-wrapped control `step` | 2,234 | 11.24 | includes task control and simulation, not a pure PhysX kernel timer |
+| Per-substep forbidden-crossing check | 11,170 | 5.27 | safety logic; 5.20s in optimized profile |
+| Per-substep obstacle contact check | 11,170 | 0.16 | contact scan remains enabled |
+| Template swept-footprint extraction | 1,361 | 1.89 | Python/Numpy transform/filter work, includes cProfile overhead |
+| Cylinder geometry sampler | 585 | 2.05 | actual geometry sampling, independent stage timer below is 1.79s |
+| JSON dump calls | 126 | 1.07 | all metadata/report writes under cProfile |
+| Recorder HDF5 flush | 23 | 0.04 | does not include all recorder buffer work or aggregate copying |
+
+The template recorder stage is the largest end-to-end stage (~21.6s), but its
+largest controllable internal hotspot found was repeated Python shape-level work
+in swept-footprint extraction. Reconfigure/scene setup and Python GC are also
+large, and task safety checks cost ~5.3 profiled seconds. They are not modified:
+reusing/rebuilding environments or changing per-substep safety execution needs
+separate lifecycle/safety equivalence work. No claim is made that PhysX itself
+was the dominant CPU cost.
+
+### Optimization, red/green, and measured result
+
+The `collect_footprint` seam now caches each collision shape's vertices already
+transformed into its link frame, concatenated once per link. Each physics step
+therefore performs one live link transform and one height filter per link rather
+than Python-looping over every collision shape. The complete vertices remain
+included, including the wrist camera; the z cutoff, cube corners, footprint
+consumers, geometry tests, safety checks, and sampling prior are unchanged. The
+test first failed against the old cache shape (the link entry contained a list
+instead of the required homogeneous per-link vertex array), then passed after
+the implementation. The real wristcam cache/footprint regression and full suite
+also pass.
+
+Baseline and round-4 runs have the same seed/config and identical candidate,
+success, sampling-call, physics-attempt, and control-step counts, so this is the
+same observed work, not an acceptance-rate or workload reduction:
+
+| Measure | Round-3 optimized baseline | Round-4 optimized | Difference |
+| --- | ---: | ---: | ---: |
+| Candidates / no-obstacle successes | 17 / 17 | 17 / 17 | identical |
+| Cylinder calls / no-feasible | 585 / 580 | 585 / 580 | identical |
+| Obstacle attempts / safe successes | 5 / 5 | 5 / 5 | identical |
+| Obstacle control steps | 491 | 491 | identical |
+| Sanity / template / sampling / obstacle stage s | 1.317 / 21.764 / 1.910 / 5.956 | 1.344 / 21.601 / 1.783 / 5.914 | template -0.8%; sampling -6.7% |
+| `collect()` elapsed field s | 31.024 | 30.703 | -1.0%; stops before final report write |
+| Process start-to-exit wall s | 33.03 | 32.73 | -0.9%; includes imports, initialization, output writes, exit |
+| Profiled `collect_footprint` cumulative s | 1.886 | 1.686 | -10.6%, under cProfile |
+| Obstacle steps / obstacle-stage second | 82.4/s | 83.0/s | +0.7%; stage includes recorder overhead |
+
+This is a small measured improvement, not evidence of a major simulation-kernel
+speedup: stage and process changes are near run-to-run noise, and control-step
+throughput improved only 0.7%. Safety checks and simulator configuration work
+remain prominent. No safety precision, native wristcam reset, physics/control
+frequency, solver settings, expert behavior, trajectory state coverage, or
+collection budgets were reduced. Same seeded layout/selected cylinder/action
+comparison is preserved by the unchanged RNG call sequence; per-step states are
+not asserted bit-identical because floating-point execution can vary.
+
+### Validation and reproduction
+
+The round-4 validator passed: 5 unique templates, 5/5 stack successes with no
+collision/crossing, 7-channel actions, 51D observations, exact zero rotation,
+T+1 state/observation rows, and 486 windows loaded through the existing dataset
+reader. `validation.json` records the evidence. The exact bounded commands were:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m cProfile -o outputs/wristcam_pilot_20261021_round4_profile.prof \
+  -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round4_profile_run \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round4_footprint_optimized \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+timeout --kill-after=5s 30s python -m examples.baselines.constrain.validate_wristcam_pilot \
+  --dataset-dir outputs/wristcam_pilot_20261021_round4_footprint_optimized
+timeout --kill-after=5s 180s python -m examples.baselines.constrain.render_dataset_video \
+  --dataset-dir outputs/wristcam_pilot_20261021_round4_footprint_optimized
+python -c "import pstats; p=pstats.Stats('outputs/wristcam_pilot_20261021_round4_profile.prof'); p.strip_dirs().sort_stats('cumulative').print_stats(35)"
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 180s \
+  python -m pytest examples/baselines/constrain/tests -q
+```
+
+The profile run was 37.42s process wall; its cProfile summary is diagnostic and
+not compared as an unprofiled runtime. The unprofiled optimized collection was
+32.73s process wall and 30.703s through the collector timer boundary. Final
+report serialization is after that boundary; process wall correctly includes
+it. The renderer produced the full 496-frame `dataset.mp4` within the 180s limit.
+Validation passed, and the full constrain suite passed (149 tests in 40.48s).
+No formal collection, training, or merge was started; this report requests user
+review before Ticket 02.

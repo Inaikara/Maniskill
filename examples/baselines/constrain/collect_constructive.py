@@ -484,10 +484,10 @@ CARRY_PHASES = ("carry_to_waypoint", "carry_to_place")
 
 
 def _robot_shape_cache(base) -> list:
-    """Per-link collision geometry, cached once for footprint projection."""
+    """Per-link homogeneous vertices, cached once for footprint projection."""
     cache = []
     for link in base.agent.robot.links:
-        shapes = []
+        vertices_by_link = []
         for shape in link._bodies[0].collision_shapes:
             try:
                 vertices = common.to_numpy(shape.get_vertices())
@@ -506,9 +506,12 @@ def _robot_shape_cache(base) -> list:
             except Exception:
                 continue
             local = common.to_numpy(shape.get_local_pose().to_transformation_matrix())
-            shapes.append((local, vertices))
-        if shapes:
-            cache.append((link, shapes))
+            homogeneous = np.concatenate(
+                [vertices.T, np.ones((1, vertices.shape[0]))], axis=0
+            )
+            vertices_by_link.append((local @ homogeneous).T)
+        if vertices_by_link:
+            cache.append((link, np.concatenate(vertices_by_link, axis=0)))
     return cache
 
 
@@ -527,13 +530,12 @@ def collect_footprint(base, cache, height: float) -> np.ndarray:
     cylinder top at the current step (the actual occupied region)."""
     limit = height + FOOTPRINT_Z_SLACK
     points = []
-    for link, shapes in cache:
+    for link, local_vertices in cache:
         matrix = common.to_numpy(link.pose.to_transformation_matrix()[0])
-        for local, vertices in shapes:
-            world = (matrix @ local @ np.concatenate([vertices.T, np.ones((1, vertices.shape[0]))]))[:3].T
-            below = world[world[:, 2] < limit]
-            if len(below):
-                points.append(below[:, :2])
+        world = (matrix @ local_vertices.T)[:3].T
+        below = world[world[:, 2] < limit]
+        if len(below):
+            points.append(below[:, :2])
     points.append(_cube_corners(base))
     return np.concatenate(points, axis=0)
 
