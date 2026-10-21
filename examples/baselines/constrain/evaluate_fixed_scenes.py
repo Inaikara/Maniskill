@@ -73,6 +73,14 @@ def episode_should_stop(flags, terminated, truncated, elapsed, max_steps):
     return (flags["stack_success"] or terminated or truncated or elapsed >= max_steps)
 
 
+def _checkpoint_identity(adapter):
+    checkpoint = adapter.metadata.get("checkpoint", adapter.metadata.get("weights_source"))
+    if not checkpoint:
+        return None
+    path = Path(checkpoint)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
 class FixedSceneEvaluator:
     def __init__(self, adapter, scene_set, policy_name, output_dir, device="cpu",
                  max_steps=500, video_indexes=VIDEO_INDEXES):
@@ -193,6 +201,7 @@ class FixedSceneEvaluator:
                     "video_scene_indexes_fixed_before_rollouts": sorted(self.video_indexes),
                     "scene_manifest_sha256": self.scene_set.manifest["manifest_sha256"],
                     "adapter_metadata": self.adapter.metadata,
+                    "checkpoint_sha256": _checkpoint_identity(self.adapter),
                     "runtime": {"python": platform.python_version(), "torch": torch.__version__,
                                 "device": self.device, "sim_backend": "physx_cpu",
                                 "num_envs": 1, "obs_mode": "state",
@@ -213,10 +222,35 @@ class FixedSceneEvaluator:
                 reused = False
                 if prior is not None and prior.exists():
                     previous = json.loads(prior.read_text())
+                    prior_manifest_path = Path(resume_dir) / "manifest.json"
+                    prior_manifest = (json.loads(prior_manifest_path.read_text())
+                                      if prior_manifest_path.is_file() else {})
+                    prior_hash = prior_manifest.get("checkpoint_sha256")
+                    if prior_hash is None:
+                        prior_source = prior_manifest.get("adapter_metadata", {}).get(
+                            "checkpoint", prior_manifest.get("adapter_metadata", {}).get("weights_source"))
+                        if prior_source and Path(prior_source).is_file():
+                            prior_hash = hashlib.sha256(Path(prior_source).read_bytes()).hexdigest()
+                    prior_config = {
+                        "policy": prior_manifest.get("policy"),
+                        "checkpoint_sha256": prior_hash,
+                        "scene_manifest_sha256": prior_manifest.get("scene_manifest_sha256"),
+                        "runtime": prior_manifest.get("runtime"),
+                        "adapter_metadata": prior_manifest.get("adapter_metadata"),
+                    }
+                    expected_config = {
+                        "policy": self.policy_name,
+                        "checkpoint_sha256": manifest["checkpoint_sha256"],
+                        "scene_manifest_sha256": self.scene_set.manifest["manifest_sha256"],
+                        "runtime": manifest["runtime"],
+                        "adapter_metadata": self.adapter.metadata,
+                    }
                     if (previous.get("status") == "evaluated"
                             and previous.get("scene_id") == scene.scene_id
+                            and previous.get("seed") == int(scene.metadata["seed"])
                             and previous.get("initial_state_sha256") == scene.metadata["initial_state_sha256"]
-                            and previous.get("restored_observation_max_abs_error", float("inf")) <= 1e-6):
+                            and previous.get("restored_observation_max_abs_error", float("inf")) <= 1e-6
+                            and prior_config == expected_config):
                         record, reused = previous, True
                         old_video = Path(resume_dir) / "representative.mp4"
                         if i in self.video_indexes and old_video.exists():

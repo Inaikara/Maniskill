@@ -100,9 +100,25 @@ the 200 `episode_NNN.json` records; each policy also has `summary.json` and
 - Complete-state round-trip validation for the frozen store is independently
   recorded in `WRISTCAM_SCENES.md` / `roundtrip_validation.json`.
 - Focused tests cover disjoint progress bins, fixed denominator on runtime
-  errors, same-step stack plus obstacle violation, and strict progress inputs.
+  errors, same-step stack plus obstacle violation, strict progress inputs, and
+  checkpoint-file identity changing when weights change. Public `run_one`
+  rollouts use a finite fake env/adapter to verify same-step unsafe stack
+  accounting and no post-success actions, exact step-cap handling across a
+  partial final chunk, fresh observation history on the next episode, and
+  environment recreation when scene radius changes. Resume requires
+  matching policy/checkpoint SHA-256, scene manifest, seed, state evidence and
+  runtime/inference configuration; legacy records derive the checkpoint hash
+  from their recorded adapter weight source.
   `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python -m pytest
-  examples/baselines/constrain/tests -q`: **158 passed**.
+  examples/baselines/constrain/tests -q`: **162 passed** (focused module:
+  **9 passed**).
+- A bounded audit re-read all 200 episode JSON files: 100 evaluated records per
+  policy, zero runtime errors, 100 distinct scene-state hashes, and matching
+  restored-state fingerprints for all 100 pairs. Checkpoint and scene identities
+  matched their manifests. Detailed evidence:
+  `outputs/wristcam_paired_eval_20261021_recovery/final_audit.json`. Metrics are
+  unchanged: Base DP 12 stacks / 0 safe / 100 contacts / 59 crossings / 88
+  timeouts; ConstrainNet 100 / 88 / 9 / 4 / 0.
 
 ## Reproduction
 
@@ -119,5 +135,21 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 14400s \
   --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
   --constrain-checkpoint outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt \
   --output-dir outputs/wristcam_paired_eval_fresh_20261021 \
+  --device cuda --num-scenes 100 --max-steps 500
+```
+
+For an interrupted run, set `--resume-from` to the existing paired output root;
+only completed records matching current policy, checkpoint, scene, seed, and
+inference/runtime configuration are reused. The original completed scene-0
+records satisfy the strengthened identity guard:
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 14400s \
+  python -m examples.baselines.constrain.evaluate_fixed_scenes \
+  --scene-dir /home/xuwj/dev/maniskill/outputs/wristcam_eval_scenes_20261021 \
+  --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
+  --constrain-checkpoint outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt \
+  --output-dir outputs/wristcam_paired_eval_resume_20261021 \
+  --resume-from outputs/wristcam_paired_eval_20261021_recovery \
   --device cuda --num-scenes 100 --max-steps 500
 ```
