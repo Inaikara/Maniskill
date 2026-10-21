@@ -205,3 +205,120 @@ The render command completed within its 180-second limit and produced
 intact. The prior and algorithm details above should be frozen before any
 subsequent larger collection; this report requests fresh user confirmation
 before Ticket 02.
+
+## End-to-end collection and simulation throughput (round 3)
+
+This round used the round-2 geometry-prior collector as its baseline, followed
+by one bounded optimization and one matching real 5-trajectory run. Both runs
+used the same machine, seed 0, target 5, reuse 1, at most 96 templates, 100
+physical episodes, 40 cylinder attempts per reuse slot, and the unchanged 500
+control-step cap. Outputs are separate; the round-2 assets above remain intact.
+No robot, reset, waypoint, speed, clearance, physics, or safety settings were
+changed.
+
+### Baseline measurement and bottleneck
+
+The new baseline was collected to
+`outputs/wristcam_pilot_20261021_round3_baseline/`. Measurement boundaries:
+
+- Process wall time is `/usr/bin/time` around Python process startup through
+  process exit, including imports, environment creation, HDF5 recording,
+  aggregate/report JSON serialization, and cleanup.
+- Collector elapsed is its existing `collect()` timer. Existing stage timers
+  cover sanity, no-obstacle template recorder calls, cylinder geometry sampling,
+  and obstacle recorder calls. Template/obstacle calls include env creation,
+  reconfigure/reset, control and safety checks, per-step recording, HDF5 flush,
+  and close; the recorder's `elapsed_seconds` is narrower and excludes env
+  creation and final flush. There is no separate timer in this version for each
+  operation inside a recorder call, so the stage values must not be interpreted
+  as isolated PhysX kernel or safety-check timings.
+- The end-of-run `report.json` was 20,228,241 bytes. Its 17 successful template
+  traces retained 165,597 unique swept-footprint points both in `trace` and in
+  a duplicate top-level `footprint` field. This was repeated report data, not
+  additional safety coverage. It identified a concrete serialization/storage
+  cost that could be removed without changing geometry or RNG consumption.
+
+| Measure | Round-3 baseline | Optimized | Denominator / boundary |
+| --- | ---: | ---: | --- |
+| Process wall | 32.91 s | 33.03 s | process start through exit |
+| Collector elapsed | 30.68 s | 31.02 s | `collect()` start through report write |
+| Sanity recorder stage | 1.39 s | 1.32 s | one sanity attempt |
+| Successful template recorder stage | 21.61 s | 21.76 s | 17 template attempts |
+| Cylinder geometry sampling | 1.79 s | 1.91 s | 585 sampler calls |
+| Obstacle recorder stage | 5.83 s | 5.96 s | 5 physical attempts |
+| Obstacle control steps | 491 | 491 | sum across 5 attempts |
+| Control steps / obstacle-stage second | 84.2/s | 82.4/s | 491 / obstacle recorder stage; includes recorder overhead |
+| Report JSON size | 20.23 MB | 10.88 MB | bytes on disk |
+
+The timings show template collection dominates the measured stages (about 70%
+of the collector elapsed); cylinder geometry is about 6%. However, the available
+stage boundary includes setup, reset/reconfiguration, physics, per-step safety,
+footprint recording, and HDF5 work, so this evidence does not identify which of
+those dominates within a template. Obstacle-stage control-step rate is an
+end-to-end recorder rate, not a pure simulation throughput benchmark. The
+measured wall time did not improve (32.91 → 33.03 s, +0.4%); there is no evidence
+of a simulation-kernel speedup, and this small single-run difference is timing
+noise. No safety checks were removed or weakened.
+
+### Minimal optimization and behavior equivalence
+
+The template footprint remains in its existing full `trace.footprint` record,
+which is also the sole source used to construct the sampler's footprint array.
+The duplicate top-level template `footprint` copy was removed. This keeps every
+point, exact cKDTree query input, prior, geometric filter, sampling order, and
+random-number consumption unchanged. It removes one JSON serialization of
+165,597 points (report size fell 46.2%); cylinder calls, layouts, selected
+templates, control steps, and safety outcomes matched the baseline exactly.
+The improvement is report size/serialization work only. The measured end-to-end
+time did not get faster, and no claim of simulation throughput improvement is
+made.
+
+### Round-3 optimized trial, validation, and reproduction
+
+Optimized artifacts are in
+`outputs/wristcam_pilot_20261021_round3_throughput_optimized/`. Results: 17/17
+no-obstacle template stacks; 585 sampler calls (580 `no_feasible_cylinder`, 5
+feasible placements); 5/5 physical attempts safe and successful, from five
+distinct templates; 491 obstacle control steps; no failed template or physical
+attempt. The 5/17 output-template ratio describes only this finite pilot.
+Sampling stage was 1.91 s. The run reached 5/5 within all specified budgets.
+
+Validation evidence is retained as `validation.json`: five safe successes, five
+unique output templates, seven-channel actions, 51-dimensional observations,
+zero rotation channels, and T+1 rows for each state/observation leaf. The
+existing `ConstrainDemoDataset` reader loaded all five, producing 486 training
+windows with 51D observations and 4D actions; no training was run. The
+representative `dataset.mp4` contains all 496 saved frames (about 1.00 MB).
+
+Red/green: the new collection regression test failed before the optimization
+because the template footprint appeared both at the top level and in its trace;
+it passed after the duplicate was removed, with the full 2D trace footprint
+still available. Targeted collector tests passed (24 tests); the full required
+suite passed (149 tests in 40.68 s).
+
+Exact commands, from the repository root (each workload is hard bounded):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round3_baseline \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+/usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' timeout --kill-after=5s 600s \
+  python -m examples.baselines.constrain.collect_constructive \
+  --output-dir outputs/wristcam_pilot_20261021_round3_throughput_optimized \
+  --target-successes 5 --reuse-count 1 --max-templates 96 \
+  --max-episodes 100 --max-cylinder-attempts 40 --seed 0
+timeout --kill-after=5s 30s python -m examples.baselines.constrain.validate_wristcam_pilot \
+  --dataset-dir outputs/wristcam_pilot_20261021_round3_throughput_optimized
+timeout --kill-after=5s 180s python -m examples.baselines.constrain.render_dataset_video \
+  --dataset-dir outputs/wristcam_pilot_20261021_round3_throughput_optimized
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 180s \
+  python -m pytest examples/baselines/constrain/tests -q
+```
+
+**Decision requested:** review the optimized pilot and decide whether to
+proceed to Ticket 02. No formal 100-trajectory collection, training, or merge
+was started; fresh user confirmation is required before any of them.

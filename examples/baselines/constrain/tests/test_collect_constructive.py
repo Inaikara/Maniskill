@@ -710,6 +710,19 @@ def test_collect_writes_report_stage_timings_and_denominators(tmp_path):
     assert first["template_index"] == 0
 
 
+def test_collect_retains_template_sweep_footprint_once_in_trace(tmp_path):
+    report = run_collect(tmp_path / "footprint", FakeRecorder(), cc.Config(
+        target_successes=1, reuse_count=1, seed=7, max_templates=2,
+        max_episodes=2, max_cylinder_attempts=2,
+    ))
+
+    template = report["templates"]["0"]
+    footprint = template["trace"]["footprint"]
+    assert len(footprint) > 100
+    assert "footprint" not in template
+    assert np.asarray(footprint).shape[1] == 2
+
+
 def test_collect_refuses_to_overwrite_existing_outputs(tmp_path):
     (tmp_path / "trajectory.h5").write_bytes(b"existing")
     with pytest.raises(FileExistsError):

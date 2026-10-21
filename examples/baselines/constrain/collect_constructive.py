@@ -1135,7 +1135,6 @@ def collect(
             ),
             plan=_jsonable(template_attempt["plan"]),
             trace=template_attempt["trace"],
-            footprint=template_attempt["trace"]["footprint"],
             initial_state_hash=template_attempt["initial_state_hash"],
             elapsed_seconds=template_attempt["elapsed_seconds"],
             reuse=[],
@@ -1147,7 +1146,7 @@ def collect(
             cubes=cubes,
             waypoint_xy=choice["waypoint_xy"],
             carry_z=float(template_record["plan"]["carry_z"]),
-            footprint=np.asarray(template_record["footprint"], dtype=np.float64),
+            footprint=np.asarray(template_record["trace"]["footprint"], dtype=np.float64),
         )
         for reuse_index in range(config.reuse_count):
             preferred = CLEARANCE_TARGETS[reuse_index % len(CLEARANCE_TARGETS)]
