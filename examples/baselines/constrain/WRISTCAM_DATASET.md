@@ -35,7 +35,7 @@ templates, maximum 400 physical episodes, maximum 40 cylinder sampler calls
 per template/reuse slot, and 500 steps per episode. Collection has a hard
 3,600-second wall limit; neither the limits nor the distribution will be
 expanded if exhausted. The output is the new, non-overwriting path
-`outputs/wristcam_formal_20261021/`.
+`demos/StackCube-obstacle/` (relocated and renamed; see [OUTPUTS.md](OUTPUTS.md)).
 
 Runtime freeze in activated `maniskill`: Python 3.11.16, NumPy 1.26.4, SciPy
 1.17.1, h5py 3.16.0, Gymnasium 0.29.1. The source and config fingerprints
@@ -79,7 +79,7 @@ was run.
 
 ### Artifact identities
 
-SHA-256 (exact files under `outputs/wristcam_formal_20261021/`):
+SHA-256 (exact files under `demos/StackCube-obstacle/`):
 
 | Artifact | SHA-256 |
 | --- | --- |
@@ -97,14 +97,14 @@ source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
 conda activate maniskill
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 /usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' \
   timeout --kill-after=5s 3600s python -m examples.baselines.constrain.collect_constructive \
-  --output-dir outputs/wristcam_formal_20261021 \
+   --output-dir demos/StackCube-obstacle \
   --target-successes 100 --reuse-count 1 --max-templates 2000 \
   --max-episodes 400 --max-cylinder-attempts 40 --seed 0
 ```
 
 Validation was run in the activated environment with a 120-second timeout. Its
 complete per-trajectory evidence and PASS assertions are retained in
-`outputs/wristcam_formal_20261021/validation.json`; the checks call
+`demos/StackCube-obstacle/validation.json`; the checks call
 `validate_aggregate(..., expected_count=100)` and `ConstrainDemoDataset`, then
 assert every metadata safety flag, unique template, action/observation shape,
 and exact zero rotation for each HDF5 trajectory.

@@ -29,7 +29,7 @@ from examples.baselines.constrain.constrain_ckpt import (
 from examples.baselines.constrain.constrain_denoiser import build_constrain_denoiser
 from examples.baselines.constrain.train_logging import RunLogger
 
-REAL_DEMO = "outputs/stackcube_obstacle/trajectory.h5"
+REAL_DEMO = "demos/StackCube-obstacle/trajectory.h5"
 
 
 def test_log_step_appends_one_json_line_per_call(tmp_path):
@@ -102,10 +102,11 @@ def test_main_embeds_compact_provenance_in_checkpoint_and_run_config(tmp_path):
         "--demo-path", REAL_DEMO, "--base-checkpoint", str(DEFAULT_CKPT),
         "--total-iters", "3", "--batch-size", "4", "--device", "cpu",
         "--run-dir", str(run_dir), "--provenance-json", str(provenance),
+        "--checkpoint-dir", str(tmp_path / "ckpt"),
     ])
     config = json.loads((run_dir / "run_config.json").read_text())
     assert config["provenance"] == identity
-    checkpoint = torch.load(run_dir / "checkpoints" / "final.pt", map_location="cpu", weights_only=False)
+    checkpoint = torch.load(tmp_path / "ckpt" / "final.pt", map_location="cpu", weights_only=False)
     assert checkpoint["config"]["provenance"] == identity
 
 
@@ -152,6 +153,7 @@ def tiny_main_run(tmp_path_factory):
         "--total-iters", "2", "--batch-size", "4", "--device", "cpu",
         "--seed", "1", "--save-every", "1",
         "--run-dir", str(run_dir),
+        "--checkpoint-dir", str(run_dir.parent / "ckpt"),
     ])
     return run_dir, summary
 
@@ -160,7 +162,8 @@ def test_main_writes_run_config_with_data_count_and_base_sha(tiny_main_run):
     run_dir, _ = tiny_main_run
     config = json.loads((run_dir / "run_config.json").read_text())
     assert config["training"]["demo_path"].endswith("trajectory.h5")
-    assert config["data"]["num_windows"] == 10356
+    assert config["data"]["num_windows"] == 9461
+    assert config["outputs"]["checkpoints"] == str(run_dir.parent / "ckpt")
     assert config["data"]["num_demos"] == 100
     assert config["base_weights"]["source"].endswith("best_eval_success_at_end.pt")
     assert len(config["base_weights"]["state_sha16"]) == 16
@@ -179,6 +182,6 @@ def test_main_streams_per_step_losses_and_progress(tiny_main_run):
 def test_main_periodic_checkpoint_is_loadable(tiny_main_run):
     run_dir, _ = tiny_main_run
     _, ck = load_constrain_denoiser(
-        run_dir / "checkpoints" / "periodic.pt", device="cpu", weights="ema"
+        run_dir.parent / "ckpt" / "periodic.pt", device="cpu", weights="ema"
     )
     assert ck["step"] == 2

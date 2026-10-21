@@ -28,6 +28,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from examples.baselines.constrain.output_paths import experiment_dir
 
 from examples.baselines.constrain.evaluate_base_dp import (
     BaseDPEvaluator,
@@ -65,14 +66,14 @@ def run_paired_evaluation(
     max_steps=500,
     base_seed=10000,
     device="cpu",
-    output_dir=_REPO_ROOT / "outputs" / "constrain_runs" / "paired_eval",
+    output_dir=None,
     scene_cfg=None,
     video_scene_indexes=None,
 ) -> dict:
     """Evaluate both policies on one shared sampled scene list; merge results."""
     cfg = scene_cfg if scene_cfg is not None else EvalSceneConfig()
     scenes = sample_scenes(base_seed, num_episodes, cfg)
-    output_dir = Path(output_dir)
+    output_dir = Path(output_dir) if output_dir is not None else experiment_dir("paired_eval")
     output_dir.mkdir(parents=True, exist_ok=True)
     scenes_manifest = dict(
         base_seed=base_seed,
@@ -166,7 +167,7 @@ def parse_args(argv=None):
                    help="base seed; scene i uses seed+i (fresh scenes, not training demos)")
     p.add_argument("--device", type=str, default="cpu", help="network device")
     p.add_argument("--output-dir", type=Path,
-                   default=_REPO_ROOT / "outputs" / "constrain_runs" / "paired_eval")
+                   default=experiment_dir("paired_eval"))
     p.add_argument("--video-episodes", type=str, default=None,
                    help="comma-separated scene indexes to record into preview.mp4 "
                         "(e.g. '0,17,42'); default: all episodes")

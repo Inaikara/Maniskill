@@ -21,6 +21,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from examples.baselines.constrain.output_paths import experiment_dir
 
 import torch
 
@@ -155,7 +156,7 @@ def parse_args(argv=None):
     p.add_argument("--base-checkpoint", type=Path, default=DEFAULT_CKPT)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--output", type=Path, default=None,
-                   help="evidence JSON path (default: <run_dir>/verify_evidence.json)")
+                   help="evidence JSON path (default: timestamped outputs/exp directory)")
     return p.parse_args(argv)
 
 
@@ -165,7 +166,7 @@ def main(argv=None):
         args.checkpoint, args.base_checkpoint, device=args.device
     )
     output = args.output if args.output is not None else (
-        args.checkpoint.parent.parent / "verify_evidence.json"
+        experiment_dir("constrainnet_verification") / "verify_evidence.json"
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(evidence, indent=2) + "\n")

@@ -4,7 +4,8 @@
 
 Completed a fresh run on 2026-10-21 from the original Base DP `ema_agent`; no
 Panda ConstrainNet checkpoint was resumed. Run artifacts are in
-`outputs/constrain_runs/wristcam_full30000_seed1/` (ignored runtime data).
+`outputs/exp/20261021_constrainnet_wristcam_seed1/` (relocated runtime data;
+see [OUTPUTS.md](OUTPUTS.md) for historical embedded paths).
 The formal source contains all 100 demonstrations and 9,461 official windows.
 
 | Identity | Value |
@@ -14,7 +15,7 @@ The formal source contains all 100 demonstrations and 9,461 official windows.
 | Collection report SHA-256 | `d935ff3bdc6fa95fea7b9bbac4af7ed41a07b4be19155d29f26807565f4677c5` |
 | Generator revision / tree | `e744d1592dbe1826bb7e04192d57871e0f410bf7` / `97f35b0b7506d223d8d338641d21a7750e2f69b2` |
 | Frozen generator config fingerprint | `a5390e1777aa3ea0f708bf8b414d38ac6727ed520c53e3ce53ef9c05da19d140` |
-| Base checkpoint | `outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt`, subkey `ema_agent` |
+| Base checkpoint | `outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt`, subkey `ema_agent` |
 | Base checkpoint file SHA-256 | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
 | Frozen base state sha16 | `8010257bd96dc866` |
 
@@ -50,7 +51,7 @@ are in `logs/loss.jsonl` and finite.
 | Range | 0.002273283898830414 – 0.24043482542037964 |
 
 Final EMA standalone checkpoint:
-`outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt`
+`outputs/ckpt/constrainnet_wristcam_seed1/final.pt`
 (74,295,931 bytes, SHA-256
 `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02`).
 Independent CPU load confirms step 30,000. The base state sha16 matches the
@@ -72,16 +73,17 @@ source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
 conda activate maniskill
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 10800s \
   python -m examples.baselines.constrain.train_constrain \
-  --demo-path outputs/wristcam_formal_20261021/trajectory.h5 \
-  --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
-  --run-dir outputs/constrain_runs/wristcam_full30000_seed1 \
-  --provenance-json outputs/constrain_runs/wristcam_full30000_seed1/provenance.json \
+   --demo-path demos/StackCube-obstacle/trajectory.h5 \
+   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
+   --run-dir outputs/exp/YYYYMMDD_HHMMSS_constrainnet_wristcam_seed1 \
+   --checkpoint-dir outputs/ckpt/constrainnet_wristcam_new_run \
+   --provenance-json outputs/exp/20261021_constrainnet_wristcam_seed1/provenance.json \
   --device cuda --seed 1 --total-iters 30000 --batch-size 1024 \
   --lr 1e-4 --warmup 500 --ema-power 0.75 --save-every 1000
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 300s \
   python -m examples.baselines.constrain.verify_constrain \
-  --checkpoint outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt \
-  --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
+   --checkpoint outputs/ckpt/constrainnet_wristcam_seed1/final.pt \
+   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
   --device cpu
 ```
 

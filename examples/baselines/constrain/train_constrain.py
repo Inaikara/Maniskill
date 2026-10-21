@@ -49,6 +49,7 @@ from examples.baselines.constrain.constrain_denoiser import (
     build_constrain_denoiser,
 )
 from examples.baselines.constrain.constrain_dataset import ConstrainDemoDataset
+from examples.baselines.constrain.output_paths import CKPT_ROOT, DEMO_ROOT, experiment_dir
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_OFFICIAL_DP_DIR) not in sys.path:
@@ -58,9 +59,11 @@ if str(_OFFICIAL_DP_DIR) not in sys.path:
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--demo-path", type=Path,
-                   default=_REPO_ROOT / "outputs" / "stackcube_obstacle" / "trajectory.h5")
+                   default=DEMO_ROOT / "StackCube-obstacle" / "trajectory.h5")
     p.add_argument("--base-checkpoint", type=Path, default=DEFAULT_CKPT)
     p.add_argument("--run-dir", type=Path, default=None)
+    p.add_argument("--checkpoint-dir", type=Path, default=None,
+                   help="weight directory (default: outputs/ckpt/<run directory name>)")
     p.add_argument("--resume", type=Path, default=None)
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--seed", type=int, default=1)
@@ -402,8 +405,9 @@ def main(argv=None):
     from examples.baselines.constrain.train_logging import RunLogger
 
     run_dir = args.run_dir if args.run_dir is not None else (
-        _REPO_ROOT / "outputs" / "constrain_runs" / f"run_seed{args.seed}_iters{args.total_iters}"
+        experiment_dir(f"constrainnet_seed{args.seed}_iters{args.total_iters}")
     )
+    checkpoint_dir = args.checkpoint_dir or CKPT_ROOT / run_dir.name
     provenance = json.loads(args.provenance_json.read_text()) if args.provenance_json else None
     trainer = ConstrainTrainer(
         demo_path=args.demo_path,
@@ -453,7 +457,7 @@ def main(argv=None):
         ),
         base_weights=dict(trainer.base_info),
         provenance=provenance,
-        outputs=dict(run_dir=str(run_dir), checkpoints=str(Path(run_dir) / "checkpoints")),
+        outputs=dict(run_dir=str(run_dir), checkpoints=str(checkpoint_dir)),
     ))
     print(f"run config written: {run_dir / 'run_config.json'}", flush=True)
 
@@ -496,9 +500,9 @@ def main(argv=None):
             )
             last_log = now
         if args.save_every is not None and (iteration + 1) % args.save_every == 0:
-            path = trainer.save_checkpoint(Path(run_dir) / "checkpoints" / "periodic.pt")
+            path = trainer.save_checkpoint(checkpoint_dir / "periodic.pt")
             print(f"saved periodic checkpoint at step {trainer.step}: {path}", flush=True)
-    final = trainer.save_checkpoint(Path(run_dir) / "checkpoints" / "final.pt")
+    final = trainer.save_checkpoint(checkpoint_dir / "final.pt")
     evidence = training_evidence(trainer)
     history = trainer.loss_history
     summary = dict(

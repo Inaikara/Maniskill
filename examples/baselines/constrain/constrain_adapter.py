@@ -43,9 +43,8 @@ from examples.baselines.constrain.constrain_ckpt import CHECKPOINT_FORMAT, load_
 DEFAULT_CKPT = (
     Path(__file__).resolve().parents[3]
     / "outputs"
-    / "constrain_runs"
-    / "default"
-    / "checkpoints"
+    / "ckpt"
+    / "constrainnet_wristcam_seed1"
     / "final.pt"
 )
 

@@ -48,7 +48,7 @@ OFFICIAL_DP_DIR = Path(__file__).resolve().parents[3] / "examples" / "baselines"
 if str(OFFICIAL_DP_DIR) not in sys.path:
     sys.path.insert(0, str(OFFICIAL_DP_DIR))
 
-REAL_DEMO = "outputs/stackcube_obstacle/trajectory.h5"
+REAL_DEMO = "demos/StackCube-obstacle/trajectory.h5"
 
 
 @pytest.fixture(scope="module")

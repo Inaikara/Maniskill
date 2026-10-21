@@ -32,7 +32,9 @@ obstacle safety flags, not normal grasp or table contact.
 
 ## Frozen identities and run
 
-Scene store: `/home/xuwj/dev/maniskill/outputs/wristcam_eval_scenes_20261021/`.
+Scene store: `outputs/exp/20261021_wristcam_scenes/`.
+Completed artifacts were relocated without changing their bytes; original paths
+inside manifests and audit records resolve through [OUTPUTS.md](OUTPUTS.md).
 The full store identity is recorded in `WRISTCAM_SCENES.md`; this run checked
 canonical manifest identity
 `f1aa2175bd70a86ba522b5d441b1a9897330fdbd17a5484d7a06f5eccb8335b3` and HDF5
@@ -40,8 +42,8 @@ SHA-256 `b1c736ccfbd4411b20dcb1495ffbf220afd6d7b08dbf46528c4047358d139caf`.
 
 | Policy | Checkpoint / weights | SHA-256 |
 | --- | --- | --- |
-| Base DP | `outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt`, `ema_agent` | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
-| ConstrainNet | `outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt`, EMA, step 30000 | `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02` |
+| Base DP | `outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt`, `ema_agent` | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
+| ConstrainNet | `outputs/ckpt/constrainnet_wristcam_seed1/final.pt`, EMA, step 30000 | `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02` |
 
 ConstrainNet inference uses the saved 2-frame / 51-feature observation, 48-base
 condition plus its relative-condition hint, 16 prediction horizon, 8 action
@@ -52,12 +54,12 @@ Both networks ran on CUDA; physics used CPU PhysX and a single environment.
 Representative video scene indexes were fixed in the evaluator before any
 policy rollout: `0, 17, 42, 77`. The policies use the same scene ordering and
 native render camera. Videos are
-`outputs/wristcam_paired_eval_20261021_recovery/{base_dp,constrain_dp}/representative.mp4`.
+`outputs/exp/20261021_wristcam_paired_eval/{base_dp,constrain_dp}/representative.mp4`.
 
 The first attempt used a single environment across scenes and recorded scene 0
 as complete but all remaining episodes as explicit runtime errors because the
 environment retained scene 0's cylinder radius. That output is preserved at
-`outputs/wristcam_paired_eval_20261021/`. After fixing per-radius environment
+`outputs/wristcam_paired_eval_20261021/` (removed during cleanup). After fixing per-radius environment
 recreation, recovery was run to a new directory and reused only the two
 completed scene-0 records whose scene identity and initial observation evidence
 matched; all failed indexes were re-executed. No failed episode was dropped.
@@ -120,7 +122,7 @@ the 200 `episode_NNN.json` records; each policy also has `summary.json` and
   policy, zero runtime errors, 100 distinct scene-state hashes, and matching
   restored-state fingerprints for all 100 pairs. Checkpoint and scene identities
   matched their manifests. Detailed evidence:
-  `outputs/wristcam_paired_eval_20261021_recovery/final_audit.json`. Metrics are
+  `outputs/exp/20261021_wristcam_paired_eval/final_audit.json`. Metrics are
   unchanged: Base DP 12 stacks / 0 safe / 100 contacts / 59 crossings / 88
   timeouts; ConstrainNet 100 / 88 / 9 / 4 / 0.
 
@@ -135,10 +137,10 @@ source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
 conda activate maniskill
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 14400s \
   python -m examples.baselines.constrain.evaluate_fixed_scenes \
-  --scene-dir /home/xuwj/dev/maniskill/outputs/wristcam_eval_scenes_20261021 \
-  --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
-  --constrain-checkpoint outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt \
-  --output-dir outputs/wristcam_paired_eval_fresh_20261021 \
+   --scene-dir outputs/exp/20261021_wristcam_scenes \
+   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
+   --constrain-checkpoint outputs/ckpt/constrainnet_wristcam_seed1/final.pt \
+   --output-dir outputs/exp/YYYYMMDD_HHMMSS_wristcam_paired_eval \
   --device cuda --num-scenes 100 --max-steps 500
 ```
 
@@ -155,10 +157,10 @@ No rerun is needed to validate the already audited results.
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 14400s \
   python -m examples.baselines.constrain.evaluate_fixed_scenes \
-  --scene-dir /home/xuwj/dev/maniskill/outputs/wristcam_eval_scenes_20261021 \
-  --base-checkpoint outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt \
-  --constrain-checkpoint outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt \
-  --output-dir outputs/wristcam_paired_eval_resume_20261021 \
-  --resume-from outputs/wristcam_paired_eval_20261021_recovery \
+   --scene-dir outputs/exp/20261021_wristcam_scenes \
+   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
+   --constrain-checkpoint outputs/ckpt/constrainnet_wristcam_seed1/final.pt \
+   --output-dir outputs/exp/YYYYMMDD_HHMMSS_wristcam_paired_eval_resume \
+   --resume-from outputs/exp/20261021_wristcam_paired_eval \
   --device cuda --num-scenes 100 --max-steps 500
 ```

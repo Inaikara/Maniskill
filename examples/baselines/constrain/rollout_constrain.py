@@ -27,6 +27,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from examples.baselines.constrain.output_paths import experiment_dir
 
 import numpy as np
 import torch
@@ -56,7 +57,7 @@ def parse_args(argv=None):
     p.add_argument("--disable-control", action="store_true",
                    help="bypass the control branch (base DP behavior)")
     p.add_argument("--output-dir", type=Path,
-                   default=_REPO_ROOT / "outputs" / "constrain_rollout")
+                   default=experiment_dir("constrain_rollout"))
     return p.parse_args(argv)
 
 

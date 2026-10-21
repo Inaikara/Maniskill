@@ -31,6 +31,7 @@ import json
 import sys
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from examples.baselines.constrain.output_paths import experiment_dir
 
 import numpy as np
 import torch
@@ -217,7 +218,7 @@ class BaseDPEvaluator:
         device: str = "cpu",
         checkpoint=None,
         scene_cfg: EvalSceneConfig = None,
-        output_dir: Path = _REPO_ROOT / "outputs" / "base_dp_eval",
+        output_dir: Path = experiment_dir("base_dp_eval"),
         video: bool = True,
         adapter: BaseDPAdapter = None,
         video_scene_indexes=None,
@@ -651,7 +652,7 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=0, help="base seed; scene i uses seed+i")
     p.add_argument("--device", type=str, default="cpu", help="network device (cpu or cuda)")
     p.add_argument("--checkpoint", type=Path, default=None)
-    p.add_argument("--output-dir", type=Path, default=_REPO_ROOT / "outputs" / "base_dp_eval")
+    p.add_argument("--output-dir", type=Path, default=experiment_dir("base_dp_eval"))
     p.add_argument("--no-video", action="store_true")
     p.add_argument(
         "--replay-episode", type=Path, default=None,

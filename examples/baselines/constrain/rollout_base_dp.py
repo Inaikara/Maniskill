@@ -20,6 +20,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from examples.baselines.constrain.output_paths import experiment_dir
 
 import numpy as np
 import torch
@@ -40,7 +41,7 @@ def parse_args(argv=None):
         help="fixed radius in [0.02, 0.04]; sampled within the range when omitted",
     )
     p.add_argument("--checkpoint", type=Path, default=None)
-    p.add_argument("--output-dir", type=Path, default=_REPO_ROOT / "outputs" / "base_dp_rollout")
+    p.add_argument("--output-dir", type=Path, default=experiment_dir("base_dp_rollout"))
     return p.parse_args(argv)
 
 

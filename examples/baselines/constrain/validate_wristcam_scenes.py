@@ -93,7 +93,7 @@ def validate(directory):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scene-dir", default="outputs/wristcam_eval_scenes_20261021")
+    parser.add_argument("--scene-dir", default="outputs/exp/20261021_wristcam_scenes")
     args = parser.parse_args()
     evidence = validate(args.scene_dir)
     print(json.dumps({key: value for key, value in evidence.items() if key != "results"}, indent=2))

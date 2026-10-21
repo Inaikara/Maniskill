@@ -23,7 +23,7 @@ from examples.baselines.constrain.constrain_dataset import (
     official_window_slices,
 )
 
-REAL_DEMO = "outputs/stackcube_obstacle/trajectory.h5"
+REAL_DEMO = "demos/StackCube-obstacle/trajectory.h5"
 
 
 def write_fake_demo(path, lengths=(6, 9), obs_dim=51, act_dim=7):
@@ -62,7 +62,7 @@ def test_real_dataset_all_100_no_holdout():
     transition slice available (no holdout), 51d obs and 4d action windows."""
     ds = ConstrainDemoDataset(REAL_DEMO)
     assert len(ds.trajectory_lengths) == 100
-    assert len(ds) == 10456 - 100  # sum(L) - num_traj slices
+    assert len(ds) == 9461  # all windows from the formal wristcam dataset
     item = ds[0]
     assert item["observations"].shape == (2, 51)
     assert item["actions"].shape == (16, 4)

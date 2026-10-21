@@ -84,7 +84,8 @@ def build(output_dir, seed=10000):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output-dir", default="outputs/wristcam_eval_scenes_20261021")
+    from examples.baselines.constrain.output_paths import experiment_dir
+    parser.add_argument("--output-dir", default=str(experiment_dir("wristcam_scenes")))
     parser.add_argument("--seed", type=int, default=10000)
     args = parser.parse_args()
     result = build(args.output_dir, args.seed)

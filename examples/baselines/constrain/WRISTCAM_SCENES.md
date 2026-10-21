@@ -33,8 +33,9 @@ exit). No budget was expanded.
 
 ## Collection results
 
-Output directory: `outputs/wristcam_eval_scenes_20261021/`. The complete
-original expert collection remains under its `witness/` child. The independent
+Current directory: `outputs/exp/20261021_wristcam_scenes/` (see [OUTPUTS.md](OUTPUTS.md)).
+Expert-success trajectories and metadata remain under its `witness/` child;
+the large intermediate template report was removed during cleanup. The independent
 scene store is `scenes.h5` plus `manifest.json`; loading it does not read
 `witness/`, `trajectory.h5`, the training demonstrations, or any earlier output.
 
@@ -84,7 +85,7 @@ import examples.baselines.constrain  # register StackCubeObstacle-v1
 from examples.baselines.constrain.scene_set import SceneSet, restore_scene
 from examples.baselines.constrain.stackcube_obstacle import ENV_ID
 
-scenes = SceneSet("outputs/wristcam_eval_scenes_20261021")
+scenes = SceneSet("outputs/exp/20261021_wristcam_scenes")
 scene = scenes.load(0)  # no expert or collection is run here
 cylinder = scene.metadata["cylinder"]
 env = gym.make(
@@ -117,10 +118,10 @@ source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
 conda activate maniskill
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 /usr/bin/time -f 'PROCESS_WALL_SECONDS=%e' \
   timeout --kill-after=5s 3600s python -m examples.baselines.constrain.build_wristcam_scenes \
-  --output-dir outputs/wristcam_eval_scenes_20261021 --seed 10000
+   --output-dir outputs/exp/YYYYMMDD_HHMMSS_wristcam_scenes --seed 10000
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 /usr/bin/time -f 'ROUNDTRIP_WALL_SECONDS=%e' \
   timeout --kill-after=5s 600s python -m examples.baselines.constrain.validate_wristcam_scenes \
-  --scene-dir outputs/wristcam_eval_scenes_20261021
+   --scene-dir outputs/exp/20261021_wristcam_scenes
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 180s \
   python -m pytest examples/baselines/constrain/tests -q
 ```
