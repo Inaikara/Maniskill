@@ -91,6 +91,24 @@ def test_write_config_records_exact_config(tmp_path):
     assert config == dict(seed=1, total_iters=30000, batch_size=1024)
 
 
+def test_main_embeds_compact_provenance_in_checkpoint_and_run_config(tmp_path):
+    from examples.baselines.constrain.train_constrain import main
+
+    provenance = tmp_path / "provenance.json"
+    identity = {"dataset_sha256": "c4811f0d", "generator_fingerprint": "a5390e17"}
+    provenance.write_text(json.dumps(identity))
+    run_dir = tmp_path / "run"
+    main([
+        "--demo-path", REAL_DEMO, "--base-checkpoint", str(DEFAULT_CKPT),
+        "--total-iters", "3", "--batch-size", "4", "--device", "cpu",
+        "--run-dir", str(run_dir), "--provenance-json", str(provenance),
+    ])
+    config = json.loads((run_dir / "run_config.json").read_text())
+    assert config["provenance"] == identity
+    checkpoint = torch.load(run_dir / "checkpoints" / "final.pt", map_location="cpu", weights_only=False)
+    assert checkpoint["config"]["provenance"] == identity
+
+
 def test_save_constrain_checkpoint_is_atomic_over_leftover_tmp(tmp_path):
     """A leftover .tmp from an interrupted prior save never corrupts the next
     checkpoint: the target file is always a complete, loadable artifact and

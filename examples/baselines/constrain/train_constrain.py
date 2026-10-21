@@ -73,6 +73,8 @@ def parse_args(argv=None):
                    help="periodic checkpoint interval (a final checkpoint is always saved)")
     p.add_argument("--loss-log-size", type=int, default=200,
                    help="number of most recent losses stored in the checkpoint")
+    p.add_argument("--provenance-json", type=Path, default=None,
+                   help="compact frozen dataset/generator identity to embed in checkpoints")
     return p.parse_args(argv)
 
 
@@ -145,6 +147,7 @@ class ConstrainTrainer:
         norm_cfg=None,
         resume=None,
         loss_log_size=200,
+        provenance=None,
     ):
         self.demo_path = Path(demo_path)
         self.base_checkpoint = Path(base_checkpoint)
@@ -159,6 +162,7 @@ class ConstrainTrainer:
         self.norm_cfg = norm_cfg if norm_cfg is not None else ConditionNormConfig()
         self.resume = Path(resume) if resume is not None else None
         self.loss_log_size = loss_log_size
+        self.provenance = provenance
         self.loss_history = []
         self.step = 0
         self.dataset = None
@@ -220,6 +224,9 @@ class ConstrainTrainer:
             self.step = int(ck["step"])
             self.loss_history = list(ck.get("config", {}).get("training", {}).get("loss_history", []))
             self.base_info = dict(ck["config"]["base_weights"])
+            saved_provenance = ck["config"].get("provenance")
+            if saved_provenance != self.provenance:
+                raise ValueError("resume provenance does not match checkpoint data identity")
             self._build_trainables(self.denoiser.trainable_parameters())
             if ck.get("optimizer") is not None:
                 self.optimizer.load_state_dict(ck["optimizer"])
@@ -327,6 +334,8 @@ class ConstrainTrainer:
         if base_info is None:
             raise RuntimeError("base weight source not recorded (call setup() first)")
         config["base_weights"] = base_info
+        if self.provenance is not None:
+            config["provenance"] = self.provenance
         return config
 
     def save_checkpoint(self, path):
@@ -395,6 +404,7 @@ def main(argv=None):
     run_dir = args.run_dir if args.run_dir is not None else (
         _REPO_ROOT / "outputs" / "constrain_runs" / f"run_seed{args.seed}_iters{args.total_iters}"
     )
+    provenance = json.loads(args.provenance_json.read_text()) if args.provenance_json else None
     trainer = ConstrainTrainer(
         demo_path=args.demo_path,
         base_checkpoint=args.base_checkpoint,
@@ -408,6 +418,7 @@ def main(argv=None):
         run_dir=run_dir,
         resume=args.resume,
         loss_log_size=args.loss_log_size,
+        provenance=provenance,
     )
     trainer.setup()
 
@@ -441,6 +452,7 @@ def main(argv=None):
             pred_horizon=dataset.pred_horizon,
         ),
         base_weights=dict(trainer.base_info),
+        provenance=provenance,
         outputs=dict(run_dir=str(run_dir), checkpoints=str(Path(run_dir) / "checkpoints")),
     ))
     print(f"run config written: {run_dir / 'run_config.json'}", flush=True)
