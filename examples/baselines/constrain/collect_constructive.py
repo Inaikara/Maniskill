@@ -95,7 +95,7 @@ CYLINDER_STRIP_FRACTION = (0.30, 0.70)
 CYLINDER_ENDPOINT_SLACK = 0.005
 CLEARANCE_TARGETS = ("roomy", "tight")
 
-STATE_LEAVES = ("actors/cubeA", "actors/cubeB", "articulations/panda")
+STATE_LEAVES = ("actors/cubeA", "actors/cubeB")
 PANDA_BASE_XY = (-0.615, 0.0)
 
 
@@ -159,7 +159,8 @@ class Config:
     # "state" observation keeps the standard aggregate T+1 obs row layout.
     max_episode_steps: int = 500
     obs_mode: str = "state"
-    robot_uids: str = "panda"
+    robot_uids: str = "panda_wristcam"
+    robot_init_qpos_noise: float = 0.02
 
     def env_kwargs(self) -> dict:
         return dict(
@@ -167,6 +168,7 @@ class Config:
             obs_mode=self.obs_mode,
             sim_backend="physx_cpu",
             robot_uids=self.robot_uids,
+            robot_init_qpos_noise=self.robot_init_qpos_noise,
             control_mode=TARGET_CONTROL_MODE,
             obstacle_radius=self.obstacle_radius_default,
             obstacle_height=self.obstacle_height,
@@ -472,13 +474,22 @@ def _robot_shape_cache(base) -> list:
     """Per-link collision geometry, cached once for footprint projection."""
     cache = []
     for link in base.agent.robot.links:
-        name = str(link.name)
-        if not name.startswith("panda"):
-            continue
         shapes = []
         for shape in link._bodies[0].collision_shapes:
             try:
                 vertices = common.to_numpy(shape.get_vertices())
+            except AttributeError:
+                get_half_size = getattr(shape, "get_half_size", None)
+                if get_half_size is None:
+                    continue
+                half_size = common.to_numpy(get_half_size()).reshape(3)
+                signs = np.array([
+                    [x, y, z]
+                    for x in (-1.0, 1.0)
+                    for y in (-1.0, 1.0)
+                    for z in (-1.0, 1.0)
+                ])
+                vertices = signs * half_size
             except Exception:
                 continue
             local = common.to_numpy(shape.get_local_pose().to_transformation_matrix())
@@ -544,16 +555,25 @@ def run_episode(env, plan: dict, cfg: Config, record_trace: bool = False,
     def tcp_xyz() -> np.ndarray:
         return common.to_numpy(base.agent.tcp.pose.p[0]).reshape(3)
 
-    def check_done(terminated, truncated, phase):
+    def check_done(terminated, truncated, phase, step_info=None):
         nonlocal early_success
+        if step_info is not None and "stack_success" in step_info:
+            stack_success = bool(
+                common.to_numpy(step_info["stack_success"]).reshape(-1)[0]
+            )
+        elif terminated:
+            stack_success = bool(
+                common.to_numpy(base.evaluate()["stack_success"]).reshape(-1)[0]
+            )
+        else:
+            stack_success = False
+        if stack_success:
+            early_success = True
+            return
         if truncated:
             raise PolicyFailure("episode_truncated", phase)
         if terminated:
-            info = base.evaluate()
-            if bool(common.to_numpy(info["success"]).reshape(-1)[0]):
-                early_success = True
-            else:
-                raise PolicyFailure("terminated_unsuccessful", phase)
+            raise PolicyFailure("terminated_unsuccessful", phase)
 
     def run_waypoint(phase, target, gripper, tolerance=None, require_convergence=True):
         nonlocal drift_max
@@ -570,7 +590,7 @@ def run_episode(env, plan: dict, cfg: Config, record_trace: bool = False,
             return action
 
         while True:
-            _, _, terminated, truncated, _ = env.step(stepped_action()[None])
+            _, _, terminated, truncated, step_info = env.step(stepped_action()[None])
             converged = tracker.step(tcp_xyz())
             quat_now = common.to_numpy(base.agent.tcp.pose.q[0]).reshape(4)
             drift_max = max(drift_max, _quat_angle(quat0, quat_now))
@@ -580,17 +600,21 @@ def run_episode(env, plan: dict, cfg: Config, record_trace: bool = False,
                 tcp_trace.append([float(v) for v in tcp_xyz()[:2]])
                 cube_now = common.to_numpy(base.cubeA.pose.p[0]).reshape(3)
                 cube_trace.append([float(v) for v in cube_now[:2]])
+            check_done(terminated, truncated, phase, step_info)
+            if early_success:
+                break
             if converged:
                 break
-            check_done(terminated, truncated, phase)
             if tracker.exhausted:
                 if require_convergence:
                     raise PolicyFailure("convergence_timeout", phase)
                 break
-        if phase == "hover" and cfg.hover_hold_steps > 0:
+        if phase == "hover" and cfg.hover_hold_steps > 0 and not early_success:
             for _ in range(cfg.hover_hold_steps):
-                _, _, terminated, truncated, _ = env.step(stepped_action()[None])
-                check_done(terminated, truncated, phase)
+                _, _, terminated, truncated, step_info = env.step(stepped_action()[None])
+                check_done(terminated, truncated, phase, step_info)
+                if early_success:
+                    break
         entry = dict(
             phase=phase, steps=tracker.step_index,
             max_error=tracker.max_error, final_error=tracker.final_error,
@@ -608,9 +632,11 @@ def run_episode(env, plan: dict, cfg: Config, record_trace: bool = False,
                 target, GRIPPER_CLOSE, cfg.waypoint_tolerance, cfg.max_steps_per_waypoint
             )
             for _ in range(cfg.grasp_steps):
-                _, _, terminated, truncated, _ = env.step(
+                _, _, terminated, truncated, step_info = env.step(
                     close_tracker.action_for(tcp_xyz())[None])
-                check_done(terminated, truncated, phase)
+                check_done(terminated, truncated, phase, step_info)
+                if early_success:
+                    break
             if not early_success:
                 info = base.evaluate()
                 if not bool(common.to_numpy(info["is_cubeA_grasped"]).reshape(-1)[0]):
@@ -626,8 +652,8 @@ def run_episode(env, plan: dict, cfg: Config, record_trace: bool = False,
         for _ in range(cfg.settle_steps):
             action = np.zeros(7, dtype=np.float32)
             action[GRIPPER_AXIS] = GRIPPER_OPEN
-            _, _, terminated, truncated, _ = env.step(action[None])
-            check_done(terminated, truncated, "settle")
+            _, _, terminated, truncated, step_info = env.step(action[None])
+            check_done(terminated, truncated, "settle", step_info)
             if early_success:
                 break
         phases.append(dict(phase="settle", steps=cfg.settle_steps,
@@ -685,12 +711,17 @@ def read_initial_robot_cube_state(h5_path: Path, traj_key: str) -> dict:
         trajectory = handle[traj_key]
         for leaf in STATE_LEAVES:
             state[leaf] = np.array(trajectory["env_states"][leaf][0])
+        articulations = trajectory["env_states/articulations"]
+        if len(articulations) != 1:
+            raise ValueError("expected exactly one robot articulation in initial state")
+        robot_uid = next(iter(articulations))
+        state[f"articulations/{robot_uid}"] = np.array(articulations[robot_uid][0])
     return state
 
 
 def initial_state_hash(state: dict) -> str:
     digest = hashlib.sha256()
-    for leaf in STATE_LEAVES:
+    for leaf in sorted(state):
         digest.update(leaf.encode("utf-8"))
         digest.update(np.ascontiguousarray(state[leaf], dtype=np.float32).tobytes())
     return digest.hexdigest()
@@ -969,6 +1000,9 @@ def collect(
         episodes=[],
         templates={},
         failures={},
+        candidate_templates=0,
+        no_obstacle_successful_templates=0,
+        cylinder_sampling_calls=0,
         accepted=0,
         physics_attempts=0,
         target_successes=int(config.target_successes),
@@ -1048,6 +1082,7 @@ def collect(
     for template_index in range(config.max_templates):
         if not budget_left():
             break
+        report["candidate_templates"] += 1
         show_stage("template", template_index)
         cubes = cube_sampler(rng, config)
         if cubes is None:
@@ -1076,6 +1111,7 @@ def collect(
         if not template_valid:
             record_failure(str(template_attempt.get("failure") or "template_failed"))
             continue
+        report["no_obstacle_successful_templates"] += 1
         template_record = dict(
             index=int(template_index),
             seed=seed,
@@ -1113,6 +1149,7 @@ def collect(
                         break
                     show_stage("sampling", template_index)
                     stage_started = time.perf_counter()
+                    report["cylinder_sampling_calls"] += 1
                     cylinder, reason = cylinder_sampler(
                         rng, template_view, config, getattr(config, f"{label}_clearance")
                     )
@@ -1151,7 +1188,7 @@ def collect(
                         )
                     if template_state is not None and not all(
                         np.array_equal(state[leaf], template_state[leaf])
-                        for leaf in STATE_LEAVES
+                        for leaf in state
                     ):
                         raise RuntimeError(
                             f"template {template_index}: reuse episodes do not share the "

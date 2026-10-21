@@ -25,9 +25,11 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+import gymnasium as gym
 from transforms3d.quaternions import qmult, quat2axangle, axangle2quat
 
 from examples.baselines.constrain import collect_constructive as cc
+from examples.baselines.constrain.stackcube_obstacle import ENV_ID
 
 
 def make_cubes(cube_a, cube_b, yaw_a=0.0, yaw_b=0.0):
@@ -89,6 +91,33 @@ def test_tracker_commands_clipped_deltas_with_zero_rotation():
     action = near.action_for(np.array([0.091, 0.1, 0.104]))
     np.testing.assert_allclose(action[:3], [0.09, 0.0, -0.04], atol=1e-7)
     assert action[6] == pytest.approx(cc.GRIPPER_OPEN)
+
+
+def test_collection_config_preserves_native_stackcube_wristcam_and_reset_noise():
+    config = cc.Config()
+
+    assert config.env_kwargs()["robot_uids"] == "panda_wristcam"
+    assert config.env_kwargs()["control_mode"] == "pd_ee_delta_pose"
+    assert config.env_kwargs()["robot_init_qpos_noise"] == pytest.approx(0.02)
+    assert config.env_kwargs()["num_envs"] == 1
+    assert config.env_kwargs()["sim_backend"] == "physx_cpu"
+    assert config.env_kwargs()["max_episode_steps"] == 500
+
+
+def test_wristcam_collision_geometry_is_retained_for_footprint_sampling():
+    env = gym.make(ENV_ID, **cc.Config().env_kwargs())
+    try:
+        env.reset(seed=0)
+        cache = cc._robot_shape_cache(env.unwrapped)
+        camera_shapes = [
+            shape
+            for link, shapes in cache if str(link.name) == "camera_link"
+            for shape in shapes
+        ]
+        assert camera_shapes
+        assert sum(vertices.shape[0] for _, vertices in camera_shapes) > 0
+    finally:
+        env.close()
 
 
 def test_tracker_converges_records_errors_and_exhausts_budget():
@@ -390,6 +419,35 @@ def test_run_episode_descend_does_not_gate_on_convergence_and_records_trace():
     assert cube[:, 1].max() >= 0.30 - 0.05
 
 
+def test_run_episode_stops_at_first_stack_success_even_with_same_step_violation():
+    cfg = cc.Config()
+    env = StubEnv(lambda step: 0.0)
+    step_calls = []
+    env.base.evaluate = lambda: dict(
+        success=np.array([False]),
+        stack_success=np.array([True]),
+        obstacle_collision=np.array([True]),
+        obstacle_crossing=np.array([False]),
+        is_cubeA_grasped=np.array([False]),
+    )
+    def step(action):
+        step_calls.append(action)
+        return (
+            None, 0.0, True, False,
+            dict(success=np.array([False]), stack_success=np.array([True]),
+                 obstacle_collision=np.array([True]), obstacle_crossing=np.array([False])),
+        )
+
+    env.step = step
+
+    trace = cc.run_episode(env, build_stub_plan(cfg), cfg)
+
+    assert trace["stack_success"] is True
+    assert trace["success"] is False
+    assert trace["obstacle_collision"] is True
+    assert len(step_calls) == 1
+
+
 # --------------------------------------------------------------------------- #
 # collect() seam: ordering, reuse, budgets, initial-state equality
 # --------------------------------------------------------------------------- #
@@ -590,6 +648,27 @@ def test_collect_verifies_identical_initial_state_from_h5(tmp_path):
         run_collect(tmp_path / "mismatch", recorder)
 
 
+def test_initial_state_signature_accepts_native_wristcam_articulation(tmp_path):
+    path = tmp_path / "wristcam.h5"
+    with h5py.File(path, "w") as handle:
+        trajectory = handle.create_group("traj_0")
+        states = trajectory.create_group("env_states")
+        actors = states.create_group("actors")
+        actors.create_dataset("cubeA", data=np.zeros((2, 13), dtype=np.float32))
+        actors.create_dataset("cubeB", data=np.ones((2, 13), dtype=np.float32))
+        articulations = states.create_group("articulations")
+        articulations.create_dataset(
+            "panda_wristcam", data=np.full((2, 9), 0.25, dtype=np.float32)
+        )
+
+    state = cc.read_initial_robot_cube_state(path, "traj_0")
+
+    assert set(state) == {
+        "actors/cubeA", "actors/cubeB", "articulations/panda_wristcam"
+    }
+    assert len(cc.initial_state_hash(state)) == 64
+
+
 def test_collect_writes_report_stage_timings_and_denominators(tmp_path):
     recorder = FakeRecorder()
     report = run_collect(tmp_path / "timings", recorder)
@@ -603,6 +682,9 @@ def test_collect_writes_report_stage_timings_and_denominators(tmp_path):
                          if call["request"]["kind"] == "obstacle"]
     assert len(report["episodes"]) == len(obstacle_attempts)
     assert report["physics_attempts"] == len(report["episodes"])
+    assert report["candidate_templates"] == 2
+    assert report["no_obstacle_successful_templates"] == 2
+    assert report["cylinder_sampling_calls"] == 4
     assert report["valid_per_minute"] > 0
     metadata = json.loads((tmp_path / "timings" / "trajectory.json").read_text())
     first = metadata["episodes"][0]
