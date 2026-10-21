@@ -126,3 +126,82 @@ tests pass (21 tests); the full required suite passes (147 tests in 39.91 s).
 
 The preliminary failed/diagnostic output directories were removed after the
 verified run; only `outputs/wristcam_pilot_20261021_verified/` is retained.
+
+## Supplemental geometry-prior optimization (round 2)
+
+The user approved the original five trajectories. This supplemental run retains
+the original artifacts above and writes to
+`outputs/wristcam_pilot_20261021_geometry_prior_optimized/`. The new run is
+awaiting a separate user review/approval. Ticket 02, formal 100-trajectory
+collection, training, and branch integration have not been started.
+
+### Change and distribution
+
+Profiling evidence from the first run identified repeated dense
+candidate-by-footprint distance arrays in `sample_cylinder` as the costly
+geometry operation. The implementation now builds a SciPy `cKDTree` over the
+complete recorded swept footprint and queries exact nearest footprint points
+for each surviving candidate. Candidate lateral offsets now use a directional
+prior: rank the two sides of the direct A→B segment by the nearest footprint
+projection to a 0.04 m lateral reference, prefer the less occupied side, and
+draw offset magnitude uniformly from 50–100% of the unchanged blocking limit.
+Longitudinal `t` remains uniform over 0.30–0.70; configured radius, endpoint,
+box, direct-blocking, full footprint, and clearance tests are unchanged. The
+selected center is still only a geometric candidate and must pass real physics
+and safety flags. This deliberately changes the cylinder center distribution
+toward the corridor opposite the recorded sweep; it does not change cube,
+waypoint, reset, expert, or safety distributions/parameters. The resolved prior
+and SciPy-backed exact query are recorded in the new `report.json` config.
+
+Red/green: the new seeded geometry behavior test failed against the old
+symmetric sampler (positive-side fraction 0.633 versus the required 0.8), then
+passed with the conditioned prior; existing exact geometry tests passed. The
+full required suite passed: 148 tests in 39.50 s.
+
+### Same-seed measured comparison
+
+Both trials use seed 0, target 5, reuse 1, at most 96 templates, 100 physical
+episodes, 40 cylinder sampling calls per reuse slot, and 500 steps per episode.
+Neither trial changed waypoint, speed, lift, reset, radius/box bounds, or safety
+thresholds.
+
+| Measure | Original verified run | Geometry-prior run | Denominator / interpretation |
+| --- | ---: | ---: | --- |
+| Candidate templates | 9 | 17 | considered before target |
+| No-obstacle expert successes | 9 | 17 | successes / candidates: 9/9; 17/17 |
+| Distinct output templates / accepted trajectories | 5 / 5 | 5 / 5 | each template retained once |
+| Cylinder sampling calls | 265 | 585 | calls through successful target completion |
+| `no_feasible_cylinder` | 260 | 580 | failed calls / calls: 260/265; 580/585 |
+| Geometrically feasible placements | 5 | 5 | selected placements |
+| Obstacle physics attempts / safe successes | 5 / 5 | 5 / 5 | successes / attempts: 100% both |
+| Sampling stage | 149.73 s | 1.80 s | cumulative actual collection stage |
+| Total elapsed | 169.21 s | 30.45 s | cumulative end-to-end collection |
+
+Sampling time decreased by 98.8% (about 83.4×), despite more candidate templates
+and more sampler calls. End-to-end time decreased by 82.0% (about 5.6×). The
+sampler-call geometric yield was 5/265 (1.89%) and 5/585 (0.85%); the higher
+call count is exposed rather than hidden. The actual five-trajectory sampling
+stage met the 60-second goal. These small pilot outcomes do not establish stable
+acceptance rates.
+
+### Artifact checks and reproducibility
+
+The saved `validation.json` is machine-readable evidence from the following
+validation command. It checks the reported five distinct templates, all five
+stack-success/no-collision/no-crossing flags in both report and trajectory
+metadata, 7D actions, 51D observations, T+1 states/observations, exactly zero
+rotation channels, and successful 4D/51D `ConstrainDemoDataset` loading (486
+training windows; no training run):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+timeout --kill-after=5s 30s python -m examples.baselines.constrain.validate_wristcam_pilot \
+  --dataset-dir outputs/wristcam_pilot_20261021_geometry_prior_optimized
+```
+
+The render command completed within its 180-second limit and produced
+`dataset.mp4` (496 frames). The original verified artifact directory remains
+intact. The prior and algorithm details above should be frozen before any
+subsequent larger collection; this report requests fresh user confirmation
+before Ticket 02.

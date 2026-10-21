@@ -239,6 +239,23 @@ def test_sample_cylinder_rejects_when_footprint_leaves_no_room():
     assert reason == "no_feasible_cylinder"
 
 
+def test_sample_cylinder_prior_favors_side_away_from_swept_footprint():
+    cfg = cc.Config()
+    cubes = FEASIBLE_CUBES
+    # The recorded detour occupies the negative-x side of the direct segment.
+    footprint = synthetic_footprint(cubes, np.array([-0.14, 0.17]))
+    template = dict(cubes=cubes, waypoint_xy=np.array([-0.14, 0.17]),
+                    carry_z=0.14, footprint=footprint)
+    rng = np.random.default_rng(0)
+    cylinders = [cc.sample_cylinder(rng, template, cfg, cfg.tight_clearance)[0]
+                 for _ in range(30)]
+    centers = np.asarray([cylinder["center_xy"] for cylinder in cylinders
+                          if cylinder is not None])
+    assert len(centers) >= 20
+    # The footprint projects to negative x relative to AB (which runs along y).
+    assert np.mean(centers[:, 0] > 0.0) >= 0.8
+
+
 def test_sample_cylinder_requires_cylinder_taller_than_carried_cube_top():
     cfg = cc.Config(obstacle_height=0.10)
     template = dict(

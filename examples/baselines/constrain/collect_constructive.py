@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 import numpy as np
+from scipy.spatial import cKDTree
 from tqdm.auto import tqdm
 
 import examples.baselines.constrain  # noqa: F401  (registers StackCubeObstacle-v1)
@@ -185,6 +186,11 @@ class Config:
         payload["waypoint_offset_range"] = list(WAYPOINT_OFFSET_RANGE)
         payload["waypoint_lead_fraction"] = WAYPOINT_LEAD_FRACTION
         payload["cylinder_strip_fraction"] = list(CYLINDER_STRIP_FRACTION)
+        payload["cylinder_sampling_prior"] = {
+            "side": "least-occupied footprint projection at 0.04 m lateral",
+            "magnitude_fraction": [0.5, 1.0],
+            "clearance": "exact cKDTree nearest-point query against full recorded footprint",
+        }
         payload["panda_base_xy"] = list(PANDA_BASE_XY)
         return payload
 
@@ -328,6 +334,15 @@ def sample_cylinder(
         return None, "degenerate_segment"
     along = ab / separation
     perpendicular = np.array([-along[1], along[0]])
+    footprint_side = (footprint - cube_a) @ perpendicular
+    # Prefer the side whose footprint projection is least occupied. This is a
+    # prior only: every sampled centre still passes the exact 2D clearance test.
+    side_scores = [
+        float(np.min(np.abs(footprint_side - sign * 0.04)))
+        for sign in (-1.0, 1.0)
+    ]
+    preferred_side = (-1.0, 1.0)[int(side_scores[1] > side_scores[0])]
+    footprint_tree = cKDTree(footprint)
     min_clearance = max(float(min_clearance), FOOTPRINT_MARGIN)
     box = cfg.layout.obstacle_xy_range
     batch = 512
@@ -336,7 +351,7 @@ def sample_cylinder(
         forbidden = radius + CUBE_XY_RADIUS + cfg.safety_margin
         max_lateral = forbidden - cfg.layout.min_segment_clearance - 1e-6
         t = rng.uniform(*CYLINDER_STRIP_FRACTION, size=batch)
-        lateral = rng.uniform(-1.0, 1.0, size=batch) * np.maximum(max_lateral, 0.0)
+        lateral = preferred_side * rng.uniform(0.5, 1.0, size=batch) * np.maximum(max_lateral, 0.0)
         centers = cube_a + t[:, None] * ab + lateral[:, None] * perpendicular
         keep = (
             (max_lateral > 0.0)
@@ -350,10 +365,8 @@ def sample_cylinder(
             if not len(index):
                 continue
             chunk = centers[index]
-            distances = np.linalg.norm(
-                footprint[None, :, :] - chunk[:, None, :], axis=2
-            )
-            achieved = distances.min(axis=1) - radius[index]
+            distances, _ = footprint_tree.query(chunk, k=1, workers=1)
+            achieved = distances - radius[index]
             feasible = np.nonzero(achieved >= min_clearance)[0]
             if len(feasible):
                 pick = index[feasible[0]]
