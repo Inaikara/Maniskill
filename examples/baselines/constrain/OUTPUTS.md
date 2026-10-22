@@ -151,7 +151,11 @@ per-policy summaries and paired comparison are under
 definitions are in `PICKCUBE_EVALUATION.md`. Both policies completed 100/100
 records with no runtime errors. Base DP/ConstrainNet task success was 82/83,
 safe success 2/38, obstacle contact 97/53, and XY crossing/timeouts 0/0 for
-each. Paired task outcomes were 71 both, 11 Base-only, 12 Constrain-only, 6
+each. A `termination_correction.json` sidecar corrects the 18/17 historical
+500-step episodes to control-step-limit outcomes (not environment terminals);
+the original episode records and summaries remain byte-identical and their
+hashes are pinned in the sidecar. Paired task outcomes were 71 both, 11
+Base-only, 12 Constrain-only, 6
 neither; paired safe outcomes were 1 both, 1 Base-only, 37 Constrain-only, 61
 neither. All full-state/controller/observation restore fingerprints matched
 across policy pairs and observations matched the catalog.

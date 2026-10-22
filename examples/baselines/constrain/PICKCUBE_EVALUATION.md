@@ -43,10 +43,15 @@ thresholds are diagnostic bins only and never substitute for native success.
 Native PickCube `native_success` is the task outcome. The runner finishes the
 entire control step on which it first becomes true, then stops. Contact and XY
 crossing are sticky; a same-step task success plus violation remains a task
-success and is not a safe success. A task episode terminates only at native
-success, environment termination/truncation, or 500 executed steps. Failures
-remain records in the fixed denominator of 100. Paired counts report both,
-base-only, constrain-only, and neither outcomes for task and safe success.
+success and is not a safe success. A task episode terminates at native success
+(which takes precedence when it coincides with a Gymnasium terminal flag), an
+environment terminal/truncation, or the 500-control-step cap. Truncation is
+reported as `timeout`, true environment `terminated` as
+`environment_terminal`, and reaching the cap without either flag as
+`control_step_limit`. Per-episode terminal flags are retained going forward.
+Wall-clock deadline failures remain runtime errors in the fixed denominator
+and have a separate diagnostic count. Paired counts report both, base-only,
+constrain-only, and neither outcomes for task and safe success.
 
 The 100 scenes share one generator and use a fixed base-side detour; this does
 not establish left/right path-choice ability or train/test isolation. Video
@@ -61,12 +66,22 @@ summaries and representative videos, and `paired_summary.json`. The summary
 contains measured results and restoration-equality evidence; the results below
 are copied from that completed run.
 
-The completed run recorded 100/100 episodes for each policy, with zero runtime
-errors. Base DP achieved 82/100 native task successes and 2/100 safe successes;
-ConstrainNet achieved 83/100 task successes and 38/100 safe successes. Obstacle
-contact counts were 97 and 53 respectively; XY forbidden crossings and
-timeouts were zero for both. Environment-terminal counts were 18 (Base DP) and
-17 (ConstrainNet); total executed control steps were 19,287 and 18,191. Paired
+The immutable original run recorded 100/100 episodes for each policy, with zero
+runtime errors. Its original summary mislabeled every 500-step control-cap
+episode as an environment terminal because it had not retained the actual
+Gymnasium flags. The additive `termination_correction.json` records the
+correction and pins all source artifacts. All 35 original non-success episodes
+(18 Base DP, 17 ConstrainNet) recorded exactly 500 steps, matching the frozen
+cap; the runner loop stopped at that count. Thus the corrected categories are
+0 timeouts, 18/17 control-step-limit outcomes, and 0 environment terminals.
+This classification is derived from saved step counts and the frozen cap; it
+does not claim the missing historical native flag values were newly observed.
+Success, safety, contact, crossing, episode action traces, and videos are
+unchanged. Base DP achieved 82/100 native task successes and 2/100 safe
+successes; ConstrainNet achieved 83/100 task successes and 38/100 safe
+successes. Obstacle contact counts were 97 and 53 respectively; XY forbidden
+crossings and timeouts were zero for both. Total executed control steps were
+19,287 and 18,191. Paired
 task outcomes were both 71, Base-only 11, Constrain-only 12, neither 6. Paired
 safe outcomes were both 1, Base-only 1, Constrain-only 37, neither 61. All 100
 scene IDs, restored full-state hashes, controller-state hashes and initial

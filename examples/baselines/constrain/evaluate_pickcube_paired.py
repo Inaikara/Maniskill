@@ -48,6 +48,19 @@ def _bool(info, name):
     return bool(np.asarray(value).reshape(-1)[0])
 
 
+def classify_termination(native_success, terminated, truncated, elapsed_steps, max_steps):
+    """Classify completion with native success taking precedence on its step."""
+    if native_success:
+        return "native_success"
+    if truncated:
+        return "timeout"
+    if terminated:
+        return "environment_terminal"
+    if elapsed_steps >= max_steps:
+        return "control_step_limit"
+    return None
+
+
 def _frame(env):
     frame = env.render()
     if torch.is_tensor(frame):
@@ -61,6 +74,9 @@ def summarize_episodes(rows, requested):
     return {
         "requested_denominator": requested, "evaluated": count,
         "runtime_errors": requested - count,
+        "wall_timeout_runtime_errors": sum(
+            row.get("error_kind") == "wall_timeout" for row in rows
+        ),
         "task_success_count": sum(r["native_success"] for r in evaluated),
         "task_success_rate": sum(r["native_success"] for r in evaluated) / requested,
         "safe_success_count": sum(r["safe_success"] for r in evaluated),
@@ -70,6 +86,9 @@ def summarize_episodes(rows, requested):
         "xy_crossing_count": sum(r["xy_forbidden_crossing"] for r in evaluated),
         "xy_crossing_rate": sum(r["xy_forbidden_crossing"] for r in evaluated) / requested,
         "timeout_count": sum(r["termination_reason"] == "timeout" for r in evaluated),
+        "control_step_limit_count": sum(
+            r["termination_reason"] == "control_step_limit" for r in evaluated
+        ),
         "environment_terminal_count": sum(
             r["termination_reason"] == "environment_terminal" for r in evaluated
         ),
@@ -127,8 +146,9 @@ class PickCubePairedEvaluator:
             first_success_step = None
             first_action = None
             actions = []
-            termination = "timeout"
+            termination = None
             native_success = False
+            terminated = truncated = False
             while elapsed < self.max_steps:
                 queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)
                 condition = self.adapter.base_cond(queued)
@@ -141,32 +161,41 @@ class PickCubePairedEvaluator:
                     native_sequence = self.adapter.map_action(prediction)
                 for action in native_sequence[0][:min(8, self.max_steps - elapsed)]:
                     action_cpu = action.detach().cpu().numpy()
-                    obs, _, terminated, truncated, info = env.step(action_cpu[None])
+                    obs, _, step_terminated, step_truncated, info = env.step(action_cpu[None])
                     elapsed += 1
+                    terminated = bool(terminated or step_terminated)
+                    truncated = bool(truncated or step_truncated)
                     actions.append(action_cpu.tolist())
                     if first_action is None:
                         first_action = action_cpu.tolist()
                     obs = np.asarray(obs.detach().cpu() if torch.is_tensor(obs) else obs,
                                      dtype=np.float32).reshape(-1)
                     history = np.concatenate((history[1:], obs[None]), axis=0)
-                    native_success |= _bool(info, "native_success")
+                    step_success = _bool(info, "native_success")
+                    native_success |= step_success
                     collision |= _bool(info, "obstacle_collision")
                     crossing |= _bool(info, "obstacle_crossing")
                     grasped |= _bool(info, "is_grasped")
                     cube_position = env.unwrapped.cube.pose.p[0].detach().cpu().numpy()
                     lifted |= bool(cube_position[2] > initial_cube_z + 0.04)
                     transported |= bool(np.linalg.norm(cube_position[:2] - goal_xy) < 0.10)
-                    if native_success and first_success_step is None:
+                    reason = classify_termination(
+                        step_success, step_terminated, step_truncated, elapsed, self.max_steps
+                    )
+                    if step_success and first_success_step is None:
                         first_success_step = elapsed
-                        termination = "native_success"
+                    if reason is not None:
+                        termination = reason
                     if writer is not None and not (terminated or truncated):
                         writer.append_data(_frame(env))
-                    if native_success or terminated or truncated or elapsed >= self.max_steps:
-                        if not native_success and (terminated or truncated):
-                            termination = "environment_terminal"
+                    if reason is not None:
                         break
-                if native_success or terminated or truncated or elapsed >= self.max_steps:
+                if termination is not None:
                     break
+            if termination is None:
+                termination = classify_termination(
+                    native_success, terminated, truncated, elapsed, self.max_steps
+                )
             safe_success = native_success and not collision and not crossing
             record = {
                 "scene_index": index, "scene_id": scene["metadata"]["scene_id"],
@@ -180,6 +209,7 @@ class PickCubePairedEvaluator:
                 "actions_native_pd_ee_delta_pose": actions,
                 "result": {
                     "termination_reason": termination, "elapsed_steps": elapsed,
+                    "terminated": terminated, "truncated": truncated,
                     "native_success": native_success, "safe_success": safe_success,
                     "obstacle_contact": collision, "xy_forbidden_crossing": crossing,
                     "ever_grasped": grasped,
@@ -217,6 +247,8 @@ class PickCubePairedEvaluator:
                     record = {"scene_index": index, "scene_id": scene["metadata"]["scene_id"],
                               "seed": int(scene["metadata"]["seed"]), "status": "runtime_error",
                               "error": f"{type(exc).__name__}: {exc}"}
+                    if isinstance(exc, EpisodeDeadline):
+                        record["error_kind"] = "wall_timeout"
                 finally:
                     signal.setitimer(signal.ITIMER_REAL, 0)
                     signal.signal(signal.SIGALRM, previous_handler)
