@@ -408,6 +408,21 @@ The 350-update budget is deliberately small (full 30000-update training and
 the 100-episode randomized evaluation are Ticket 04 work); the rollout is a
 behavior record, not an avoidance acceptance gate.
 
+## PickCube Base DP (Ticket 03)
+
+PickCube uses the independent `pickcube_base_dp.py` adapter and
+`train_pickcube_base_dp.py` entry point. It trains a fresh official UNet at the
+native PickCube 42d state / 7d `pd_ee_delta_pose` contract, using only the
+formal 1,000 direct demos; it does not reuse the StackCube checkpoint or
+StackCube adapter contract. The 45d obstacle observation is schema-checked at
+runtime and only its verified 42d state prefix enters the base network.
+
+The completed 30,000-update configuration, dataset/checkpoint identities,
+training losses and independent short obstacle-scene rollout are recorded in
+[PICKCUBE_TRAINING.md](PICKCUBE_TRAINING.md). The checkpoint's EMA network can
+be loaded through `PickCubeBaseDPAdapter.initialize_constrain_base()` for the
+task-specific ConstrainNet branch.
+
 ## Full training, verification and paired evaluation (Ticket 04)
 
 ```bash

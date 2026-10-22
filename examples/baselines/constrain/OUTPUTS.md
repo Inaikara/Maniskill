@@ -1,7 +1,8 @@
 # Output layout and retained artifacts
 
 Training demonstrations and their collection/validation metadata live under
-`demos/<dataset-name>/`. The formal obstacle dataset is `demos/StackCube-obstacle/`.
+`demos/<dataset-name>/`. Formal obstacle datasets are `demos/StackCube-obstacle/`
+and `demos/PickCube-obstacle/`.
 `outputs/` has two purpose-specific directories:
 
 - `ckpt/`: model weights, separate from training logs.
@@ -36,13 +37,17 @@ demos/
 outputs/
 ├── ckpt/
 │   ├── base_dp_stackcube_980/best_eval_success_at_end.pt
-│   └── constrainnet_wristcam_seed1/final.pt
+│   ├── constrainnet_wristcam_seed1/final.pt
+│   └── 20261022_144000_pickcube_base_dp/final.pt
 └── exp/
     ├── 20260930_base_dp_stackcube_980_seed1/
     ├── 20261021_constrainnet_wristcam_seed1/
     ├── 20261021_wristcam_scenes/
     ├── 20261021_wristcam_paired_eval/
-    └── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
+    ├── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
+    ├── 20261022_143200_pickcube_base_dp_probe/  # bounded 45-second batch/memory probe
+    ├── 20261022_144000_pickcube_base_dp/  # 30,000-update Base DP training
+    └── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -86,6 +91,13 @@ Collection took 1,503.52 s. All 1,100 episodes passed full native-state,
 controller-state, observation, terminal/safety, and training-window validation;
 the manifest and detailed evidence are under
 `outputs/exp/20261022_132753_pickcube_formal/validation_full_contract/`.
+
+Ticket 03's independent PickCube Base DP, full configuration, complete update
+log, checkpoint and short interface rollout are documented in
+`PICKCUBE_TRAINING.md`. The 1,000 direct demonstrations alone were used; the
+100 obstacle examples were filtered out by the frozen episode manifest. The
+full 30,000-update run completed in 896.09 seconds and its final EMA checkpoint
+is stored separately under `outputs/ckpt/`.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
