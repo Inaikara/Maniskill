@@ -96,7 +96,8 @@ outputs/
     ├── 20261022_200700_placesphere_constrain/  # failed before update 1
     ├── 20261022_200800_placesphere_constrain/  # retained run with failed verification
     ├── 20261022_201100_placesphere_constrain/  # verified 30,000 updates, source/loss evidence
-    └── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
+    ├── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
+    └── 20261022_205500_placesphere_scenes/  # Ticket 11 fixed scenes and restore audit
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -106,6 +107,31 @@ trajectories. The paired evaluation retains both policies' 100 episode records,
 manifests, summaries, videos and final audit. Superseded exploratory profiling
 outputs and the large intermediate scene-template report were removed during
 cleanup; listed PickCube diagnostic and pilot runs are retained.
+
+## PlaceSphere fixed scenes (Ticket 11)
+
+`placesphere_scenes.py` builds an independent fixed 100-scene catalog using
+the frozen formal contract. The run directory belongs under `outputs/exp/` and
+contains full native initial states, controllers, 42D raw/39D policy
+observations, expert actions/traces, actual cylinder measurements, seeds,
+layout/side/waypoint records, source snapshots, frozen-contract identity,
+attempt journal, exact counts/timings, manifest and checksums.
+`PlaceSphereSceneSet` validates these identities before exposing any scene;
+`restore()` reconstructs the physical cylinder and task/controller/safety state
+in a fresh native environment. `PLACE_SPHERE_SCENES.md` documents the recipe,
+tolerances, commands and acceptance evidence. Ticket 11 does not run policy
+evaluation and makes no isolation or cross-set deduplication claim.
+
+Completed at `outputs/exp/20261022_205500_placesphere_scenes/`: 100/100
+accepted scenes from 166 actual complete runner invocations in 620.515 s
+(1,000-attempt/3,600-second budgets); failures were 63 template native
+failures, 1 cylinder-search exhaustion and 2 obstacle replay failures. All 100
+expert records prove native terminal success plus post-release no-contact/no-
+crossing safety. The two-fresh-environment audit passed 100/100 with exactly
+reproducible actual full-state/controller/raw/policy fingerprints; maximum
+recorded-vs-restored norms are all zero under 1e-7 limits. Artifact/source
+identities, detailed phase and stage counts, and the explicit two historical
+source-pin deltas are in `PLACE_SPHERE_SCENES.md` and the experiment directory.
 
 ## PickCube pilot attempts
 

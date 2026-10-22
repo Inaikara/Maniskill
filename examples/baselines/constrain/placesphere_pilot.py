@@ -406,6 +406,7 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
         trace["phases"].append({"phase": phase, "reached": ok})
     if ok:
         phase = "release_retreat"
+        release_begin = len(actions)
         retreat = goal.copy(); retreat[2] += 0.08
         retreat_reached = move(torch.as_tensor(retreat, device=base.device, dtype=torch.float32), chosen.q, grip=1.0)
         trace["phases"].append({"phase": "release_open_and_retreat", "reached": retreat_reached})
@@ -418,6 +419,23 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
         trace["phases"].append({"phase": "settle", "control_steps": settle_steps})
     native = bool(base.evaluate()["native_success"][0].item())
     final_info = infos[-1]
+    release_index = next((index for index in range(release_begin, len(infos))
+        if not bool(torch.as_tensor(infos[index].get("is_obj_grasped", True)).reshape(-1)[0])), None) if ok else None
+    release_rows = infos[release_index:] if release_index is not None else []
+    trace["release_control_step"] = release_index
+    trace["post_release_control_steps"] = len(release_rows)
+    trace["post_release_safety"] = {
+        "checked_through_native_success": bool(native and release_rows),
+        "all_ungrasped": bool(release_rows) and all(
+            not bool(torch.as_tensor(row.get("is_obj_grasped", True)).reshape(-1)[0]) for row in release_rows),
+        "no_obstacle_contact": bool(release_rows) and all(
+            not bool(torch.as_tensor(row.get("obstacle_collision", True)).reshape(-1)[0]) for row in release_rows),
+        "no_forbidden_crossing": bool(release_rows) and all(
+            not bool(torch.as_tensor(row.get("obstacle_crossing", True)).reshape(-1)[0]) for row in release_rows),
+        "terminal_on_bin": bool(torch.as_tensor(final_info.get("is_obj_on_bin", False)).reshape(-1)[0]),
+        "terminal_static": bool(torch.as_tensor(final_info.get("is_obj_static", False)).reshape(-1)[0]),
+        "terminal_ungrasped": not bool(torch.as_tensor(final_info.get("is_obj_grasped", True)).reshape(-1)[0]),
+    }
     return {"actions": np.asarray(actions, dtype=np.float32), "states": states,
         "observations": observations, "raw_observations": np.asarray(raw_observations, dtype=np.float32),
         "infos": infos, "terminated": np.asarray(terminated, dtype=np.uint8),
@@ -559,7 +577,9 @@ def _attempt(kind, seed, rng, config):
                         "safe_success": result["safe_success"],
                         "final_info": _json(result["final_info"]),
                         "trace": result["trace"],
-                        "final_sphere_pose": base.obj.pose.raw_pose.detach().cpu().tolist()}}, None
+                         "final_sphere_pose": base.obj.pose.raw_pose.detach().cpu().tolist()}}, None
+            result["trace"]["actual_cylinder_radius_m"] = float(base.obstacle_collision_radius)
+            result["trace"]["actual_cylinder_height_m"] = float(base.obstacle_collision_height)
             result["trace"]["initial_state_identity"]={
                 "template_native_state_sha256_excluding_obstacle_pose_condition":_tree_sha256(template_state,True),
                 "obstacle_native_state_sha256_excluding_obstacle_pose_condition":_tree_sha256(result["initial_state"],True),
