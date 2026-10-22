@@ -108,3 +108,16 @@ fixed base-side detour rather than testing a choice among route sides. The
 observed task, safety, contact and crossing results describe these models on
 these fixed obstacle scenes only. They imply neither a general path-selection
 capability nor a safety guarantee.
+
+## Goal completion audit
+
+The 12-ticket acceptance and retained-artifact identity audit is recorded at
+`outputs/exp/20261022_221641_multitask_obstacle_completion_audit/audit.json`
+(SHA-256 `c10fd9a5e256c6b7ac5f08f2eb401c55ecda853415b8cb2d26b50c3eee0ea15a`).
+It maps each issue acceptance bullet to its evidence, records checked dataset,
+checkpoint, scene, paired-summary, correction and video identities, and lists
+known caveats. The true goal-start base is
+`fb21bd47f3a4d8c11ac71b6be4759aca5b5018cf`; round-25 base and audited HEAD are
+`f09237a42d4e2fefbb661644918373991a2da640`. The complete goal-base-to-HEAD
+diff contains 50 paths, all under `examples/baselines/constrain/`. Round 25 is
+still uncommitted, so no final commit SHA exists; the goal branch is not merged.

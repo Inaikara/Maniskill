@@ -99,9 +99,9 @@ outputs/
     ├── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
     ├── 20261022_205500_placesphere_scenes/  # Ticket 11 fixed scenes and restore audit
     ├── 20261022_205500_placesphere_paired_eval/  # retained source-path preflight failure
-    ├── 20261022_212200_placesphere_paired_eval/  # retained failed paired-audit attempt
+    ├── 20261022_212200_placesphere_paired_eval/  # retained paired-audit failure
     ├── 20261022_213500_placesphere_paired_eval/  # Ticket 12 complete 100 x 2 paired evaluation
-    └── 20261022_220000_placesphere_paired_eval/  # retained serialization failure
+    └── 20261022_220000_placesphere_paired_eval/  # retained NumPy-boolean serialization failure
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -343,6 +343,16 @@ documented in `PLACE_SPHERE_EVALUATION.md` and
 `outputs/exp/20261022_213500_placesphere_paired_eval/` contains exactly 100
 records per policy, fixed preselected scene videos, paired restoration
 fingerprint audit, source snapshots, and checksums. Both models completed all
-200 episodes without runtime errors. Three earlier write-once run directories
-are retained with their provenance, serialization, and paired-condition defects;
-they are explicitly excluded from the final metrics.
+200 episodes without runtime errors. Three non-qualifying write-once run directories
+are retained with their source-path, paired-condition, and serialization defects;
+they are explicitly excluded from the final metrics. The run metadata does not
+establish their chronological order, so directory timestamp labels are not used
+to infer it; `PLACE_SPHERE_EVALUATION.md` identifies each attempt by path.
+
+The corrected goal-wide completion audit is
+`outputs/exp/20261022_221641_multitask_obstacle_completion_audit/audit.json`
+(SHA-256 `c10fd9a5e256c6b7ac5f08f2eb401c55ecda853415b8cb2d26b50c3eee0ea15a`). It distinguishes true goal-start base
+`fb21bd47f3a4d8c11ac71b6be4759aca5b5018cf` from round-25 base/audited HEAD
+`f09237a42d4e2fefbb661644918373991a2da640`; its full goal-base-to-HEAD diff
+scope is 50 paths, all under `examples/baselines/constrain/`. Round 25 remains
+uncommitted; no final commit SHA is assigned.

@@ -117,13 +117,18 @@ the completed run. The source copy of this evaluator is SHA-256
 | Base DP video | `4d2887209d25a5e2d50b084f26408fe5e20b1388f4bd073a6987f0a247cb220d` |
 | ConstrainNet video | `6bad861544b2eef9b079e40974aa201c6bb0b0759893b70c2984e26d2e634a46` |
 
-Three earlier evaluator attempts are retained as immutable failed evidence; none
-contributes to these metrics. The first stopped in pre-episode source-path
-validation; the next failed on NumPy-boolean JSON serialization; the third
+Three non-qualifying evaluator attempts are retained as immutable evidence; none
+contributes to these metrics. The run at
+`outputs/exp/20261022_205500_placesphere_paired_eval/` stopped in pre-episode
+source-path validation; `outputs/exp/20261022_212200_placesphere_paired_eval/`
 recorded episodes but exposed the Base adapter's distinct condition shape in
-the paired audit. The fourth directory is the completed corrected run described
-above. Each restart used a new output directory; no result-driven scene, weight,
-or configuration selection was performed. After the run, a reporting-only
+the paired audit; and `outputs/exp/20261022_220000_placesphere_paired_eval/`
+failed on NumPy-boolean JSON serialization. The available run manifests and
+frozen source snapshots do not record trustworthy wall-clock start/end times for
+all attempts, so their directory timestamp labels are not used to assert
+chronological order. Each attempt has a distinct output directory; no
+result-driven scene, weight, or configuration selection was performed. After
+the completed run, a reporting-only
 checksum-index correction excluded `manifest.json` from its own recursive index
 and updated the manifest to pin the final index. No episode, model, scene,
 configuration or video bytes changed. The earlier index, exact captured
@@ -136,3 +141,11 @@ scene, Base DP and ConstrainNet source archives (including `pickcube_expert.py`,
 `conditional_unet1d.py`).
 The final index covers all final files other than itself and the manifest (which
 pins the index hash).
+
+The corrected goal-wide audit is
+`outputs/exp/20261022_221641_multitask_obstacle_completion_audit/audit.json`
+(SHA-256 `c10fd9a5e256c6b7ac5f08f2eb401c55ecda853415b8cb2d26b50c3eee0ea15a`). It records true goal-start base
+`fb21bd47f3a4d8c11ac71b6be4759aca5b5018cf` separately from round-25 base/audited
+HEAD `f09237a42d4e2fefbb661644918373991a2da640`; the complete goal diff scope
+is 50 files, all within `examples/baselines/constrain/`. The current round is
+uncommitted and has no final commit SHA.
