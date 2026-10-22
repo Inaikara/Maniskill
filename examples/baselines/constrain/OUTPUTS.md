@@ -74,6 +74,9 @@ minibatch evidence, and both representative videos are under
 `outputs/exp/20261022_130421_pilot/`, with a video/validation identity record in
 `diagnostics/pilot_evidence.json`. The saved official epsilon-loss is finite;
 see `PICKCUBE_PILOT.md` for restoration and safety diagnosis.
+Round-10 retrospective source/recipe provenance and per-trajectory base XY
+side audit are new sidecars in that same dataset directory; they preserve the
+identities and historical status of the original collection metadata.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and

@@ -11,6 +11,17 @@ from examples.baselines.constrain.pickcube_pilot import (
     _safe_cylinder_candidates,
     collect_pilot,
 )
+from examples.baselines.constrain.pickcube_provenance import base_line_distance, canonical_json_hash
+
+
+def test_provenance_canonical_hash_is_order_independent_and_mutation_sensitive():
+    assert canonical_json_hash({"a": 1, "b": [2]}) == canonical_json_hash({"b": [2], "a": 1})
+    assert canonical_json_hash({"a": 1}) != canonical_json_hash({"a": 2})
+
+
+def test_base_line_distance_handles_degenerate_segment_and_ordinary_perpendicular():
+    assert base_line_distance([0, 0], [0, 0], [3, 4]) == 5
+    assert base_line_distance([0, 0], [2, 0], [1, 3]) == 3
 
 
 def test_dataset_keeps_native_seven_dimensional_actions_and_validates_t_plus_one(tmp_path):

@@ -1,5 +1,35 @@
 # PickCube obstacle pilot — round 9 evidence
 
+## Round 10 provenance and base-side audit
+
+The complete retrospective supplement is
+`demos/PickCube-obstacle/20261022_130421_pilot/provenance_supplement.json`;
+its canonical resolved recipe SHA-256 is recorded there. The full resolved
+contract includes start/goal sampling ranges, shared layout filters, waypoint
+sampling, cylinder candidate grid and both clearance filters, Panda expert
+phases/action scaling/budgets, safety parameters, state semantics, and horizons.
+Committed generator source pins are for `d9288268b634e24f91a6c00332dfa057280cd7ee`
+and include per-file SHA-256 values; these match the current round-9 generator
+files. This is a retrospective audit supplement, not collection-time metadata.
+Existing files were hash-identified in place and were not rewritten.
+
+`base_xy_side_audit.json` reconstructs the base XY from each native initial
+Panda articulation state and cross-checks S/G, signed base side, line distance,
+and obstacle waypoint side from the saved per-episode layout/trace. It reports
+20/20 line-distance-filter passes for each class, direct min/max 0.06261/0.35389
+m and obstacle min/max 0.08537/0.51536 m. Base-side signs vary in both classes
+(direct 12/8, obstacle 16/4 for negative/positive), while only obstacle episodes
+have waypoints (20/20), demonstrating the shared base-distance filter and
+class-specific same-base-side detour. Recreate the supplement and audit with:
+
+```bash
+python -m examples.baselines.constrain.pickcube_provenance \
+  demos/PickCube-obstacle/20261022_130421_pilot
+```
+
+The source pin is the committed generator; current future-collector output
+generation is not asserted by this retrospective evidence.
+
 ## Diagnosis and fix
 
 The retained round-8 runs showed exact native state/controller restoration but
