@@ -55,7 +55,10 @@ outputs/
 │   ├── constrainnet_wristcam_seed1/final.pt
 │   ├── 20261022_144000_pickcube_base_dp/final.pt
 │   ├── 20261022_144835_pickcube_constrain/final.pt
-│   └── 20261022_193900_placesphere_base_dp/final.pt  # Ticket 09 independent 30,000-update EMA
+│   ├── 20261022_193900_placesphere_base_dp/final.pt  # Ticket 09 independent 30,000-update EMA
+│   ├── 20261022_200700_placesphere_constrain/  # incomplete; source-path failure before training
+│   ├── 20261022_200800_placesphere_constrain/  # 30,000 updates; verification failed; not selected
+│   └── 20261022_201100_placesphere_constrain/final.pt  # Ticket 10 verified final EMA
 └── exp/
     ├── 20260930_base_dp_stackcube_980_seed1/
     ├── 20261021_constrainnet_wristcam_seed1/
@@ -89,7 +92,11 @@ outputs/
     ├── 20261022_193725_placesphere_base_dp_probe/  # separate 45-second throughput probe
     ├── 20261022_193900_placesphere_base_dp/  # Ticket 09 30,000 updates, source/config/loss
     ├── 20261022_193900_placesphere_base_dp_rollout/  # initial native action-bound diagnostic
-    └── 20261022_195600_placesphere_base_dp_rollout/  # corrected 32-step interface rollout
+    ├── 20261022_195600_placesphere_base_dp_rollout/  # corrected 32-step interface rollout
+    ├── 20261022_200700_placesphere_constrain/  # failed before update 1
+    ├── 20261022_200800_placesphere_constrain/  # retained run with failed verification
+    ├── 20261022_201100_placesphere_constrain/  # verified 30,000 updates, source/loss evidence
+    └── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,

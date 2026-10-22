@@ -143,5 +143,109 @@ OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 600s 
   python -m pytest examples/baselines/constrain/tests -q
 ```
 
-The completed regression command passed all 257 tests. No formal PlaceSphere
-policy evaluation or ControlNet training was run.
+Ticket 09's completed regression command passed all 257 tests. Ticket 10
+verification and artifacts follow.
+
+## PlaceSphere ConstrainNet (Ticket 10)
+
+`placesphere_constrain.py` wraps the frozen Ticket 09 ConditionalUnet1D with
+the existing copied-down/mid-path ControlNet architecture, zero residual
+projections, and a trainable three-value hint encoder. The policy condition is
+the first 39 named state values; raw state and obstacle-observation contracts
+are 42 values. The separate hint reads the latest TCP XY and
+`extra/placesphere_obstacle[x,y,radius]` by named schema offsets, then computes
+`[obstacle_x-tcp_x, obstacle_y-tcp_y, radius] / [0.5,0.5,0.08]`, clipped to
+`[-1,1]`. No PickCube offsets or data schema are used.
+
+All seven native `pd_ee_delta_pose` action channels are trained and returned;
+the three Euler channels are retained. Training windows repeat the first
+observation/action for left padding and pad only after the terminal action
+sequence with zero XYZ/Euler and open gripper `+1`. Runtime maps pose channels
+to `[-0.35,0.35]` and keeps gripper in `[-1,1]`. The model is Panda, state
+observation, horizons 2/16/8, 39-D condition, 7-D actions, and 100-step
+squared-cosine epsilon DDPM. The standalone checkpoint embeds base EMA weights
+and strictly pins task, control mode, schema, model, horizons, data and source
+identities.
+
+Before update 1, the resolved configuration fixed seed 1, 30,000 updates, batch
+1,024, AdamW `lr=1e-4`, betas `(0.95,0.999)`, weight decay `1e-6`, 500-step
+warmup/cosine schedule, EMA power 0.75, and final EMA selection. No policy
+evaluation or metric-based checkpoint selection was used. Training used only
+safe obstacle IDs 1000–1099. HDF5 SHA-256 is
+`fec4620c496ae3c5c0dec7db469333f302f7170363e11f66cba961cbb5d56ec4`, manifest
+`740379c6a575a470f930b249494cb603a1ff36e2c71c5235e93d6eb3ec4c11ba`, frozen
+contract `ff11b940ede86e290928d26ccd4ac96e7ba480995af774d46a018dbda8b6e761`,
+and report `d861bf23e813e06e77f8791cd11e94844b000de8586f5169d33467f2c8df4b67`.
+The trusted Base DP was
+`outputs/ckpt/20261022_193900_placesphere_base_dp/final.pt`, SHA-256
+`07f93942cfcfd7d28120b0b210fd7c323098140f670bbfce4c9a83ff76b9fb30`,
+30,000-update `weights.ema`.
+
+The formal run completed 30,000/30,000 updates in 944.36 seconds. Every update
+is recorded in `outputs/exp/20261022_201100_placesphere_constrain/loss.jsonl`;
+all 30,000 losses are finite (first `0.06631155`, last `0.00344078`, minimum
+`0.00254796`, maximum `0.09180454`). The final standalone EMA checkpoint is
+`outputs/ckpt/20261022_201100_placesphere_constrain/final.pt`, SHA-256
+`0d20daee00ed90863ca4e68d1a7c1093774e4b7c04d20c4d470c3470dd715284`. Loss-log
+SHA-256 is `485824bfbd87ea8c2bfba4198ae66a7d53b9fd849b65d57737a82e729ab55482`;
+final run-config SHA-256 is
+`eec670b5f7661ae71a428caf484b1e8d1b4079225fe840c3c25d410f4956b15b`. Exact
+executed source bytes and matching hashes are retained under `source_snapshot/`
+with their inventory in `run_config.json`.
+
+`train_summary.json` proves zero-residual initialization matches an
+independently loaded base (epsilon max absolute difference `0`; complete
+100-step sampling difference `0`). After training, disabling the control branch
+again matches the independent base at `0` for epsilon and sampling; independent
+single-forward difference is `0`. Frozen base state is unchanged. Enabled versus
+disabled output mean absolute difference is `0.09658538`; control parameters
+changed and gradients are nonzero in the down path, mid path and hint encoder.
+The checkpoint loads standalone on CPU without a base file and returns finite
+legal-shape `(1,8,7)` actions.
+
+A fixed formal obstacle scene (episode 1000) was restored before inference and
+run for the 32-step cap. Evidence is in
+`outputs/exp/20261022_201100_placesphere_constrain_rollout/short_rollout.json`.
+Restoration differences were native state `1.49e-8`, controller `0`, raw
+observation `0` (within `1e-7`). All actions were executable and bounded; no
+obstacle contact/crossing occurred. At step 32 the sphere was static and
+ungrasped, while native/task success remained false. This is an interface check;
+the full release/stability task behavior is not claimed and no 100-scene
+evaluation was performed.
+
+Two retained attempts did not produce the selected checkpoint. The
+`20261022_200700_placesphere_constrain` run stopped before training because of
+an incorrect upstream-source path. The `20261022_200800_placesphere_constrain`
+run performed 30,000 updates and wrote a checkpoint, but its post-training
+gradient check called backward on an output computed under `no_grad`; it has no
+successful verification summary and is excluded from delivery. Both issues
+were fixed before the verified run's source snapshot.
+
+Reproduction:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 10800s \
+  python -m examples.baselines.constrain.placesphere_constrain \
+  --demo-path demos/PlaceSphere-obstacle/20261022_184558_formal/trajectory.h5 \
+  --manifest demos/PlaceSphere-obstacle/20261022_184558_formal/trajectory.json \
+  --base-checkpoint outputs/ckpt/20261022_193900_placesphere_base_dp/final.pt \
+  --run-dir outputs/exp/YYYYMMDD_HHMMSS_placesphere_constrain \
+  --checkpoint-dir outputs/ckpt/YYYYMMDD_HHMMSS_placesphere_constrain \
+  --device cuda --seed 1 --total-iters 30000 --batch-size 1024 \
+  --lr 0.0001 --warmup 500 --ema-power 0.75
+
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 300s \
+  python -m examples.baselines.constrain.rollout_placesphere_constrain \
+  --checkpoint outputs/ckpt/YYYYMMDD_HHMMSS_placesphere_constrain/final.pt \
+  --base-checkpoint outputs/ckpt/20261022_193900_placesphere_base_dp/final.pt \
+  --device cuda --steps 32 \
+  --output-dir outputs/exp/YYYYMMDD_HHMMSS_placesphere_constrain_rollout
+
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 600s \
+  python -m pytest examples/baselines/constrain/tests -q
+```
+
+The Ticket 10 full regression command passed 267 tests with 11 existing
+deprecation warnings in 71.86 seconds; all 10 focused PlaceSphere tests passed.
