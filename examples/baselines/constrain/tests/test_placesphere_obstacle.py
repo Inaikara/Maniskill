@@ -209,3 +209,90 @@ def test_collector_rejects_nonpositive_obstacle_safety_geometry_before_output(tm
     with pytest.raises(ValueError, match="obstacle geometry"):
         collect_pilot(output, config, attempt_runner=lambda *args: (None, "unused"))
     assert not output.exists()
+
+
+def test_formal_targets_are_independent_and_default_to_pilot_target():
+    from examples.baselines.constrain.placesphere_pilot import PlaceSpherePilotConfig
+
+    config = PlaceSpherePilotConfig(target_per_class=20, direct_target=1000,
+                                    obstacle_target=100)
+    assert config.target("direct") == 1000
+    assert config.target("obstacle") == 100
+    assert PlaceSpherePilotConfig(target_per_class=20).target("direct") == 20
+
+
+def test_collector_freezes_contract_before_attempt_and_uses_each_target(tmp_path):
+    import json
+    from examples.baselines.constrain.placesphere_pilot import (
+        PlaceSpherePilotConfig, collect_pilot,
+    )
+
+    output = tmp_path / "formal"
+    calls = []
+
+    def accepted(kind, seed, rng, config):
+        contract = json.loads((output / "frozen_contract.json").read_text())
+        assert contract["limits"]["targets_per_class"] == {"direct": 2, "obstacle": 1}
+        calls.append(kind)
+        info = {"native_success": [True], "success": [True],
+                "is_obj_on_bin": [True], "is_obj_static": [True],
+                "is_obj_grasped": [False], "obstacle_collision": [False],
+                "obstacle_crossing": [False]}
+        return {"actions": np.zeros((1, 7), np.float32),
+                "obs": np.zeros((2, 39), np.float32),
+                "raw_obs": np.zeros((2, 42), np.float32),
+                "states": [{"native": np.zeros((1, 3), np.float32)}] * 2,
+                "controller_states": [{"controller": np.zeros((1,), np.float32)}] * 2,
+                "infos": [info, info], "terminated": np.array([0, 1], np.uint8),
+                "truncated": np.zeros(2, np.uint8), "native_success": True,
+                "safe_success": True, "layout": {"start_xy": [0, 0],
+                    "container_xy": [1, 1]}, "trace": {}}, None
+
+    config = PlaceSpherePilotConfig(direct_target=2, obstacle_target=1,
+                                    max_attempts_per_class=3)
+    report = collect_pilot(output, config, accepted)
+    assert report["complete"]
+    assert calls == ["direct", "direct", "obstacle"]
+    assert [json.loads(line)["class"] for line in
+            (output / "attempts.jsonl").read_text().splitlines()] == calls
+    manifest = json.loads((output / "trajectory.json").read_text())
+    assert len(manifest["episodes"]) == 3
+
+
+def test_native_seven_channel_action_limits_allow_full_gripper_range():
+    from examples.baselines.constrain.placesphere_pilot import _actions_are_legal
+
+    actions = np.zeros((2, 7), dtype=np.float32)
+    actions[0, 6], actions[1, 6] = -1.0, 1.0
+    assert _actions_are_legal(actions)
+    actions[0, 0] = 0.351
+    assert not _actions_are_legal(actions)
+
+
+def test_serialized_native_state_restore_uses_recorded_float_tolerance():
+    from examples.baselines.constrain.placesphere_formal import _tree_close
+
+    saved = {"robot": np.array([[0.0, 1.0]], dtype=np.float32)}
+    restored = {"robot": np.array([[1e-8, 1.0]], dtype=np.float64)}
+    assert _tree_close(saved, restored, atol=1e-7)
+    restored["robot"][0, 0] = 2e-7
+    assert not _tree_close(saved, restored, atol=1e-7)
+
+
+def test_training_window_loader_rejects_time_limit_instead_of_native_terminal(tmp_path):
+    import h5py
+    from examples.baselines.constrain.placesphere_pilot import PlaceSpherePilotDataset
+
+    path = tmp_path / "time-limit.h5"
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("traj_0")
+        group.attrs["kind"] = "direct"
+        group.create_dataset("obs", data=np.zeros((2, 39), dtype=np.float32))
+        group.create_dataset("actions", data=np.zeros((1, 7), dtype=np.float32))
+        group.create_dataset("success", data=np.array([0, 1], dtype=np.uint8))
+        group.create_dataset("terminated", data=np.zeros(2, dtype=np.uint8))
+        group.create_dataset("truncated", data=np.array([0, 1], dtype=np.uint8))
+        group.create_group("env_states").create_dataset("native", data=np.zeros((2, 3)))
+        group.create_group("controller_states").create_dataset("native", data=np.zeros((2, 1)))
+    with pytest.raises(ValueError, match="time limit"):
+        PlaceSpherePilotDataset(path)

@@ -118,6 +118,12 @@ class PlaceSpherePilotConfig:
     obstacle_radius: float = 0.03
     obstacle_height: float = 0.08
     safety_margin: float = 0.005
+    direct_target: int = None
+    obstacle_target: int = None
+
+    def target(self, kind):
+        value = getattr(self, f"{kind}_target")
+        return self.target_per_class if value is None else value
 
 
 def make_env(render_mode=None, config=PlaceSpherePilotConfig()):
@@ -132,6 +138,14 @@ def _obs_vector(obs):
     if isinstance(obs, dict):
         return np.concatenate([_obs_vector(obs[key]).reshape(-1) for key in obs])
     return np.asarray(obs, dtype=np.float32).reshape(-1)
+
+
+def _actions_are_legal(actions):
+    actions = np.asarray(actions)
+    return (actions.ndim == 2 and actions.shape[1] == 7
+            and np.isfinite(actions).all()
+            and np.all(np.abs(actions[:, :6]) <= 0.350001)
+            and np.all(np.abs(actions[:, 6]) <= 1.000001))
 
 
 def _policy_observation(env, info):
@@ -152,12 +166,12 @@ def _policy_observation(env, info):
     return np.concatenate(pieces).astype(np.float32,copy=False)
 
 
-def _policy_observation_schema(env, info):
+def _policy_observation_schema(env, info, include_obstacle_hint=False):
     named=env.get_obs(info=info,unflattened=True);fields=[]
     def visit(node,path=""):
         if isinstance(node,dict):
             for key,value in node.items():
-                if key==obstacle_task.OBSTACLE_KEY:continue
+                if key==obstacle_task.OBSTACLE_KEY and not include_obstacle_hint:continue
                 visit(value,f"{path}/{key}")
         else:
             array=node.detach().cpu().numpy() if torch.is_tensor(node) else np.asarray(node)
@@ -314,6 +328,7 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
     if chosen is None:
         return None
     actions, states, observations, infos = [], [_clone_tree(base.get_state_dict())], [_clone_tree(obs)], [_clone_tree(info)]
+    raw_observations = [_obs_vector(base.get_obs(info=info, unflattened=True))]
     controller_states=[_clone_tree(base.agent.controller.get_state())]
     terminated, truncated = [False], [False]
     initial_state = _clone_tree(base.get_state_dict())
@@ -321,6 +336,7 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
     initial_obs_named = _clone_tree(base.get_obs(info=info, unflattened=True))
     phase = "approach"
     trace = {"phases": [], "grasp_rotation_rad": tested[-1],
+        "base_xy": base.agent.robot.pose.p[0, :2].detach().cpu().numpy().tolist(),
         "waypoint_xy": None if waypoint is None else list(waypoint),
         "sphere_xy": [base.obj.pose.p[0,:2].detach().cpu().numpy().tolist()]}
     done = False
@@ -331,6 +347,7 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
             return True
         _, _, term, trunc, info = env.step(torch.as_tensor(action, dtype=torch.float32, device=base.device))
         obs = _policy_observation(base, info)
+        raw_observations.append(_obs_vector(base.get_obs(info=info, unflattened=True)))
         actions.append(np.asarray(action, dtype=np.float32).copy())
         states.append(_clone_tree(base.get_state_dict())); observations.append(_clone_tree(obs)); infos.append(_clone_tree(info))
         controller_states.append(_clone_tree(base.agent.controller.get_state()))
@@ -401,7 +418,8 @@ def run_expert(env, start_xy, container_xy, *, detour, seed, max_steps,
     native = bool(base.evaluate()["native_success"][0].item())
     final_info = infos[-1]
     return {"actions": np.asarray(actions, dtype=np.float32), "states": states,
-        "observations": observations, "infos": infos, "terminated": np.asarray(terminated, dtype=np.uint8),
+        "observations": observations, "raw_observations": np.asarray(raw_observations, dtype=np.float32),
+        "infos": infos, "terminated": np.asarray(terminated, dtype=np.uint8),
         "truncated": np.asarray(truncated, dtype=np.uint8), "native_success": native,
         "safe_success": bool(base.evaluate()["success"][0].item()), "initial_state": initial_state,
         "initial_controller": initial_controller, "initial_obs_named": initial_obs_named,
@@ -567,6 +585,7 @@ def _attempt(kind, seed, rng, config):
                  "obstacle_execution":obstacle_elapsed if kind=="obstacle" else 0.0,
                  "complete_attempt":time.monotonic()-attempt_started}
         return {"actions": result["actions"], "obs": np.stack([_obs_vector(x) for x in result["observations"]]),
+            "raw_obs": result["raw_observations"],
             "states": result["states"], "controller_states":result["controller_states"], "infos": result["infos"], "terminated": result["terminated"],
             "truncated": result["truncated"], "native_success": result["native_success"],
             "safe_success": result["safe_success"], "layout": {"start_xy": start.tolist(), "container_xy": goal.tolist()},
@@ -583,13 +602,14 @@ def _state_write(group, key, value):
 
 
 def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=None):
-    positive = (config.target_per_class, config.max_attempts_per_class,
+    targets = {kind: config.target(kind) for kind in ("direct", "obstacle")}
+    positive = (*targets.values(), config.max_attempts_per_class,
                 config.max_steps, config.obs_horizon, config.pred_horizon,
                 config.execution_horizon, config.geometry_attempts,
                 config.waypoint_attempts, config.cylinder_candidates)
     if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
            for value in positive):
-        raise ValueError("pilot counts, horizons, retries, and step budget must be positive integers")
+        raise ValueError("collection counts, horizons, retries, and step budget must be positive integers")
     if not np.isfinite(config.max_wall_seconds) or config.max_wall_seconds <= 0:
         raise ValueError("max_wall_seconds must be positive and finite")
     obstacle_geometry = np.asarray(
@@ -604,6 +624,7 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
     (root / "collection_config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
     repo = Path(__file__).resolve().parents[3]
     local_paths = ("placesphere_obstacle.py", "placesphere_pilot.py",
+                   "placesphere_formal.py",
                    "pickcube_expert.py", "layout_geometry.py")
     local_pins = {
         f"examples/baselines/constrain/{name}": hashlib.sha256(
@@ -629,6 +650,8 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         runtime_task = runtime.unwrapped
         policy_schema = _policy_observation_schema(runtime_task, runtime_info)
         obs_dim = len(_policy_observation(runtime_task, runtime_info))
+        raw_schema = _policy_observation_schema(runtime_task, runtime_info, include_obstacle_hint=True)
+        raw_obs_dim = len(_obs_vector(runtime_task.get_obs(info=runtime_info, unflattened=True)))
         rotation_lower = runtime_task.agent.controller.controllers["arm"].config.rot_lower
         rotation_lower = np.asarray(rotation_lower.detach().cpu() if torch.is_tensor(rotation_lower)
                                     else rotation_lower).tolist()
@@ -638,7 +661,7 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         runtime.close()
 
     contract = {
-        "generator_version": "placesphere-pilot-v1",
+        "generator_version": "placesphere-formal-v1",
         "git_commit": revision,
         "native_git_pins_sha256": native_git_pins,
         "native_worktree_source_sha256": native_worktree_pins,
@@ -678,6 +701,13 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                 "extra/tcp_pose", "extra/bin_pos", "extra/obj_pose", "extra/tcp_to_obj_pos"],
             "method": "flatten native named unflattened fields in insertion order, omitting only placesphere_obstacle",
         },
+        "raw_observation": {
+            "dimension": raw_obs_dim,
+            "flatten_order": raw_schema,
+            "includes_obstacle_hint": True,
+            "storage": "native named state flattened in insertion order as raw_obs, T+1",
+            "policy_selection": "omit /extra/placesphere_obstacle to produce policy_observation",
+        },
         "runtime_action": {
             "control_mode": "pd_ee_delta_pose",
             "dimension": 7,
@@ -689,12 +719,20 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         "horizons": {"observation": config.obs_horizon,
                      "prediction": config.pred_horizon,
                      "execution": config.execution_horizon},
+        "runtime": {"python": __import__("platform").python_version(),
+                    "numpy": np.__version__, "torch": torch.__version__,
+                    "gymnasium": gym.__version__, "physics_backend": "physx_cpu",
+                    "num_envs": 1, "observation_mode": "state", "robot_uid": "panda",
+                    "control_mode": "pd_ee_delta_pose", "episode_control_limit": config.max_steps},
         "sampling": {
             "sphere_x_m": [-0.19, -0.08], "sphere_y_m": [-0.13, 0.13],
             "container_x_m": [0.04, 0.15], "container_y_m": [-0.13, 0.13],
+            "table_bounds_xy_m": list(PlaceSphereLayoutConfig().table_bounds),
             "full_container_xy_half_extent_m": max(actual_bin_half[1:]),
             "geometry_candidates": config.geometry_attempts,
             "waypoint_candidates": config.waypoint_attempts,
+            "same_side_waypoint_offset_range_m": list(PlaceSphereLayoutConfig().waypoint_offset_range),
+            "waypoint_transport_lead_fraction": 0.25,
             "same_base_side_only": True,
             "minimum_transport_distance_m": 0.14,
             "minimum_base_line_distance_m": 0.06,
@@ -705,10 +743,12 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
             "height_m": config.obstacle_height,
             "sphere_xy_forbidden_radius_m": config.obstacle_radius + actual_radius + config.safety_margin,
             "candidate_grid": [21, 25],
+            "start_goal_exclusion_radius_m": 0.07,
+            "candidate_blocking_distance_m": 0.055,
             "contacts": "all Panda links and sphere per physics substep",
             "sphere_tracking": "sticky from first grasp through release until native success or episode end",
         },
-        "limits": {"target_per_class": config.target_per_class,
+        "limits": {"targets_per_class": targets,
                    "complete_attempts_per_class": config.max_attempts_per_class,
                    "control_steps_per_attempt": config.max_steps,
                    "total_wall_seconds": config.max_wall_seconds},
@@ -722,7 +762,7 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         "obstacle_executions", "cylinder_candidates", "restore_executions",
         "grasp_phases", "release_phases", "stable_successes", "stable_failures")
     start_time = time.monotonic()
-    episodes = []
+    episode_count = 0
 
     def persist_attempt(row):
         with (root / "attempts.jsonl").open("a") as stream:
@@ -733,7 +773,8 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
             stream.write(json.dumps(episode) + "\n")
 
     try:
-        with h5py.File(root / "trajectory.h5", "w") as h5:
+        with h5py.File(root / "trajectory.h5", "w") as h5, (root / "trajectory.json").open("w") as manifest:
+            manifest.write('{"episodes":[')
             for class_index, kind in enumerate(("direct", "obstacle")):
                 rng = np.random.default_rng(config.seed + class_index)
                 accepted, failures = 0, {}
@@ -755,7 +796,11 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                         }, "runner_exception"
                     row = {"class": kind, "attempt": attempt_index + 1, "seed": seed,
                            "elapsed_seconds": time.monotonic() - attempt_started}
-                    if outcome is None or "failure" in outcome:
+                    failed_attempt = outcome is None or "failure" in outcome
+                    outcome = outcome or {}
+                    outcome.setdefault("phase_timings", {}).setdefault(
+                        "complete_attempt", row["elapsed_seconds"])
+                    if failed_attempt:
                         reason = reason or (outcome or {}).get("failure", "unspecified")
                         row.update(failure=reason,
                             counters=(outcome or {}).get("counters", {}),
@@ -765,11 +810,19 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                     else:
                         actions = np.asarray(outcome["actions"])
                         observations = np.asarray(outcome["obs"])
+                        raw_observations = np.asarray(outcome["raw_obs"])
                         count = len(actions)
                         if actions.ndim != 2 or actions.shape[1] != 7:
                             raise ValueError("pilot trajectory actions must have dimension seven")
                         if observations.shape[0] != count + 1 or len(outcome["states"]) != count + 1:
                             raise ValueError("pilot trajectory requires T actions and T+1 observations/states")
+                        if (raw_observations.shape != (count + 1, raw_obs_dim)
+                                or not np.isfinite(raw_observations).all()):
+                            raise ValueError("trajectory requires finite T+1 full raw observations")
+                        if len(outcome["infos"]) != count + 1:
+                            raise ValueError("pilot trajectory requires T+1 native info records")
+                        if (not _actions_are_legal(actions) or not np.isfinite(observations).all()):
+                            raise ValueError("trajectory actions/observations must be finite and actions legal")
                         if len(outcome["controller_states"]) != count + 1:
                             raise ValueError("pilot trajectory requires T+1 explicit controller snapshots")
                         if not outcome["native_success"] or (kind == "obstacle" and not outcome["safe_success"]):
@@ -787,13 +840,19 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                             for info in outcome["infos"]], dtype=np.uint8)
                         if len(success_rows) != count + 1 or not success_rows[-1]:
                             raise ValueError("saved T+1 infos lack native terminal success")
+                        if kind == "obstacle":
+                            for info in outcome["infos"]:
+                                for key in ("obstacle_collision", "obstacle_crossing"):
+                                    if bool(torch.as_tensor(info[key]).reshape(-1)[0]):
+                                        raise ValueError(f"saved obstacle episode has {key}")
                         if bool(np.asarray(outcome["truncated"]).any()) or not bool(np.asarray(outcome["terminated"])[-1]):
                             raise ValueError("native PlaceSphere success must terminate before the control-step limit")
-                        index = len(episodes)
+                        index = episode_count
                         group = h5.create_group(f"traj_{index}")
                         group.attrs["kind"], group.attrs["seed"] = kind, seed
                         group.create_dataset("actions", data=actions)
                         group.create_dataset("obs", data=observations)
+                        group.create_dataset("raw_obs", data=raw_observations)
                         group.create_dataset("success", data=success_rows)
                         group.create_dataset("terminated", data=outcome["terminated"])
                         group.create_dataset("truncated", data=outcome["truncated"])
@@ -811,8 +870,12 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                             "infos": _json(outcome["infos"]),
                             "terminated": outcome["terminated"].tolist(),
                             "truncated": outcome["truncated"].tolist()}
-                        episodes.append(episode)
+                        if episode_count:
+                            manifest.write(",")
+                        manifest.write(json.dumps(episode))
+                        manifest.flush()
                         persist_episode(episode)
+                        episode_count += 1
                         row.update(accepted=True, steps=count,
                             counters=outcome.get("counters", {}),
                             phase_timings=outcome.get("phase_timings", {}))
@@ -825,18 +888,19 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                         stage_counts[name] += int(row.get("counters", {}).get(name, 0))
                     snapshot = {"complete": False, "attempt_count": len(report["attempts"]),
                         "classes": {**report["classes"], kind: {
-                            "accepted": accepted, "target": config.target_per_class,
+                            "accepted": accepted, "target": targets[kind],
                             "complete_attempts": attempt_index + 1,
                             "failures": failures, "stage_counts": stage_counts}}}
                     (root / "report.json").write_text(json.dumps(snapshot, indent=2) + "\n")
-                    if accepted == config.target_per_class:
+                    if accepted == targets[kind]:
                         break
 
                 class_attempts = [row for row in report["attempts"] if row["class"] == kind]
                 report["classes"][kind] = {
-                    "accepted": accepted, "target": config.target_per_class,
+                    "accepted": accepted, "target": targets[kind],
                     "complete_attempts": len(class_attempts),
                     "attempt_budget": config.max_attempts_per_class,
+                    "attempt_elapsed_seconds": sum(row["elapsed_seconds"] for row in class_attempts),
                     "failures": failures, "stage_counts": stage_counts,
                     "phase_elapsed_seconds": {
                         phase: sum(float(row.get("phase_timings", {}).get(phase, 0))
@@ -844,11 +908,13 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
                         for phase in ("geometry", "template", "cylinder_sampling",
                                       "obstacle_execution", "complete_attempt")}}
 
+            manifest.write("]}\n")
+            manifest.flush()
+
         report["complete"] = all(
-            report["classes"].get(kind, {}).get("accepted") == config.target_per_class
+            report["classes"].get(kind, {}).get("accepted") == targets[kind]
             for kind in ("direct", "obstacle"))
         report["elapsed_seconds"] = time.monotonic() - start_time
-        (root / "trajectory.json").write_text(json.dumps({"episodes": episodes}, indent=2) + "\n")
         report["trajectory_sha256"] = hashlib.sha256((root / "trajectory.h5").read_bytes()).hexdigest()
         (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         names = ("trajectory.h5", "trajectory.json", "frozen_contract.json",
@@ -973,11 +1039,15 @@ def main(argv=None):
     p.add_argument("--video-dir",required=True)
     p.add_argument("--seed",type=int,default=20261022)
     p.add_argument("--target-per-class",type=int,default=20)
+    p.add_argument("--direct-target",type=int)
+    p.add_argument("--obstacle-target",type=int)
     p.add_argument("--max-attempts-per-class",type=int,default=200)
     p.add_argument("--max-wall-seconds",type=float,default=1800)
     p.add_argument("--max-steps",type=int,default=200)
     a=p.parse_args(argv)
-    c=PlaceSpherePilotConfig(seed=a.seed,target_per_class=a.target_per_class,max_attempts_per_class=a.max_attempts_per_class,max_wall_seconds=a.max_wall_seconds,max_steps=a.max_steps)
+    c=PlaceSpherePilotConfig(seed=a.seed,target_per_class=a.target_per_class,
+        direct_target=a.direct_target,obstacle_target=a.obstacle_target,
+        max_attempts_per_class=a.max_attempts_per_class,max_wall_seconds=a.max_wall_seconds,max_steps=a.max_steps)
     experiment=Path(a.experiment_dir)
     experiment.mkdir(parents=True,exist_ok=False)
     report=collect_pilot(a.output_dir,c)

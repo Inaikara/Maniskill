@@ -1,10 +1,9 @@
 # Output layout and retained artifacts
 
 Training demonstrations and their collection/validation metadata live under
-`demos/<dataset-name>/`. Formal obstacle datasets are `demos/StackCube-obstacle/`
-and `demos/PickCube-obstacle/`. PlaceSphere pilot artifacts live under
-`demos/PlaceSphere-obstacle/<timestamp>_pilot/` and remain separate from formal
-collection until Ticket 08 freezes that task's contract.
+`demos/<dataset-name>/`. Formal obstacle datasets are `demos/StackCube-obstacle/`,
+`demos/PickCube-obstacle/`, and `demos/PlaceSphere-obstacle/<timestamp>_formal/`.
+PlaceSphere pilot artifacts remain separate from formal collection.
 `outputs/` has two purpose-specific directories:
 
 - `ckpt/`: model weights, separate from training logs.
@@ -45,7 +44,10 @@ demos/
     ├── 20261022_172400_pilot_calibration/  # seven recorded calibration attempts
     ├── 20261022_172910_pilot/  # preflight stopped before first attempt
     ├── 20261022_173015_pilot/  # preflight stopped before first attempt
-    └── 20261022_173110_pilot/  # complete Ticket 07: 20 + 20
+    ├── 20261022_173110_pilot/  # complete Ticket 07: 20 + 20, excluded from formal
+    ├── 20261022_180137_formal/  # retained preflight failure; gripper bound check
+    ├── 20261022_180516_formal/  # retained 1,000 + 100 run; raw obs not stored
+    └── 20261022_184558_formal/  # Ticket 08 qualifying 1,000 + 100 incl. raw obs
 
 outputs/
 ├── ckpt/
@@ -79,7 +81,10 @@ outputs/
     ├── 20261022_172400_placesphere_pilot_calibration/
     ├── 20261022_172910_placesphere_pilot/  # preflight failure; zero complete attempts
     ├── 20261022_173015_placesphere_pilot/  # preflight failure; zero complete attempts
-    └── 20261022_173110_placesphere_pilot/  # Ticket 07 validation, logs, hashes and videos
+    ├── 20261022_173110_placesphere_pilot/  # Ticket 07 validation, logs, hashes and videos
+    ├── 20261022_180137_placesphere_formal/  # retained failed preflight/accounting
+    ├── 20261022_180516_placesphere_formal/  # retained intermediate run; raw obs absent
+    └── 20261022_184558_placesphere_formal/  # Ticket 08 qualifying collection/audit
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -255,3 +260,17 @@ formal PlaceSphere dataset collection or training was run.
 `post_collection_source_delta.json` documents the one later configuration
 validation guard and preserves the pre-collection generator hash; it did not
 change the dataset or the recorded pilot contract.
+
+Ticket 08 formal PlaceSphere collection is documented in
+`PLACE_SPHERE_DATA.md`. The formal 1,000-direct/100-safe-obstacle dataset uses
+independent class targets, is sourced entirely from the frozen native expert,
+and excludes all 40 pilot episodes. Collection attempts, complete frozen
+contract, full validation, replay evidence and hashes are under
+`demos/PlaceSphere-obstacle/20261022_184558_formal/` and
+`outputs/exp/20261022_184558_placesphere_formal/`. The intermediate
+`20261022_180516` run had complete 1,000+100 trajectories but did not retain the
+full raw native observation, so it is preserved as a non-qualifying diagnostic.
+The first preflight at `20261022_180137` is retained with its source contract and
+accounting sidecar: the initial validator incorrectly applied the ±0.35 pose
+bound to the native ±1 gripper channel, returning one rollout before journaling
+the attempt and accepting no trajectory.
