@@ -97,7 +97,11 @@ outputs/
     ├── 20261022_200800_placesphere_constrain/  # retained run with failed verification
     ├── 20261022_201100_placesphere_constrain/  # verified 30,000 updates, source/loss evidence
     ├── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
-    └── 20261022_205500_placesphere_scenes/  # Ticket 11 fixed scenes and restore audit
+    ├── 20261022_205500_placesphere_scenes/  # Ticket 11 fixed scenes and restore audit
+    ├── 20261022_205500_placesphere_paired_eval/  # retained source-path preflight failure
+    ├── 20261022_212200_placesphere_paired_eval/  # retained failed paired-audit attempt
+    ├── 20261022_213500_placesphere_paired_eval/  # Ticket 12 complete 100 x 2 paired evaluation
+    └── 20261022_220000_placesphere_paired_eval/  # retained serialization failure
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -328,5 +332,17 @@ The independent throughput probe and both rollout records are retained; the
 initial rollout exposed model outputs outside the formal native pose bound and
 is kept as a diagnostic. The exact pre-run source archive and reviewable
 post-training action-bound delta are under the training experiment directory.
-The corrected 32-step rollout is an interface check only; no PlaceSphere policy
-evaluation or ControlNet training was run.
+The corrected 32-step rollout was an interface check only. Ticket 10 then
+completed the independent 30,000-update ConstrainNet run; its additional
+30,000-update verification-failed attempt remains separately documented and
+excluded from the selected checkpoint.
+
+Ticket 12's final paired PlaceSphere evaluation and independent-task summary are
+documented in `PLACE_SPHERE_EVALUATION.md` and
+`MULTITASK_OBSTACLE_RESULTS.md`. The complete run at
+`outputs/exp/20261022_213500_placesphere_paired_eval/` contains exactly 100
+records per policy, fixed preselected scene videos, paired restoration
+fingerprint audit, source snapshots, and checksums. Both models completed all
+200 episodes without runtime errors. Three earlier write-once run directories
+are retained with their provenance, serialization, and paired-condition defects;
+they are explicitly excluded from the final metrics.

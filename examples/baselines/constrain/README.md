@@ -6,6 +6,10 @@ See [OUTPUTS.md](OUTPUTS.md) for the current `demos/`, `outputs/ckpt/`, `outputs
 artifact relocation map, and current training/evaluation commands. The sections
 below include historical experiments whose original paths may have been moved
 or removed. Current wristcam results are in [WRISTCAM_EVALUATION.md](WRISTCAM_EVALUATION.md).
+The completed PickCube and PlaceSphere extension results are in
+[MULTITASK_OBSTACLE_RESULTS.md](MULTITASK_OBSTACLE_RESULTS.md), with detailed
+paired results in [PICKCUBE_EVALUATION.md](PICKCUBE_EVALUATION.md) and
+[PLACE_SPHERE_EVALUATION.md](PLACE_SPHERE_EVALUATION.md).
 
 Generate obstacle-avoidance demonstrations with direct `pd_ee_delta_pose`
 feedback waypoint control. Each action template is executed successfully without
