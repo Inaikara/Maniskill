@@ -97,6 +97,8 @@ class PickCubeSceneSet:
             raise ValueError("scene state checksum mismatch")
         if hashlib.sha256(obs.tobytes()).hexdigest() != row["observation_sha256"]:
             raise ValueError("scene observation checksum mismatch")
+        if _tree_hash(controller) != row["controller_sha256"]:
+            raise ValueError("scene controller checksum mismatch")
         expert = row.get("expert", {})
         if (expert.get("native_success") is not True
                 or expert.get("safe_success", True) is not True
@@ -167,6 +169,14 @@ def _sha_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _next_attempt_number(*, attempts, accepted, target, max_attempts, elapsed, max_wall_seconds):
+    """Return the next runner invocation number, or ``None`` when generation stops."""
+    if (accepted >= target or attempts >= max_attempts
+            or elapsed >= max_wall_seconds):
+        return None
+    return attempts + 1
+
+
 def generate(output_dir, *, seed=20017, target=100, max_attempts=1000, max_wall_seconds=3600):
     """Bounded fresh-scene expert generation, journaling every attempt in exp/."""
     output = Path(output_dir)
@@ -227,14 +237,20 @@ def generate(output_dir, *, seed=20017, target=100, max_attempts=1000, max_wall_
     journal.touch()
     scenes_path = output / "scenes.h5"
     with h5py.File(scenes_path, "w") as h5:
-        for attempt in range(1, max_attempts + 1):
-            if len(rows) >= target or time.monotonic() - started >= max_wall_seconds:
+        attempts = 0
+        while True:
+            next_attempt = _next_attempt_number(
+                attempts=attempts, accepted=len(rows), target=target,
+                max_attempts=max_attempts, elapsed=time.monotonic() - started,
+                max_wall_seconds=max_wall_seconds)
+            if next_attempt is None:
                 break
+            attempts = next_attempt
             attempt_seed = int(rng.integers(0, 2**31 - 1))
             at = time.monotonic()
             result, reason = _default_attempt("obstacle", attempt_seed, rng, config)
             elapsed = time.monotonic() - at
-            record = {"attempt": attempt, "seed": attempt_seed, "elapsed_seconds": elapsed,
+            record = {"attempt": attempts, "seed": attempt_seed, "elapsed_seconds": elapsed,
                       "accepted": False, "failure": reason}
             attempt_phases = result.get("phase_timings", {}) if isinstance(result, dict) else {}
             for phase, value in attempt_phases.items():
@@ -281,15 +297,15 @@ def generate(output_dir, *, seed=20017, target=100, max_attempts=1000, max_wall_
             with journal.open("a") as stream:
                 stream.write(json.dumps(record, sort_keys=True) + "\n")
             h5.flush()
-            initial_report.update(accepted=len(rows), attempts=attempt,
+            initial_report.update(accepted=len(rows), attempts=attempts,
                 failures=failures, phase_elapsed_seconds=phases,
                 elapsed_seconds=time.monotonic() - started,
-                acceptance_rate=len(rows) / attempt)
+                acceptance_rate=len(rows) / attempts)
             (output / "report.json").write_text(json.dumps(initial_report, indent=2, sort_keys=True) + "\n")
-    report = {"target": target, "accepted": len(rows), "attempts": attempt if max_attempts else 0,
+    report = {"target": target, "accepted": len(rows), "attempts": attempts,
               "complete": len(rows) == target, "failures": failures, "phase_elapsed_seconds": phases,
               "elapsed_seconds": time.monotonic() - started,
-              "acceptance_rate": len(rows) / attempt if attempt else 0.0,
+              "acceptance_rate": len(rows) / attempts if attempts else 0.0,
               "generation_seed": seed, "wall_budget_seconds": max_wall_seconds}
     (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     manifest = {"format": "pickcube-obstacle-scenes-v1", "scene_count": len(rows),

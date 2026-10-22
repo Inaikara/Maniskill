@@ -10,7 +10,8 @@ import torch
 
 from examples.baselines.constrain.pickcube_expert import make_pickcube_env
 from examples.baselines.constrain.pickcube_scenes import (
-    CONTRACT, RUNTIME_CONTRACT, PickCubeSceneSet, _sha, _tree_hash, _write_tree,
+    CONTRACT, RUNTIME_CONTRACT, PickCubeSceneSet, _next_attempt_number,
+    _sha, _tree_hash, _write_tree,
 )
 
 
@@ -79,6 +80,53 @@ def test_scene_with_expert_safety_failure_is_rejected_even_with_valid_manifest_h
                 PickCubeSceneSet(path).load(0)
     finally:
         env.close()
+
+
+def test_scene_controller_snapshot_hash_is_checked_after_container_checksums_pass(tmp_path):
+    env = make_pickcube_env()
+    try:
+        _fixture(tmp_path, env)
+        # Keep the HDF5 and manifest container identities valid while replacing
+        # only the scene's controller snapshot.
+        with h5py.File(tmp_path / "scenes.h5", "r+") as handle:
+            handle["pickcube-000"].attrs["controller_json"] = json.dumps({"mutated": True})
+        manifest = json.loads((tmp_path / "manifest.json").read_text())
+        manifest["scenes_file_sha256"] = _sha(tmp_path / "scenes.h5")
+        payload = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+        manifest["manifest_sha256"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, indent=2).encode()).hexdigest()
+        (tmp_path / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=2))
+        with pytest.raises(ValueError, match="controller checksum"):
+            PickCubeSceneSet(tmp_path).load(0)
+    finally:
+        env.close()
+
+
+def test_completed_scene_report_denominator_matches_journal(tmp_path):
+    output = Path("outputs/exp/20261022_152157_pickcube_scenes")
+    report = json.loads((output / "report.json").read_text())
+    journal = [json.loads(line) for line in (output / "attempts.jsonl").read_text().splitlines()]
+    assert len(journal) == 349
+    assert report["attempts"] == 350  # preserved historical report
+    correction = json.loads((output / "accounting_correction.json").read_text())
+    assert correction["actual_runner_invocations"] == len(journal)
+    assert correction["corrected_acceptance_rate"] == pytest.approx(100 / len(journal))
+    assert correction["original_report_sha256"] == hashlib.sha256(
+        (output / "report.json").read_bytes()).hexdigest()
+    assert correction["original_attempts_jsonl_sha256"] == hashlib.sha256(
+        (output / "attempts.jsonl").read_bytes()).hexdigest()
+
+
+def test_attempt_counter_stops_at_budget_and_after_last_target_acceptance():
+    assert _next_attempt_number(
+        attempts=8, accepted=2, target=3, max_attempts=9,
+        elapsed=1.0, max_wall_seconds=10.0) == 9
+    assert _next_attempt_number(
+        attempts=9, accepted=3, target=3, max_attempts=9,
+        elapsed=1.0, max_wall_seconds=10.0) is None
+    assert _next_attempt_number(
+        attempts=9, accepted=2, target=3, max_attempts=9,
+        elapsed=1.0, max_wall_seconds=10.0) is None
 
 
 def test_scene_restore_checks_real_geometry_and_restores_state_and_controller(tmp_path):

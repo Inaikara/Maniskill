@@ -31,11 +31,18 @@ scene with its actual 0.03 m collision radius and 0.25 m height. Acceptance
 requires native PickCube success, no robot/cube obstacle contact, and no XY
 forbidden crossing. No checkpoint or policy is loaded or consulted.
 
-The saved generation accepted 100 / 350 attempts (28.57%) in 304.33 s. Failures
-were 198 exhausted 525-candidate geometry searches, 49 real obstacle collision
-or crossing rejections, and 2 unsuccessful no-obstacle templates. Phase totals
-are in `report.json`; every outer attempt, seed, elapsed time, failure, counters,
-and phase times is in `attempts.jsonl`. Attempts were bounded by 1000 / 3600 s.
+The historical `report.json` and manifest `generation` record the original
+algorithm's 350 loop iterations (28.57%). The immutable `attempts.jsonl` has 349
+actual runner invocations: 100 accepted and 249 rejected (198 exhausted
+525-candidate geometry searches, 49 real obstacle collision or crossing
+rejections, and 2 unsuccessful no-obstacle templates). The canonical corrected
+acceptance rate is **100 / 349 (28.65%)**. The attempt-count accounting
+correction is recorded separately in
+`outputs/exp/20261022_152157_pickcube_scenes/accounting_correction.json`; it
+pins the original report and journal hashes without rewriting historical
+files. Generation elapsed time was 304.33 s. Attempts were bounded by 1000 / 3600 s.
+Phase totals are in `report.json`; each actual outer attempt's seed, elapsed
+time, failure, counters, and phase times are in `attempts.jsonl`.
 
 Every scene stores the complete native state tree (including obstacle flags,
 goal and robot articulation), complete flat `state` initial observation and its
@@ -70,13 +77,16 @@ env, initial_observation = scenes.restore(0, env)
 ```
 
 `load(index)` checks manifest/config/formal/native runtime/HDF5 and per-scene
-state/observation hashes, and rejects unsafe initial safety flags.
+state/observation/controller hashes, and rejects unsafe initial safety flags.
 `restore(index, env=None)` rejects a supplied environment whose *actual
 collision geometry* differs. It restores both into an existing environment and
 returns `(env, observation)`; with `env=None` it constructs and returns a fresh
 environment which the caller closes. It does not load models, run an expert, or
-filter scenes based on policy behavior. Paired policy evaluation should restore
-the same index separately before each policy.
+filter scenes based on policy behavior. The paired-scene consumer contract is
+one immutable catalog plus an index shared by both policy runs: call
+`catalog.restore(index)` once per policy in its own fresh environment, and
+record the same `scene_id`, state hash, and index in both episode records. Do
+not reuse a stepped environment or resample layouts between policies.
 
 ## Artifact identities
 
@@ -88,6 +98,7 @@ the same index separately before each policy.
 | `report.json` | `da60c67224c158a4367e414eb403c2f007f8678a6dd65a27d01422ca0970e628` |
 | `attempts.jsonl` | `e8806f42dd2213d9e65cc9673afa126e8f4d473f1eb94b721bbd0c21b0652e1e` |
 | `restore_audit.json` | `61dce8f9d99eeedf56fa9d888f5e2c2bb677d0d2d8b021cf26d80eb55f5fefe9` |
+| `accounting_correction.json` | `45271734d1f0c8ca1ec5bfae01be060bea77795f2c1080b859e507ec2e32e066` |
 | frozen formal contract | `e1d98a8934203a2dcb397dc604736cb7877f9134cca4ef84ee502f8325f4f46e` |
 | frozen native runtime resolution | `b965a888d9edc00ffc2f6f0dfb45452048ae21b5b269a2e9cab26685b5d5be3b` |
 

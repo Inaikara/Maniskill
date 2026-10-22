@@ -117,10 +117,14 @@ condition/action contract, rollout outcome and verification are in
 `PICKCUBE_TRAINING.md` under Ticket 04.
 
 Ticket 05's independently generated 100-scene PickCube obstacle catalog,
-attempt/failure and phase timing report, native controller/runtime identity,
+attempt/failure and phase timing report (100/349 actual runner invocations;
+the immutable original report says 100/350 loop iterations and is corrected by
+an accounting sidecar), native controller/runtime identity,
 strict fresh-environment restoration audit, public load/restore API, exact
 reproduction command and artifact hashes are documented in
-`PICKCUBE_SCENES.md`. The complete run accepted 100/350 attempts in 304.33 s;
+`PICKCUBE_SCENES.md`. The complete run accepted 100/349 actual runner
+invocations in 304.33 s; the original 100/350-loop-iteration report remains
+unchanged and the corrected denominator is hash-pinned by its sidecar.
 all 100 restores passed. The small smoke run and its bounded failed attempts
 are retained separately for the implementation check.
 
