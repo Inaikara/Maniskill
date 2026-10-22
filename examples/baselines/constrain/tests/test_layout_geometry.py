@@ -23,6 +23,20 @@ def test_layout_accepts_inclusive_distance_and_table_boundaries():
     assert result.base_line_distance == pytest.approx(1.0)
 
 
+def test_layout_rejects_base_line_distance_just_below_threshold():
+    config = LayoutGeometryConfig(
+        table_bounds=(-1.0, -1.0, 1.0, 1.0),
+        min_transport_distance=1.0,
+        min_base_line_distance=0.1,
+    )
+
+    result = validate_layout((0.0, 0.0), (1.0, 0.0), (0.5, 0.1 - 1e-9), config)
+
+    assert not result.valid
+    assert result.reason == "base_line_distance"
+    assert result.base_line_distance == pytest.approx(0.1 - 1e-9)
+
+
 @pytest.mark.parametrize(
     "start,goal,expected_reason",
     [
