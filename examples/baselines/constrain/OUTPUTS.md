@@ -2,7 +2,9 @@
 
 Training demonstrations and their collection/validation metadata live under
 `demos/<dataset-name>/`. Formal obstacle datasets are `demos/StackCube-obstacle/`
-and `demos/PickCube-obstacle/`.
+and `demos/PickCube-obstacle/`. PlaceSphere pilot artifacts live under
+`demos/PlaceSphere-obstacle/<timestamp>_pilot/` and remain separate from formal
+collection until Ticket 08 freezes that task's contract.
 `outputs/` has two purpose-specific directories:
 
 - `ckpt/`: model weights, separate from training logs.
@@ -32,7 +34,18 @@ demos/
 ├── PickCube-obstacle/20261022_160000_pilot_diag/  # 1 direct + 6 obstacle attempts
 ├── PickCube-obstacle/20261022_160200_pilot_diag/  # 1 direct + 6 obstacle attempts
 ├── PickCube-obstacle/20261022_160500_pilot_diag/  # 1 direct + 6 obstacle attempts
-└── PickCube-obstacle/20261022_132753_formal/  # Ticket 02 formal 1,000 + 100 collection
+├── PickCube-obstacle/20261022_132753_formal/  # Ticket 02 formal 1,000 + 100 collection
+└── PlaceSphere-obstacle/
+    ├── 20261022_171100_pilot/  # invalid diagnostic seed; no complete attempt
+    ├── 20261022_171300_pilot_calibration/
+    ├── 20261022_171500_pilot_calibration/
+    ├── 20261022_171700_pilot_calibration/
+    ├── 20261022_172000_pilot_calibration/
+    ├── 20261022_172200_pilot_calibration/
+    ├── 20261022_172400_pilot_calibration/  # seven recorded calibration attempts
+    ├── 20261022_172910_pilot/  # preflight stopped before first attempt
+    ├── 20261022_173015_pilot/  # preflight stopped before first attempt
+    └── 20261022_173110_pilot/  # complete Ticket 07: 20 + 20
 
 outputs/
 ├── ckpt/
@@ -56,7 +69,17 @@ outputs/
     ├── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
     ├── 20261022_144800_pickcube_constrain_probe/  # separate 45-second non-formal throughput probe
     ├── 20261022_144835_pickcube_constrain/  # 30,000-update ControlNet run, logs/config/verification
-    └── 20261022_150600_pickcube_constrain_rollout/  # 32-step real-scene interface rollout, not evaluation
+    ├── 20261022_150600_pickcube_constrain_rollout/  # 32-step real-scene interface rollout, not evaluation
+    ├── 20261022_171100_placesphere_pilot/  # invalid-seed diagnostic
+    ├── 20261022_171300_placesphere_pilot_calibration/
+    ├── 20261022_171500_placesphere_pilot_calibration/
+    ├── 20261022_171700_placesphere_pilot_calibration/
+    ├── 20261022_172000_placesphere_pilot_calibration/
+    ├── 20261022_172200_placesphere_pilot_calibration/
+    ├── 20261022_172400_placesphere_pilot_calibration/
+    ├── 20261022_172910_placesphere_pilot/  # preflight failure; zero complete attempts
+    ├── 20261022_173015_placesphere_pilot/  # preflight failure; zero complete attempts
+    └── 20261022_173110_placesphere_pilot/  # Ticket 07 validation, logs, hashes and videos
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -215,3 +238,20 @@ Replace the timestamp placeholder before running. Training defaults also split
 weights and logs; evaluation defaults use timestamp-prefixed experiment paths.
 The frozen demonstration collector is called with an explicit `--output-dir`
 under `demos/<dataset-name>/`, preserving the recorded generator source fingerprint.
+
+## PlaceSphere Ticket 07 pilot
+
+`demos/PlaceSphere-obstacle/20261022_173110_pilot/` is the complete 20 direct +
+20 safe-obstacle pilot. It used 30 direct and 31 obstacle complete attempts in
+128.984 seconds; details, per-attempt diagnostics, stage counters, phase timings,
+seeds, T/T+1 state/controller/info evidence, source/native pins, and SHA-256
+identities are in its report and `PLACE_SPHERE_PILOT.md`. The matching
+`outputs/exp/20261022_173110_placesphere_pilot/` contains the frozen contract and
+run log, both class minibatch finite epsilon-loss evidence, and the direct and
+obstacle representative videos. The trajectory hash is
+`0a415d203ee023368c357bcb34c9173128633230cca210ac9abf6f562aca8220`; video
+hashes and class-specific losses are recorded in `pilot_evidence.json`. No
+formal PlaceSphere dataset collection or training was run.
+`post_collection_source_delta.json` documents the one later configuration
+validation guard and preserves the pre-collection generator hash; it did not
+change the dataset or the recorded pilot contract.
