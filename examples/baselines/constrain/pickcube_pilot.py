@@ -35,6 +35,14 @@ class PickCubePilotConfig:
     waypoint_offset_range: tuple = (0.20, 0.25)
     obstacle_radius: float = 0.03
     obstacle_height: float = 0.25
+    direct_target: int = None
+    obstacle_target: int = None
+    direct_max_attempts: int = None
+    obstacle_max_attempts: int = None
+
+    def target(self, kind):
+        value = getattr(self, f"{kind}_target")
+        return self.target_per_class if value is None else value
 
 
 def _default_attempt(kind, seed, rng, config):
@@ -226,6 +234,14 @@ def _default_attempt(kind, seed, rng, config):
         elif not result["safety"]["native_success"]:
             return {"failure": "native_timeout_or_unsuccessful", "counters": {
                 "geometry_tries": geometry_tries}}, None
+        result["trace"]["runtime_initial_identity"] = {
+            "native_state_sha256": _value_hash(result["initial_snapshot"][0]),
+            "controller_state_sha256": _value_hash(result["initial_snapshot"][1]),
+            "controller_state_snapshot": _jsonable(result["initial_snapshot"][1]),
+            "named_observation_fields": _observation_field_shapes(result["initial_observation_named"]),
+            "named_observation_sha256": _value_hash(result["initial_observation_named"]),
+        }
+        result["layout"]["base_xy"] = base_xy.tolist()
         return {
             "actions": result["actions"],
             "obs": np.stack([np.asarray(x).reshape(-1) for x in result["observations"]]),
@@ -427,6 +443,14 @@ def _trace_metadata(trace):
     return _jsonable(trace)
 
 
+def _observation_field_shapes(tree, prefix=""):
+    if isinstance(tree, dict):
+        return {f"{prefix}/{key}": shape for key, value in tree.items()
+                for shape in [_observation_field_shapes(value, f"{prefix}/{key}")]}
+    shape = list(tree.shape) if hasattr(tree, "shape") else list(np.asarray(tree).shape)
+    return shape
+
+
 def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None):
     positive = (config.target_per_class, config.max_attempts_per_class, config.max_steps,
                 config.obs_horizon, config.pred_horizon)
@@ -435,23 +459,96 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
         raise ValueError("pilot counts, horizons, and step budget must be positive integers")
     if not np.isfinite(config.max_wall_seconds) or config.max_wall_seconds <= 0:
         raise ValueError("max_wall_seconds must be positive and finite")
+    targets = {kind: config.target(kind) for kind in ("direct", "obstacle")}
+    attempt_budgets = {kind: getattr(config, f"{kind}_max_attempts") or config.max_attempts_per_class
+                       for kind in ("direct", "obstacle")}
+    if any(isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value <= 0
+           for value in (*targets.values(), *attempt_budgets.values())):
+        raise ValueError("class targets and attempt budgets must be positive integers")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
     h5_path = output_dir / "trajectory.h5"
+    (output_dir / "collection_config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
+    from examples.baselines.constrain.pickcube_provenance import current_source_fingerprint
+    frozen_contract = {
+        "generator_version": "pickcube-formal-streaming-v1",
+        "source_fingerprints": current_source_fingerprint(Path(__file__).resolve().parents[3]),
+        "collection": asdict(config),
+        "sampling": {"start_x": [-0.18, -0.02], "start_y": [-0.06, 0.12],
+                     "goal_x": [0.02, 0.18], "goal_y": [-0.06, 0.12],
+                     "table_bounds_xy": [-0.25, -0.25, 0.25, 0.35],
+                     "minimum_transport_distance_m": 0.14,
+                     "minimum_base_line_distance_m": 0.06,
+                     "waypoint_offset_range_m": list(config.waypoint_offset_range),
+                     "waypoint_lead_fraction": 0.25, "waypoint_candidates": 32,
+                     "same_base_side_only": True, "geometry_attempts": 32},
+        "obstacle": {"shape": "vertical cylinder", "radius_m": config.obstacle_radius,
+                     "height_m": config.obstacle_height, "safety_margin_m": 0.005,
+                     "contact_impulse_threshold": 1e-6, "candidate_grid": [21, 25],
+                     "blocking_segment_distance_m": 0.063,
+                     "endpoint_exclusion_m": 0.068, "cube_clearance_m": 0.063,
+                     "robot_sweep_clearance_m": config.obstacle_radius},
+        "execution": {"robot": "panda", "robot_init_qpos_noise": 0.02,
+                      "obs_mode": "state", "control_mode": "pd_ee_delta_pose",
+                      "sim_backend": "physx_cpu", "action_dim": 7,
+                      "action_scale_translation_m": 0.1, "action_cap": 0.35,
+                      "rotation_scale": "signed controller.rot_lower XYZ Euler",
+                      "expert": asdict(PickCubeExpertConfig()), "rollout_control_steps": config.max_steps,
+                      "controller_runtime_snapshot": "saved per trajectory in metadata hashes",
+                      "obs_horizon": config.obs_horizon, "prediction_horizon": config.pred_horizon,
+                      "execution_horizon": 8},
+        "acceptance": {"direct": "native task success", "obstacle":
+                       "native success, zero robot/cube obstacle contact, zero XY forbidden crossing"},
+    }
+    (output_dir / "frozen_contract.json").write_text(json.dumps(frozen_contract, indent=2, sort_keys=True) + "\n")
     report = {
-        "config": asdict(config), "started_unix": time.time(), "classes": {},
+        "config": asdict(config), "frozen_contract_sha256": hashlib.sha256(
+            (output_dir / "frozen_contract.json").read_bytes()).hexdigest(),
+        "started_unix": time.time(), "classes": {},
         "complete": False, "attempts": [],
     }
     runner = attempt_runner or _default_attempt
-    accepted = []
+    episodes = []
+    def persist_progress():
+        report["classes"] = {
+            kind: {"complete_attempts": sum(a["class"] == kind for a in report["attempts"]),
+                   "accepted": sum(a["class"] == kind and a.get("accepted", False)
+                                   for a in report["attempts"]),
+                   "target": targets[kind],
+                   "attempt_budget": attempt_budgets[kind],
+                   "failures": dict(Counter(a["failure"] for a in report["attempts"]
+                                             if a["class"] == kind and "failure" in a)),
+                   "stage_counts": {name: sum(int(a.get(name, a.get("counters", {}).get(name, 0)))
+                                              for a in report["attempts"] if a["class"] == kind)
+                                    for name in ("geometry_tries", "waypoint_tries",
+                                                 "template_executions", "obstacle_executions",
+                                                 "cylinder_candidates_tested")},
+                   "phase_elapsed_seconds": {phase: sum(float(a.get("phase_timings", {}).get(phase, 0))
+                                                          for a in report["attempts"] if a["class"] == kind)
+                                              for phase in ("geometry", "template", "cylinder_sampling",
+                                                            "obstacle_execution")}}
+            for kind in ("direct", "obstacle")
+        }
+        report["complete"] = all(report["classes"][kind]["accepted"] == targets[kind]
+                                 for kind in targets)
+        report["updated_unix"] = time.time()
+        temporary = output_dir / "report.json.tmp"
+        snapshot = {key: value for key, value in report.items() if key != "attempts"}
+        snapshot["attempt_count"] = len(report["attempts"])
+        temporary.write_text(json.dumps(snapshot, indent=2) + "\n")
+        temporary.replace(output_dir / "report.json")
+    def persist_attempt(record):
+        with (output_dir / "attempts.jsonl").open("a") as stream:
+            stream.write(json.dumps(record) + "\n")
     try:
         overall_started = time.monotonic()
-        for class_index, kind in enumerate(("direct", "obstacle")):
+        with h5py.File(h5_path, "w") as handle:
+          for class_index, kind in enumerate(("direct", "obstacle")):
             rng = np.random.default_rng(config.seed + class_index)
             counts = Counter()
             class_accepted = 0
             started = time.monotonic()
-            for attempt_index in range(config.max_attempts_per_class):
+            for attempt_index in range(attempt_budgets[kind]):
                 if time.monotonic() - overall_started >= config.max_wall_seconds:
                     report["wall_timeout"] = True
                     break
@@ -481,16 +578,22 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                     record["counters"] = counters
                     record.update(counters)
                     report["attempts"].append(record)
+                    persist_attempt(record)
+                    persist_progress()
                     continue
                 if not trajectory.get("success") or not trajectory.get("info", {}).get("native_success"):
                     counts["failure:native_unsuccessful"] += 1
                     record["failure"] = "native_unsuccessful"
                     report["attempts"].append(record)
+                    persist_attempt(record)
+                    persist_progress()
                     continue
                 if kind == "obstacle" and not trajectory.get("info", {}).get("safe_success"):
                     counts["failure:unsafe"] += 1
                     record["failure"] = "unsafe"
                     report["attempts"].append(record)
+                    persist_attempt(record)
+                    persist_progress()
                     continue
                 actions = np.asarray(trajectory["actions"])
                 obs = np.asarray(trajectory["obs"])
@@ -499,7 +602,6 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                 if len(trajectory["states"]) != len(actions) + 1:
                     raise ValueError("accepted trajectory must have T+1 full states")
                 trajectory.update(kind=kind, seed=seed)
-                accepted.append(trajectory)
                 class_accepted += 1
                 counts["accepted"] += 1
                 record.update(accepted=True, steps=len(actions))
@@ -511,7 +613,31 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                     trajectory.get("trace", {}).get("cylinder_candidates_tested", 0)
                 )
                 report["attempts"].append(record)
-                if class_accepted >= config.target_per_class:
+                persist_attempt(record)
+                i = len(episodes)
+                episodes.append({"episode_id": i, "kind": kind, "seed": seed,
+                    "layout": _jsonable(trajectory.get("layout")),
+                    "trace": _trace_metadata(trajectory.get("trace", {})),
+                    "infos": _jsonable(trajectory.get("infos", [])),
+                    "terminated": trajectory.get("terminated", []).tolist(),
+                    "truncated": trajectory.get("truncated", []).tolist()})
+                with (output_dir / "episodes.jsonl").open("a") as stream:
+                    stream.write(json.dumps(episodes[-1]) + "\n")
+                group = handle.create_group(f"traj_{i}")
+                group.attrs["kind"], group.attrs["seed"] = kind, seed
+                group.create_dataset("actions", data=actions)
+                group.create_dataset("obs", data=obs)
+                success = np.zeros(len(actions) + 1, dtype=np.uint8)
+                success[-1] = 1
+                group.create_dataset("success", data=success)
+                group.create_dataset("terminated", data=trajectory["terminated"])
+                group.create_dataset("truncated", data=trajectory["truncated"])
+                states = group.create_group("env_states")
+                for key, value in _stack_states(trajectory["states"]).items():
+                    _write_value(states, key, value)
+                handle.flush()
+                persist_progress()
+                if class_accepted >= targets[kind]:
                     break
             report["classes"][kind] = {
                 "complete_attempts": counts["complete_attempts"],
@@ -548,36 +674,13 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                 "elapsed_seconds": time.monotonic() - started,
             }
         report["complete"] = all(
-            report["classes"].get(kind, {}).get("accepted") == config.target_per_class
+            report["classes"].get(kind, {}).get("accepted") == targets[kind]
             for kind in ("direct", "obstacle")
         )
-        if accepted:
-            with h5py.File(h5_path, "w") as handle:
-                for i, trajectory in enumerate(accepted):
-                    group = handle.create_group(f"traj_{i}")
-                    group.attrs["kind"] = trajectory["kind"]
-                    group.attrs["seed"] = trajectory["seed"]
-                    group.create_dataset("actions", data=trajectory["actions"])
-                    group.create_dataset("obs", data=trajectory["obs"])
-                    success = np.zeros(len(trajectory["actions"])+1, dtype=np.uint8)
-                    success[-1] = 1
-                    group.create_dataset("success", data=success)
-                    group.create_dataset("terminated", data=trajectory["terminated"])
-                    group.create_dataset("truncated", data=trajectory["truncated"])
-                    states = group.create_group("env_states")
-                    for key, value in _stack_states(trajectory["states"]).items():
-                        _write_value(states, key, value)
+        if len(episodes):
             report["trajectory_sha256"] = hashlib.sha256(h5_path.read_bytes()).hexdigest()
         report["finished_unix"] = time.time()
-        (output_dir / "trajectory.json").write_text(json.dumps({"episodes": [
-            {"episode_id": i, "kind": item["kind"], "seed": item["seed"],
-             "layout": _jsonable(item.get("layout")),
-             "trace": _trace_metadata(item.get("trace", {})),
-             "infos": _jsonable(item.get("infos", [])),
-             "terminated": item.get("terminated", []).tolist(),
-             "truncated": item.get("truncated", []).tolist()}
-            for i, item in enumerate(accepted)]}, indent=2) + "\n")
-        (output_dir / "collection_config.json").write_text(json.dumps(asdict(config), indent=2) + "\n")
+        (output_dir / "trajectory.json").write_text(json.dumps({"episodes": episodes}, indent=2) + "\n")
         (output_dir / "contract.json").write_text(json.dumps({
             "robot": "panda", "robot_init_qpos_noise": 0.02,
             "control_mode": "pd_ee_delta_pose", "obs_mode": "state",
@@ -596,6 +699,7 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                                 "minimum_transport_distance_m": 0.14,
                                 "minimum_base_line_distance_m": 0.06},
         }, indent=2) + "\n")
+        persist_progress()
         report["artifact_sha256"] = {
             name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
             for name in ("trajectory.h5", "trajectory.json", "collection_config.json", "contract.json")
@@ -608,7 +712,9 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
         }, indent=2) + "\n")
         return report
     except BaseException:
-        (output_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+        snapshot = {key: value for key, value in report.items() if key != "attempts"}
+        snapshot.update(attempt_count=len(report["attempts"]), interrupted=True)
+        (output_dir / "report.json").write_text(json.dumps(snapshot, indent=2) + "\n")
         raise
 
 
@@ -705,26 +811,36 @@ def validate_minibatch(dataset_path, validation_dir, *, expected_obs_dim, device
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--validation-dir", required=True)
-    parser.add_argument("--diagnostics-dir", required=True)
+    parser.add_argument("--validation-dir")
+    parser.add_argument("--diagnostics-dir")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--target-per-class", type=int, default=20)
+    parser.add_argument("--direct-target", type=int)
+    parser.add_argument("--obstacle-target", type=int)
     parser.add_argument("--max-attempts-per-class", type=int, default=200)
+    parser.add_argument("--direct-max-attempts", type=int)
+    parser.add_argument("--obstacle-max-attempts", type=int)
     parser.add_argument("--max-wall-seconds", type=float, default=1800.0)
-    parser.add_argument("--video-dir", required=True)
+    parser.add_argument("--video-dir")
     args = parser.parse_args(argv)
     pilot_config = PickCubePilotConfig(
         seed=args.seed, target_per_class=args.target_per_class,
+        direct_target=args.direct_target, obstacle_target=args.obstacle_target,
         max_attempts_per_class=args.max_attempts_per_class,
+        direct_max_attempts=args.direct_max_attempts,
+        obstacle_max_attempts=args.obstacle_max_attempts,
         max_wall_seconds=args.max_wall_seconds)
     report = collect_pilot(args.output_dir, pilot_config)
-    diagnostics = Path(args.diagnostics_dir)
-    diagnostics.mkdir(parents=True, exist_ok=False)
-    (diagnostics / "collection_report.json").write_text(
-        json.dumps(report, indent=2) + "\n"
-    )
+    if args.diagnostics_dir:
+        diagnostics = Path(args.diagnostics_dir)
+        diagnostics.mkdir(parents=True, exist_ok=False)
+        (diagnostics / "collection_report.json").write_text(
+            json.dumps(report, indent=2) + "\n"
+        )
     if not report["complete"]:
-        raise RuntimeError("pilot target not met; see report.json")
+        return
+    if not any((args.validation_dir, args.video_dir)):
+        return
     env = make_pickcube_env(obstacle_radius=pilot_config.obstacle_radius,
                             obstacle_height=pilot_config.obstacle_height)
     try:
@@ -732,13 +848,16 @@ def main(argv=None):
         expected_obs_dim = int(np.asarray(obs).reshape(-1).shape[0])
     finally:
         env.close()
-    validate_minibatch(Path(args.output_dir) / "trajectory.h5", args.validation_dir,
-                       expected_obs_dim=expected_obs_dim)
-    render_representative_videos(Path(args.output_dir) / "trajectory.h5", args.video_dir,
-                                 obstacle_radius=pilot_config.obstacle_radius,
-                                 obstacle_height=pilot_config.obstacle_height)
-    _write_pilot_evidence(args.output_dir, args.validation_dir, args.video_dir,
-                          Path(args.diagnostics_dir) / "pilot_evidence.json")
+    if args.validation_dir:
+        validate_minibatch(Path(args.output_dir) / "trajectory.h5", args.validation_dir,
+                           expected_obs_dim=expected_obs_dim)
+    if args.video_dir:
+        render_representative_videos(Path(args.output_dir) / "trajectory.h5", args.video_dir,
+                                      obstacle_radius=pilot_config.obstacle_radius,
+                                      obstacle_height=pilot_config.obstacle_height)
+    if args.diagnostics_dir and args.validation_dir and args.video_dir:
+        _write_pilot_evidence(args.output_dir, args.validation_dir, args.video_dir,
+                              Path(args.diagnostics_dir) / "pilot_evidence.json")
 
 
 def _write_pilot_evidence(dataset_dir, validation_dir, video_dir, destination):

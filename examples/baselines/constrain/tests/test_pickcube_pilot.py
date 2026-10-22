@@ -58,7 +58,8 @@ def test_collector_bounds_complete_attempts_and_records_failed_attempt_reason(tm
     assert report["classes"]["direct"]["complete_attempts"] == 2
     assert report["classes"]["direct"]["failures"] == {"native_timeout": 2}
     assert not report["complete"]
-    assert not (tmp_path / "pilot" / "trajectory.h5").exists()
+    with h5py.File(tmp_path / "pilot" / "trajectory.h5", "r") as handle:
+        assert len(handle) == 0
 
 
 def test_collector_refuses_existing_output_before_running_attempt(tmp_path):
@@ -67,6 +68,51 @@ def test_collector_refuses_existing_output_before_running_attempt(tmp_path):
     (output / "report.json").write_text("{}")
     with pytest.raises(FileExistsError):
         collect_pilot(output, PickCubePilotConfig(), attempt_runner=lambda *args: pytest.fail())
+
+
+def test_collector_uses_independent_direct_and_obstacle_targets(tmp_path):
+    def successful(kind, seed, rng, config):
+        steps = 1
+        return {"actions": np.zeros((steps, 7), dtype=np.float32),
+                "obs": np.zeros((steps + 1, 9), dtype=np.float32),
+                "states": [{"native": np.zeros((1, 3), dtype=np.float32)}] * 2,
+                "terminated": np.array([0, 1], dtype=np.uint8),
+                "truncated": np.zeros(2, dtype=np.uint8), "success": True,
+                "info": {"native_success": True, "safe_success": True}}, None
+
+    report = collect_pilot(tmp_path / "independent",
+        PickCubePilotConfig(target_per_class=7, direct_target=2, obstacle_target=1), successful)
+    assert report["classes"]["direct"]["accepted"] == 2
+    assert report["classes"]["obstacle"]["accepted"] == 1
+
+
+def test_accepted_episodes_and_attempt_report_are_durable_during_collection(tmp_path):
+    output = tmp_path / "durable"
+    calls = 0
+    def successful(kind, seed, rng, config):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"actions": np.zeros((1, 7), dtype=np.float32),
+                    "obs": np.zeros((2, 9), dtype=np.float32),
+                    "states": [{"native": np.zeros((1, 3), dtype=np.float32)}] * 2,
+                    "terminated": np.array([0, 1], dtype=np.uint8),
+                    "truncated": np.zeros(2, dtype=np.uint8), "success": True,
+                    "info": {"native_success": True, "safe_success": True}}, None
+        with h5py.File(output / "trajectory.h5", "r") as handle:
+            assert len(handle) == 1
+        attempts = (output / "attempts.jsonl").read_text().splitlines()
+        assert len(attempts) == 1
+        steps = 1
+        return {"actions": np.zeros((steps, 7), dtype=np.float32),
+                "obs": np.zeros((steps + 1, 9), dtype=np.float32),
+                "states": [{"native": np.zeros((1, 3), dtype=np.float32)}] * 2,
+                "terminated": np.array([0, 1], dtype=np.uint8),
+                "truncated": np.zeros(2, dtype=np.uint8), "success": True,
+                "info": {"native_success": True, "safe_success": True}}, None
+
+    report = collect_pilot(output, PickCubePilotConfig(target_per_class=1), successful)
+    assert report["complete"]
 
 
 @pytest.mark.parametrize("config", [

@@ -85,6 +85,18 @@ def source_fingerprint(repo_root):
             "files": pins}
 
 
+def current_source_fingerprint(repo_root):
+    repo = Path(repo_root)
+    modules = ("pickcube_pilot.py", "pickcube_expert.py", "pickcube_obstacle.py",
+               "layout_geometry.py", "pickcube_provenance.py")
+    return {"git_commit": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
+            "source_hash_basis": "actual current working-tree source bytes before collection",
+            "files": {f"examples/baselines/constrain/{name}": hashlib.sha256(
+                (repo / "examples/baselines/constrain" / name).read_bytes()).hexdigest()
+                for name in modules}}
+
+
 def frozen_recipe(dataset_dir):
     root = Path(dataset_dir)
     config = json.loads((root / "collection_config.json").read_text())

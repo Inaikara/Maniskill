@@ -30,7 +30,8 @@ demos/
 ├── PickCube-obstacle/20261022_154500_pilot_diag/  # 1 direct + 6 obstacle attempts
 ├── PickCube-obstacle/20261022_160000_pilot_diag/  # 1 direct + 6 obstacle attempts
 ├── PickCube-obstacle/20261022_160200_pilot_diag/  # 1 direct + 6 obstacle attempts
-└── PickCube-obstacle/20261022_160500_pilot_diag/  # 1 direct + 6 obstacle attempts
+├── PickCube-obstacle/20261022_160500_pilot_diag/  # 1 direct + 6 obstacle attempts
+└── PickCube-obstacle/20261022_132753_formal/  # Ticket 02 formal 1,000 + 100 collection
 
 outputs/
 ├── ckpt/
@@ -40,7 +41,8 @@ outputs/
     ├── 20260930_base_dp_stackcube_980_seed1/
     ├── 20261021_constrainnet_wristcam_seed1/
     ├── 20261021_wristcam_scenes/
-    └── 20261021_wristcam_paired_eval/
+    ├── 20261021_wristcam_paired_eval/
+    └── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -77,6 +79,13 @@ see `PICKCUBE_PILOT.md` for restoration and safety diagnosis.
 Round-10 retrospective source/recipe provenance and per-trajectory base XY
 side audit are new sidecars in that same dataset directory; they preserve the
 identities and historical status of the original collection metadata.
+The separate Ticket 02 formal run (1,000 direct + 100 safe obstacle accepts,
+pilot excluded) is documented with exact commands and contract in
+`PICKCUBE_DATA.md`; its frozen source/config snapshot precedes collection.
+Collection took 1,503.52 s. All 1,100 episodes passed full native-state,
+controller-state, observation, terminal/safety, and training-window validation;
+the manifest and detailed evidence are under
+`outputs/exp/20261022_132753_pickcube_formal/validation_full_contract/`.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
