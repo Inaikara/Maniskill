@@ -3,6 +3,7 @@
 import argparse
 import dataclasses
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,6 +82,7 @@ def run_pickcube_expert(
 ):
     """Execute one Panda task and return actions, T+1 state/observations and trace."""
     base = env.unwrapped
+    expert_started = time.monotonic()
     cube_xy = np.asarray(cube_xy, dtype=np.float64)
     goal_xy = np.asarray(goal_xy, dtype=np.float64)
     base_xy = base.agent.robot.pose.p[0, :2].detach().cpu().numpy()
@@ -145,6 +147,9 @@ def run_pickcube_expert(
     )
     actions, states, observations = [], [_clone_tree(base.get_state_dict())], [_clone_tree(obs)]
     infos = [_clone_tree(reset_info)]
+    initial_observation_named = _clone_tree(
+        base.get_obs(info=reset_info, unflattened=True)
+    )
     terminated_rows, truncated_rows = [False], [False]
     initial_snapshot = snapshot_execution_state(env)
     trace = {
@@ -154,6 +159,10 @@ def run_pickcube_expert(
         "waypoint_sampling_attempts": waypoint_attempts,
         "phase_status": [],
     }
+    trace["phase_timings"] = {"geometry": time.monotonic() - expert_started,
+                              "expert_execution": 0.0}
+    execution_started = time.monotonic()
+    current_phase = "grasp_approach"
     last_info = reset_info
     done = False
 
@@ -165,6 +174,11 @@ def run_pickcube_expert(
         action = torch.as_tensor(action, dtype=torch.float32, device=base.device)
         obs, _, terminated, truncated, last_info = env.step(action)
         actions.append(action.detach().cpu().numpy().copy())
+        contact = getattr(base, "_first_obstacle_contact", None)
+        if contact is not None and "first_obstacle_contact" not in trace:
+            trace["first_obstacle_contact"] = {
+                **contact, "control_step": len(actions), "phase": current_phase,
+            }
         states.append(_clone_tree(base.get_state_dict()))
         observations.append(_clone_tree(obs))
         infos.append(_clone_tree(last_info))
@@ -226,6 +240,7 @@ def run_pickcube_expert(
     for phase_name, (target, grip, tolerance) in zip(
         ("grasp_approach", "grasp_pose"), phases
     ):
+        current_phase = phase_name
         status = move_to(target, grip, tolerance, grasp_pose.q)
         trace["phase_status"].append((phase_name, status or "reached"))
         if status is not None:
@@ -233,6 +248,7 @@ def run_pickcube_expert(
             break
     if grasp_pose_reached:
         for _ in range(config.grasp_steps):
+            current_phase = "gripper_close"
             if step(torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)):
                 grasp_pose_reached = False
                 trace["phase_status"].append(("gripper_close", "episode_ended"))
@@ -248,6 +264,7 @@ def run_pickcube_expert(
             ("lift", "waypoint", "goal") if waypoint is not None else ("lift", "goal"),
             targets,
         ):
+            current_phase = target_name
             if len(actions) >= config.max_steps:
                 trace["phase_status"].append((target_name, "max_steps"))
                 break
@@ -258,12 +275,14 @@ def run_pickcube_expert(
             if status is not None:
                 break
     if grasp_pose_reached:
+        current_phase = "settle"
         for _ in range(config.settle_steps):
             if len(actions) >= config.max_steps or step(
                 torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)
             ):
                 break
     native = base.evaluate()["native_success"]
+    trace["phase_timings"]["expert_execution"] = time.monotonic() - execution_started
     safety = {
         "native_success": bool(native[0].item()),
         "obstacle_collision": bool(base._obstacle_collision[0].item()),
@@ -276,6 +295,7 @@ def run_pickcube_expert(
         "observations": observations,
         "initial_state": states[0],
         "initial_observation": observations[0],
+        "initial_observation_named": initial_observation_named,
         "initial_snapshot": initial_snapshot,
         "safety": safety,
         "native_info": last_info,
@@ -385,7 +405,7 @@ def _collision_vertices_xy(env, max_height):
     return points
 
 
-def make_pickcube_env(render_mode=None):
+def make_pickcube_env(render_mode=None, *, obstacle_radius=0.03, obstacle_height=0.25):
     return gym.make(
         ENV_ID,
         num_envs=1,
@@ -396,6 +416,8 @@ def make_pickcube_env(render_mode=None):
         control_mode="pd_ee_delta_pose",
         max_episode_steps=500,
         render_mode=render_mode,
+        obstacle_radius=obstacle_radius,
+        obstacle_height=obstacle_height,
     )
 
 

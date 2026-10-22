@@ -20,6 +20,7 @@ from examples.baselines.constrain.pickcube_expert import (
     make_pickcube_env,
     run_pickcube_expert,
 )
+from examples.baselines.constrain.layout_geometry import LayoutGeometryConfig
 
 
 @dataclass(frozen=True)
@@ -31,11 +32,16 @@ class PickCubePilotConfig:
     obs_horizon: int = 2
     pred_horizon: int = 16
     max_wall_seconds: float = 1800.0
+    waypoint_offset_range: tuple = (0.20, 0.25)
+    obstacle_radius: float = 0.03
+    obstacle_height: float = 0.25
 
 
 def _default_attempt(kind, seed, rng, config):
     """Run a real bounded expert attempt; failed or truncated tasks are rejected."""
-    env = make_pickcube_env()
+    env = make_pickcube_env(
+        obstacle_radius=config.obstacle_radius, obstacle_height=config.obstacle_height
+    )
     try:
         base_xy = env.unwrapped.agent.robot.pose.p[0, :2].detach().cpu().numpy()
         # Sample a varied, reachable layout on the robot-facing side of the
@@ -43,7 +49,11 @@ def _default_attempt(kind, seed, rng, config):
         geometry_tries = 0
         waypoint_tries = 0
         template_executions = 0
+        obstacle_executions = 0
         cylinder_candidates = 0
+        phase_timings = {"geometry": 0.0, "template": 0.0,
+                         "cylinder_sampling": 0.0, "obstacle_execution": 0.0}
+        geometry_started = time.monotonic()
         for _ in range(32):
             geometry_tries += 1
             start = np.array([rng.uniform(-0.18, -0.02), rng.uniform(-0.06, 0.12)])
@@ -54,20 +64,29 @@ def _default_attempt(kind, seed, rng, config):
                     obstacle_enabled=False, config=PickCubeExpertConfig(
                         seed=seed, max_steps=config.max_steps if kind == "direct" else max(1, config.max_steps // 2)
                     ),
+                    layout_config=LayoutGeometryConfig(
+                        table_bounds=(-0.25, -0.25, 0.25, 0.35),
+                        min_transport_distance=0.14, min_base_line_distance=0.06,
+                        waypoint_offset_range=config.waypoint_offset_range,
+                        waypoint_lead_fraction=0.25, max_attempts=32,
+                    ),
                 )
+                waypoint_tries += int(result["trace"]["waypoint_sampling_attempts"])
                 break
             except ValueError as exc:
                 if kind == "obstacle" and "invalid_pickcube_waypoint" in str(exc):
                     waypoint_tries += 32
                 if "invalid_pickcube_layout" not in str(exc) and "invalid_pickcube_waypoint" not in str(exc):
                     raise
-            else:
-                waypoint_tries += int(result["trace"]["waypoint_sampling_attempts"])
         else:
             return {"failure": "geometry_retry_exhausted", "counters": {
                 "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries}}, None
+        geometry_elapsed = time.monotonic() - geometry_started
+        template_elapsed = float(result["trace"]["phase_timings"]["expert_execution"])
+        phase_timings["geometry"] = max(0.0, geometry_elapsed - template_elapsed)
         if kind == "obstacle":
-            template_executions = 1
+            template_executions += 1
+            phase_timings["template"] = template_elapsed
             if not result["safety"]["native_success"]:
                 return {"failure": "template_native_timeout_or_unsuccessful", "counters": {
                     "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
@@ -76,7 +95,7 @@ def _default_attempt(kind, seed, rng, config):
             if template_steps >= config.max_steps:
                 return None, "attempt_control_step_budget_exhausted"
             template_state, template_controller = result["initial_snapshot"]
-            template_observation = result["initial_observation"]
+            template_observation = result["initial_observation_named"]
             # Candidate cylinders block the straight S-G object segment but
             # are kept away from the measured successful detour sweep.
             from examples.baselines.constrain.collect_constructive import segment_point_distance
@@ -84,6 +103,7 @@ def _default_attempt(kind, seed, rng, config):
             # link: that swept envelope can cover the entire direct corridor.
             # Candidate execution below remains the authority for all robot
             # links and the cube, including continuous-step crossing checks.
+            cylinder_started = time.monotonic()
             sweep = np.asarray(result["trace"]["cube_xy"], dtype=np.float64)
             center = None
             side = np.sign(np.cross(goal - start, base_xy - start))
@@ -104,28 +124,79 @@ def _default_attempt(kind, seed, rng, config):
                 and -0.25 <= candidate[1] <= 0.35
                 for candidate in candidates
             ])
-            feasible = np.flatnonzero(blocking & (distances >= 0.063))
+            robot_sweep = np.asarray(result["trace"]["swept_xy"], dtype=np.float64)
+            robot_distances, _ = cKDTree(robot_sweep).query(candidates, k=1, workers=1)
+            robot_clear = robot_distances >= config.obstacle_radius
+            feasible = _safe_cylinder_candidates(
+                blocking, distances, robot_distances,
+                required_robot_clearance=config.obstacle_radius,
+                required_cube_clearance=0.063,
+            )
             if len(feasible):
-                robot_sweep = np.asarray(result["trace"]["swept_xy"], dtype=np.float64)
-                robot_distances, _ = cKDTree(robot_sweep).query(candidates, k=1, workers=1)
                 # Rank viable object-blocking locations by clearance from the
                 # measured full robot sweep; final execution still decides.
                 chosen = feasible[np.argmax(robot_distances[feasible])]
                 center = candidates[chosen]
             if center is None:
+                phase_timings["cylinder_sampling"] = time.monotonic() - cylinder_started
                 return {"failure": f"cylinder_geometry_retry_exhausted:{len(candidates)}", "counters": {
                     "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
                     "template_executions": template_executions,
-                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
+                    "cylinder_candidates": cylinder_candidates}, "phase_timings": phase_timings,
+                    "diagnostics": {
                     "candidate_count": len(candidates), "blocking_count": int(blocking.sum()),
-                    "sweep_clear_candidates": int((distances >= 0.035).sum())}}, None
-            template_executions += 1
+                    "sweep_clear_candidates": int((distances >= 0.035).sum()),
+                    "robot_clear_candidates": int(robot_clear.sum()),
+                    "required_robot_clearance_m": config.obstacle_radius,
+                    "maximum_robot_clearance_m": float(robot_distances.max())}}, None
+            phase_timings["cylinder_sampling"] = time.monotonic() - cylinder_started
+            # CPU observations read the live PhysX scene contact cache. Run the
+            # restored execution in a fresh scene to discard template contacts.
+            env.close()
+            env = make_pickcube_env(
+                obstacle_radius=config.obstacle_radius, obstacle_height=config.obstacle_height
+            )
+            env.reset(seed=seed, options={"cube_xy": start, "goal_pos": [*goal, 0.12],
+                                          "obstacle_enabled": True, "obstacle_center": center})
+            obstacle_executions += 1
             result = run_pickcube_expert(
                 env, cube_xy=start, goal_xy=goal, detour=True, obstacle_enabled=True,
                 obstacle_center=center, initial_snapshot=(template_state, template_controller),
-                deterministic_reset_restore=True,
                 config=PickCubeExpertConfig(seed=seed, max_steps=config.max_steps - template_steps),
+                layout_config=LayoutGeometryConfig(
+                    table_bounds=(-0.25, -0.25, 0.25, 0.35),
+                    min_transport_distance=0.14, min_base_line_distance=0.06,
+                    waypoint_offset_range=config.waypoint_offset_range,
+                    waypoint_lead_fraction=0.25, max_attempts=32,
+                ),
             )
+            phase_timings["obstacle_execution"] = float(
+                result["trace"]["phase_timings"]["expert_execution"]
+            )
+            if not _same_initial_except_obstacle(template_state, result["initial_state"]):
+                return {"failure": "initial_state_restore_mismatch", "counters": {
+                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
+                    "template_executions": template_executions,
+                    "obstacle_executions": obstacle_executions,
+                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
+                    "first_difference": _first_tree_difference(template_state, result["initial_state"])}}, None
+            if not _tree_equal(template_controller, result["initial_snapshot"][1]):
+                return {"failure": "controller_restore_mismatch", "counters": {
+                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
+                    "template_executions": template_executions,
+                    "obstacle_executions": obstacle_executions,
+                    "cylinder_candidates": cylinder_candidates}}, None
+            if not _observation_matches_except_obstacle(
+                template_observation, result["initial_observation_named"]
+            ):
+                return {"failure": "initial_observation_restore_mismatch", "counters": {
+                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
+                    "template_executions": template_executions,
+                    "obstacle_executions": obstacle_executions,
+                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
+                    **_observation_mismatch_details(
+                        template_observation, result["initial_observation_named"]
+                    )}}, None
             if not result["safety"]["safe_success"]:
                 if not result["safety"]["native_success"]:
                     reason = "obstacle_native_timeout_or_unsuccessful"
@@ -134,29 +205,13 @@ def _default_attempt(kind, seed, rng, config):
                 return {"failure": reason, "counters": {
                     "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
                     "template_executions": template_executions,
-                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
+                    "obstacle_executions": obstacle_executions,
+                    "cylinder_candidates": cylinder_candidates}, "phase_timings": phase_timings,
+                    "diagnostics": {
                     "safety": result["safety"], "obstacle_center": center.tolist(),
                     "cube_clearance_m": float(distances[chosen]),
-                    "robot_sweep_clearance_m": float(robot_distances[chosen])}}, None
-            if not _same_initial_except_obstacle(template_state, result["initial_state"]):
-                return {"failure": "initial_state_restore_mismatch", "counters": {
-                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
-                    "template_executions": template_executions,
-                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
-                    "first_difference": _first_tree_difference(template_state, result["initial_state"])}}, None
-            if not _tree_equal(template_controller, result["initial_snapshot"][1]):
-                return {"failure": "controller_restore_mismatch", "counters": {
-                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
-                    "template_executions": template_executions,
-                    "cylinder_candidates": cylinder_candidates}}, None
-            if not _observation_matches_except_obstacle(
-                template_observation, result["initial_observation"]
-            ):
-                return {"failure": "initial_observation_restore_mismatch", "counters": {
-                    "geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
-                    "template_executions": template_executions,
-                    "cylinder_candidates": cylinder_candidates}, "diagnostics": {
-                    **_observation_mismatch_details(template_observation, result["initial_observation"])}}, None
+                    "robot_sweep_clearance_m": float(robot_distances[chosen]),
+                    "first_obstacle_contact": result["trace"].get("first_obstacle_contact")}}, None
             result["trace"]["obstacle_center"] = center.tolist()
             result["trace"]["cylinder_candidates_tested"] = int(len(candidates))
             result["trace"]["cylinder_cube_clearance_m"] = float(distances[chosen])
@@ -166,7 +221,7 @@ def _default_attempt(kind, seed, rng, config):
                 "obstacle_native_state_sha256": _value_hash(result["initial_state"], ignore_obstacle_pose=True),
                 "template_controller_sha256": _value_hash(template_controller),
                 "obstacle_controller_sha256": _value_hash(result["initial_snapshot"][1]),
-                "native_observation_equal_except_last_three_obstacle_values": True,
+                "native_observation_equal_except_named_pickcube_obstacle_field": True,
             }
         elif not result["safety"]["native_success"]:
             return {"failure": "native_timeout_or_unsuccessful", "counters": {
@@ -185,7 +240,9 @@ def _default_attempt(kind, seed, rng, config):
             "trace": result["trace"],
             "counters": {"geometry_tries": geometry_tries, "waypoint_tries": waypoint_tries,
                          "template_executions": template_executions,
+                         "obstacle_executions": obstacle_executions,
                          "cylinder_candidates": cylinder_candidates},
+            "phase_timings": phase_timings,
             "info": {"native_success": result["safety"]["native_success"],
                      "safe_success": result["safety"]["safe_success"]},
         }, None
@@ -271,22 +328,67 @@ def _value_hash(value, ignore_obstacle_pose=False):
 
 
 def _observation_matches_except_obstacle(template_obs, obstacle_obs):
-    left = torch.as_tensor(template_obs).reshape(-1)
-    right = torch.as_tensor(obstacle_obs).reshape(-1)
-    return left.numel() >= 3 and left.shape == right.shape and torch.allclose(
-        left[:-3], right[:-3], atol=1e-6, rtol=0
-    )
+    if not isinstance(template_obs, dict) or not isinstance(obstacle_obs, dict):
+        return False
+    if not _contains_key(template_obs, "pickcube_obstacle") or not _contains_key(
+        obstacle_obs, "pickcube_obstacle"
+    ):
+        return False
+    return _observation_tree_equal(template_obs, obstacle_obs)
 
 
 def _observation_mismatch_details(template_obs, obstacle_obs):
-    left = torch.as_tensor(template_obs).reshape(-1)
-    right = torch.as_tensor(obstacle_obs).reshape(-1)
-    if left.shape != right.shape:
-        return {"shape": [list(left.shape), list(right.shape)]}
-    indices = torch.nonzero(torch.abs(left[:-3] - right[:-3]) > 1e-6).reshape(-1)
-    return {"mismatch_indices_before_named_obstacle_field": indices.tolist(),
-            "template_values": left[indices].tolist(), "restored_values": right[indices].tolist(),
-            "named_obstacle_field": right[-3:].tolist()}
+    return {"first_difference": _first_observation_difference(template_obs, obstacle_obs)}
+
+
+def _safe_cylinder_candidates(blocking, cube_distances, robot_distances,
+                              *, required_robot_clearance, required_cube_clearance):
+    blocking = np.asarray(blocking, dtype=bool)
+    cube_distances = np.asarray(cube_distances, dtype=np.float64)
+    robot_distances = np.asarray(robot_distances, dtype=np.float64)
+    if blocking.shape != cube_distances.shape or blocking.shape != robot_distances.shape:
+        raise ValueError("candidate masks and sweep distances must have matching shapes")
+    safe = (blocking & (cube_distances >= required_cube_clearance)
+            & (robot_distances >= required_robot_clearance))
+    return np.flatnonzero(safe)
+
+
+def _contains_key(tree, name):
+    return isinstance(tree, dict) and (
+        name in tree or any(_contains_key(value, name) for value in tree.values())
+    )
+
+
+def _observation_tree_equal(expected, actual):
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        left_keys = expected.keys() - {"pickcube_obstacle"}
+        right_keys = actual.keys() - {"pickcube_obstacle"}
+        return left_keys == right_keys and all(
+            _observation_tree_equal(expected[key], actual[key]) for key in left_keys
+        )
+    if torch.is_tensor(expected) or torch.is_tensor(actual):
+        left, right = torch.as_tensor(expected), torch.as_tensor(actual)
+        return left.shape == right.shape and torch.equal(left, right)
+    return np.array_equal(expected, actual)
+
+
+def _first_observation_difference(expected, actual, path=""):
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        left_keys = expected.keys() - {"pickcube_obstacle"}
+        right_keys = actual.keys() - {"pickcube_obstacle"}
+        if left_keys != right_keys:
+            return {"path": path or "/", "template_keys": sorted(left_keys),
+                    "restored_keys": sorted(right_keys)}
+        for key in sorted(left_keys):
+            difference = _first_observation_difference(expected[key], actual[key], f"{path}/{key}")
+            if difference:
+                return difference
+        return None
+    if not _observation_tree_equal(expected, actual):
+        left = expected.detach().cpu().tolist() if torch.is_tensor(expected) else np.asarray(expected).tolist()
+        right = actual.detach().cpu().tolist() if torch.is_tensor(actual) else np.asarray(actual).tolist()
+        return {"path": path or "/", "template": left, "restored": right}
+    return None
 
 
 def _stack_states(states):
@@ -358,16 +460,19 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                 outcome, reason = runner(kind, seed, rng, config)
                 diagnostics = {}
                 counters = {}
+                phase_timings = {}
                 if isinstance(outcome, dict) and "failure" in outcome and "actions" not in outcome:
                     reason = outcome["failure"]
                     diagnostics = outcome.get("diagnostics", {})
                     counters = outcome.get("counters", {})
+                    phase_timings = outcome.get("phase_timings", {})
                     trajectory = None
                 else:
                     trajectory = outcome
                 counts["complete_attempts"] += 1
                 record = {"class": kind, "attempt": attempt_index + 1, "seed": seed,
                           "elapsed_seconds": time.monotonic() - attempt_started}
+                record["phase_timings"] = phase_timings
                 if trajectory is None:
                     counts[f"failure:{reason or 'unspecified'}"] += 1
                     record["failure"] = reason or "unspecified"
@@ -399,6 +504,7 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                 counts["accepted"] += 1
                 record.update(accepted=True, steps=len(actions))
                 record["counters"] = trajectory.get("counters", {})
+                record["phase_timings"] = trajectory.get("phase_timings", {})
                 for counter, value in record["counters"].items():
                     record[counter] = value
                 record["cylinder_candidates_tested"] = int(
@@ -430,7 +536,14 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
                     "waypoint_tries": sum(int(attempt.get("waypoint_tries", 0))
                                            for attempt in report["attempts"] if attempt["class"] == kind),
                     "template_executions": sum(int(attempt.get("template_executions", 0))
-                                               for attempt in report["attempts"] if attempt["class"] == kind),
+                                                for attempt in report["attempts"] if attempt["class"] == kind),
+                    "obstacle_executions": sum(int(attempt.get("obstacle_executions", 0))
+                                                for attempt in report["attempts"] if attempt["class"] == kind),
+                },
+                "phase_elapsed_seconds": {
+                    phase: sum(float(attempt.get("phase_timings", {}).get(phase, 0.0))
+                               for attempt in report["attempts"] if attempt["class"] == kind)
+                    for phase in ("geometry", "template", "cylinder_sampling", "obstacle_execution")
                 },
                 "elapsed_seconds": time.monotonic() - started,
             }
@@ -476,6 +589,12 @@ def collect_pilot(output_dir, config=PickCubePilotConfig(), attempt_runner=None)
             "horizons": {"obs": config.obs_horizon, "prediction": config.pred_horizon,
                          "execution": 8},
             "rollout_control_step_cap_per_complete_attempt": config.max_steps,
+            "obstacle_geometry": {"cylinder_radius_m": config.obstacle_radius,
+                                  "cylinder_height_m": config.obstacle_height},
+            "layout_geometry": {"waypoint_offset_range_m": list(config.waypoint_offset_range),
+                                "same_base_side_only": True,
+                                "minimum_transport_distance_m": 0.14,
+                                "minimum_base_line_distance_m": 0.06},
         }, indent=2) + "\n")
         report["artifact_sha256"] = {
             name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
@@ -594,10 +713,11 @@ def main(argv=None):
     parser.add_argument("--max-wall-seconds", type=float, default=1800.0)
     parser.add_argument("--video-dir", required=True)
     args = parser.parse_args(argv)
-    report = collect_pilot(args.output_dir, PickCubePilotConfig(
+    pilot_config = PickCubePilotConfig(
         seed=args.seed, target_per_class=args.target_per_class,
         max_attempts_per_class=args.max_attempts_per_class,
-        max_wall_seconds=args.max_wall_seconds))
+        max_wall_seconds=args.max_wall_seconds)
+    report = collect_pilot(args.output_dir, pilot_config)
     diagnostics = Path(args.diagnostics_dir)
     diagnostics.mkdir(parents=True, exist_ok=False)
     (diagnostics / "collection_report.json").write_text(
@@ -605,7 +725,8 @@ def main(argv=None):
     )
     if not report["complete"]:
         raise RuntimeError("pilot target not met; see report.json")
-    env = make_pickcube_env()
+    env = make_pickcube_env(obstacle_radius=pilot_config.obstacle_radius,
+                            obstacle_height=pilot_config.obstacle_height)
     try:
         obs = env.reset(seed=args.seed)[0]
         expected_obs_dim = int(np.asarray(obs).reshape(-1).shape[0])
@@ -613,14 +734,35 @@ def main(argv=None):
         env.close()
     validate_minibatch(Path(args.output_dir) / "trajectory.h5", args.validation_dir,
                        expected_obs_dim=expected_obs_dim)
-    render_representative_videos(Path(args.output_dir) / "trajectory.h5", args.video_dir)
+    render_representative_videos(Path(args.output_dir) / "trajectory.h5", args.video_dir,
+                                 obstacle_radius=pilot_config.obstacle_radius,
+                                 obstacle_height=pilot_config.obstacle_height)
+    _write_pilot_evidence(args.output_dir, args.validation_dir, args.video_dir,
+                          Path(args.diagnostics_dir) / "pilot_evidence.json")
 
 
-def render_representative_videos(dataset_path, output_dir):
+def _write_pilot_evidence(dataset_dir, validation_dir, video_dir, destination):
+    paths = {
+        "trajectory.h5": Path(dataset_dir) / "trajectory.h5",
+        "artifact_hashes.json": Path(dataset_dir) / "artifact_hashes.json",
+        "minibatch_validation.json": Path(validation_dir) / "minibatch_validation.json",
+        "direct.mp4": Path(video_dir) / "direct.mp4",
+        "obstacle.mp4": Path(video_dir) / "obstacle.mp4",
+    }
+    evidence = {name: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                for name, path in paths.items()}
+    destination = Path(destination)
+    destination.write_text(json.dumps(evidence, indent=2) + "\n")
+
+
+def render_representative_videos(dataset_path, output_dir, *, obstacle_radius=0.03,
+                                 obstacle_height=0.25):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
-    env = make_pickcube_env(render_mode="rgb_array")
+    env = make_pickcube_env(render_mode="rgb_array", obstacle_radius=obstacle_radius,
+                            obstacle_height=obstacle_height)
     try:
+        env.reset(seed=0)
         with h5py.File(dataset_path, "r") as handle:
             selected = {}
             for key in sorted(handle.keys(), key=lambda name: int(name.rsplit("_", 1)[1])):
@@ -641,7 +783,10 @@ def render_representative_videos(dataset_path, output_dir):
                             name: _index_state(value, state)
                             for name, value in handle[f"{key}/env_states"].items()
                         })
-                        frame = np.asarray(env.render(), dtype=np.uint8)
+                        frame = env.render()
+                        if torch.is_tensor(frame):
+                            frame = frame.detach().cpu().numpy()
+                        frame = np.asarray(frame, dtype=np.uint8)
                         if frame.ndim == 4:
                             frame = frame[0]
                         writer.append_data(frame)

@@ -87,6 +87,7 @@ class PickCubeObstacleEnv(PickCubeEnv):
         self._obstacle_collision = torch.zeros_like(self._obstacle_enabled)
         self._forbidden_crossing = torch.zeros_like(self._obstacle_enabled)
         self._grasp_started = torch.zeros_like(self._obstacle_enabled)
+        self._first_obstacle_contact = None
         self._prev_cube_xy = self.cube.pose.p[:, :2].clone()
         self._cube_xy_radius = float(np.sqrt(2) * self.cube_half_size)
         self._forbidden_radius = (
@@ -124,6 +125,7 @@ class PickCubeObstacleEnv(PickCubeEnv):
         self._obstacle_collision[:] = False
         self._forbidden_crossing[:] = False
         self._grasp_started[:] = False
+        self._first_obstacle_contact = None
 
     def _obstacle_state(self):
         radius = torch.full((1, 1), self.obstacle_collision_radius, device=self.device)
@@ -191,10 +193,19 @@ class PickCubeObstacleEnv(PickCubeEnv):
             if obstacle_entity not in bodies:
                 continue
             other = bodies[1] if bodies[0] is obstacle_entity else bodies[0]
+            impulses = [float(np.linalg.norm(np.asarray(point.impulse))) for point in contact.points]
             if any(other is target for target in targets) and any(
-                np.linalg.norm(np.asarray(point.impulse)) > self.contact_impulse_threshold
-                for point in contact.points
+                impulse > self.contact_impulse_threshold for impulse in impulses
             ):
+                if self._first_obstacle_contact is None:
+                    if other is self.cube._bodies[0].entity:
+                        other_name = "cube"
+                    else:
+                        other_name = next(link.name for link in self.agent.robot.links
+                                          if other is link._bodies[0].entity)
+                    self._first_obstacle_contact = {
+                        "other": other_name, "max_impulse": max(impulses),
+                    }
                 self._obstacle_collision[:] = True
                 return
 

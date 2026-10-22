@@ -5,8 +5,10 @@ import pytest
 from examples.baselines.constrain.pickcube_pilot import (
     PickCubePilotConfig,
     PickCubePilotDataset,
+    _observation_matches_except_obstacle,
     _same_initial_except_obstacle,
     _value_hash,
+    _safe_cylinder_candidates,
     collect_pilot,
 )
 
@@ -89,6 +91,27 @@ def test_restore_identity_ignores_only_obstacle_condition_and_rejects_robot_pert
     )
 
 
+def test_cylinder_candidates_require_measured_clearance_from_entire_robot_sweep():
+    candidates = _safe_cylinder_candidates(
+        np.array([True, True, True]),
+        np.array([0.08, 0.09, 0.10]),
+        np.array([0.017, 0.029, 0.042]),
+        required_robot_clearance=0.03,
+        required_cube_clearance=0.063,
+    )
+    np.testing.assert_array_equal(candidates, [2])
+
+
+def test_observation_restore_compares_named_native_fields_except_obstacle_condition():
+    template = {"agent": {"qpos": np.array([1.0]), "is_grasped": np.array([0])},
+                "extra": {"goal": np.array([0.2]), "pickcube_obstacle": np.array([0.0, 0.2, 0.03])}}
+    restored = {"agent": {"qpos": np.array([1.0]), "is_grasped": np.array([0])},
+                "extra": {"goal": np.array([0.2]), "pickcube_obstacle": np.array([0.1, 0.2, 0.03])}}
+    assert _observation_matches_except_obstacle(template, restored)
+    restored["agent"]["is_grasped"][0] = 1
+    assert not _observation_matches_except_obstacle(template, restored)
+
+
 def test_failure_result_preserves_phase_counters(tmp_path):
     def failed(kind, seed, rng, config):
         return {"failure": "restore_mismatch", "diagnostics": {"first_difference": "actors/cube"},
@@ -105,6 +128,28 @@ def test_failure_result_preserves_phase_counters(tmp_path):
         "geometry_tries": 2, "waypoint_tries": 1,
         "template_executions": 1, "cylinder_candidates": 525
     }
+
+
+def test_attempt_records_preserve_phase_timings_and_separate_executions(tmp_path):
+    def failed(kind, seed, rng, config):
+        return {"failure": "contact", "counters": {
+                    "template_executions": 1, "obstacle_executions": 1,
+                }, "phase_timings": {
+                    "geometry": 0.2, "template": 1.5,
+                    "cylinder_sampling": 0.1, "obstacle_execution": 2.0,
+                }}, None
+
+    report = collect_pilot(
+        tmp_path / "timed", PickCubePilotConfig(target_per_class=1, max_attempts_per_class=1), failed
+    )
+    attempt = report["attempts"][0]
+    assert attempt["phase_timings"] == {
+        "geometry": 0.2, "template": 1.5,
+        "cylinder_sampling": 0.1, "obstacle_execution": 2.0,
+    }
+    assert attempt["template_executions"] == 1
+    assert attempt["obstacle_executions"] == 1
+    assert report["classes"]["direct"]["phase_elapsed_seconds"]["obstacle_execution"] == 2.0
 
 
 def test_accepted_direct_and_obstacle_are_saved_with_full_state_and_hashes(tmp_path):
