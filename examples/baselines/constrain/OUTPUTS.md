@@ -46,6 +46,8 @@ outputs/
     ├── 20261021_wristcam_scenes/
     ├── 20261021_wristcam_paired_eval/
     ├── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
+    ├── 20261022_151350_pickcube_scenes_smoke/  # one-scene generation/restore smoke incl. bounded failures
+    ├── 20261022_152157_pickcube_scenes/  # Ticket 05: 100 fresh expert-accepted fixed PickCube obstacle scenes
     ├── 20261022_143200_pickcube_base_dp_probe/  # bounded 45-second batch/memory probe
     ├── 20261022_144000_pickcube_base_dp/  # 30,000-update Base DP training
     ├── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
@@ -113,6 +115,14 @@ throughput probe and 32-step real-scene rollout are retained in the listed
 experiment directories. Reproduction details, full artifact identities, exact
 condition/action contract, rollout outcome and verification are in
 `PICKCUBE_TRAINING.md` under Ticket 04.
+
+Ticket 05's independently generated 100-scene PickCube obstacle catalog,
+attempt/failure and phase timing report, native controller/runtime identity,
+strict fresh-environment restoration audit, public load/restore API, exact
+reproduction command and artifact hashes are documented in
+`PICKCUBE_SCENES.md`. The complete run accepted 100/350 attempts in 304.33 s;
+all 100 restores passed. The small smoke run and its bounded failed attempts
+are retained separately for the implementation check.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
