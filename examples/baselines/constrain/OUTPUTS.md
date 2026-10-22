@@ -48,6 +48,9 @@ outputs/
     ├── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
     ├── 20261022_151350_pickcube_scenes_smoke/  # one-scene generation/restore smoke incl. bounded failures
     ├── 20261022_152157_pickcube_scenes/  # Ticket 05: 100 fresh expert-accepted fixed PickCube obstacle scenes
+    ├── 20261022_155725_pickcube_paired_eval/  # retained failed preflight: invalid state-fingerprint normalization, no policy actions
+    ├── 20261022_160037_pickcube_paired_eval/  # retained failed attempt: Base DP condition and GPU video conversion errors
+    ├── 20261022_162002_pickcube_paired_eval/  # Ticket 06: frozen Base DP / ConstrainNet paired evaluation
     ├── 20261022_143200_pickcube_base_dp_probe/  # bounded 45-second batch/memory probe
     ├── 20261022_144000_pickcube_base_dp/  # 30,000-update Base DP training
     ├── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
@@ -127,6 +130,31 @@ invocations in 304.33 s; the original 100/350-loop-iteration report remains
 unchanged and the corrected denominator is hash-pinned by its sidecar.
 all 100 restores passed. The small smoke run and its bounded failed attempts
 are retained separately for the implementation check.
+
+Ticket 06's first frozen runner attempt at
+`outputs/exp/20261022_155725_pickcube_paired_eval/` completed 0 policy actions;
+all 200 records capture a state-fingerprint normalization error. The native
+state snapshots were hashed without flattening the vector-env batch dimension,
+matching the scene catalog's identity contract. That failed attempt is retained
+unchanged. The corrected formal attempt is at
+`outputs/exp/20261022_160037_pickcube_paired_eval/` retained 100 Base DP
+condition-shape errors and three ConstrainNet video conversion errors; the 97
+other ConstrainNet episodes were recorded, and all files remain unchanged. The
+next attempt corrects those runner interface issues without changing scenes or
+checkpoints and is at `outputs/exp/20261022_162002_pickcube_paired_eval/`.
+
+Ticket 06's PickCube-only paired evaluation uses the two recorded final EMA
+checkpoints on that immutable 100-scene catalog. Run configuration, complete
+per-scene outcome/action records, restoration fingerprints, fixed-index videos,
+per-policy summaries and paired comparison are under
+`outputs/exp/20261022_162002_pickcube_paired_eval/`; reproduction and metric
+definitions are in `PICKCUBE_EVALUATION.md`. Both policies completed 100/100
+records with no runtime errors. Base DP/ConstrainNet task success was 82/83,
+safe success 2/38, obstacle contact 97/53, and XY crossing/timeouts 0/0 for
+each. Paired task outcomes were 71 both, 11 Base-only, 12 Constrain-only, 6
+neither; paired safe outcomes were 1 both, 1 Base-only, 37 Constrain-only, 61
+neither. All full-state/controller/observation restore fingerprints matched
+across policy pairs and observations matched the catalog.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
