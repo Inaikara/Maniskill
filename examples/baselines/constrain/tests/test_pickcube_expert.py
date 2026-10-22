@@ -13,10 +13,11 @@ def test_pickcube_expert_returns_full_rollout_and_preserves_pose_action_channels
     try:
         result = run_pickcube_expert(
             env,
-            cube_xy=(-0.04, 0.05),
-            goal_xy=(0.12, 0.20),
+            cube_xy=(-0.12, 0.07),
+            goal_xy=(0.12, 0.07),
             obstacle_enabled=False,
         )
+        assert result["safety"]["native_success"]
         assert result["actions"].ndim == 2
         assert result["actions"].shape[1] == 7
         assert len(result["states"]) == len(result["actions"]) + 1
@@ -41,6 +42,8 @@ def test_native_success_and_safety_violation_on_same_control_step_is_not_safe_su
             },
         )
         base = env.unwrapped
+        for _ in range(20):
+            env.step(torch.zeros(7))
         state = base.get_state_dict()
         state["actors"]["cube"][0, :3] = state["pickcube_goal"][0]
         base.set_state_dict(state)
@@ -50,12 +53,6 @@ def test_native_success_and_safety_violation_on_same_control_step_is_not_safe_su
         _, _, terminated, truncated, info = env.step(torch.zeros(7))
         assert not bool(terminated)
         assert not bool(truncated)
-        assert bool(info["obstacle_crossing"].item())
-        # Establish native success in the same still-live episode after the
-        # real physics step registered the forbidden swept segment.
-        base.goal_site.set_pose(base.cube.pose)
-        base.agent.robot.set_qvel(torch.zeros_like(base.agent.robot.get_qvel()))
-        info = base.evaluate()
         assert bool(info["native_success"].item())
         assert bool(info["obstacle_crossing"].item())
         assert not bool(info["success"].item())

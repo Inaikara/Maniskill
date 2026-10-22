@@ -106,7 +106,12 @@ def run_pickcube_expert(
         approaching, grasp["closing"], base.cube.pose.sp.p
     )
     actions, states, observations = [], [base.get_state_dict()], [obs]
-    trace = {"swept_xy": [], "cube_xy": [], "waypoint_xy": None if waypoint is None else waypoint.tolist()}
+    trace = {
+        "swept_xy": [],
+        "cube_xy": [],
+        "waypoint_xy": None if waypoint is None else waypoint.tolist(),
+        "phase_status": [],
+    }
     last_info = reset_info
     done = False
 
@@ -130,6 +135,8 @@ def run_pickcube_expert(
     def move_to(target, grip, tolerance=None, target_quat=None):
         tolerance = config.waypoint_tolerance if tolerance is None else tolerance
         for _ in range(config.max_steps_per_waypoint):
+            if done or len(actions) >= config.max_steps:
+                return "episode_ended"
             tcp = base.agent.tcp.pose.p[0]
             delta = target - tcp
             rotation = torch.zeros(3, device=base.device)
@@ -138,19 +145,27 @@ def run_pickcube_expert(
                 current_q = base.agent.tcp.pose.q[0].detach().cpu().numpy()
                 target_xyzw = np.asarray(target_quat)[[1, 2, 3, 0]]
                 current_xyzw = current_q[[1, 2, 3, 0]]
-                rotvec = (
+                delta_rotation = (
                     Rotation.from_quat(target_xyzw)
                     * Rotation.from_quat(current_xyzw).inv()
-                ).as_rotvec()
-                rotation = torch.as_tensor(rotvec / 0.1, dtype=torch.float32, device=base.device)
+                )
+                delta_euler = delta_rotation.as_euler("XYZ")
+                arm_controller = base.agent.controller.controllers["arm"]
+                rotation = torch.as_tensor(
+                    delta_euler / np.asarray(arm_controller.config.rot_lower),
+                    dtype=torch.float32,
+                    device=base.device,
+                )
                 rotation = rotation.clamp(-config.action_cap, config.action_cap)
-                rotation_done = np.linalg.norm(rotvec) < 0.03
+                rotation_done = np.linalg.norm(delta_rotation.as_rotvec()) < 0.03
             if float(torch.linalg.norm(delta).item()) < tolerance and rotation_done:
-                return False
+                return None
             pos = (delta / 0.1).clamp(-config.action_cap, config.action_cap)
             if step(torch.cat([pos, rotation, torch.tensor([grip], device=base.device)])):
-                return True
-        return True
+                return "episode_ended"
+        if len(actions) >= config.max_steps:
+            return "episode_ended"
+        return "timeout"
 
     reach_pose = grasp_pose * sapien.Pose([0, 0, -0.05])
     grasp_position = torch.as_tensor(reach_pose.p, dtype=torch.float32, device=base.device)
@@ -159,28 +174,47 @@ def run_pickcube_expert(
         (grasp_position, 1.0, None),
         (torch.as_tensor(grasp_pose.p, dtype=torch.float32, device=base.device), 1.0, None),
     ]
-    for target, grip, tolerance in phases:
-        if move_to(target, grip, tolerance, grasp_pose.q):
+    grasp_pose_reached = True
+    for phase_name, (target, grip, tolerance) in zip(
+        ("grasp_approach", "grasp_pose"), phases
+    ):
+        status = move_to(target, grip, tolerance, grasp_pose.q)
+        trace["phase_status"].append((phase_name, status or "reached"))
+        if status is not None:
+            grasp_pose_reached = False
             break
-    for _ in range(config.grasp_steps):
-        if step(torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)):
-            break
+    if grasp_pose_reached:
+        for _ in range(config.grasp_steps):
+            if step(torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)):
+                grasp_pose_reached = False
+                trace["phase_status"].append(("gripper_close", "episode_ended"))
+                break
     lift = grasp_pose.p.copy()
     lift[2] += config.lift_height
     targets = [lift]
     if waypoint is not None:
         targets.append(np.array([waypoint[0], waypoint[1], cube_z + config.lift_height]))
     targets.append(base.goal_site.pose.p[0].detach().cpu().numpy())
-    for target in targets:
-        if len(actions) >= config.max_steps or move_to(
-            torch.as_tensor(target, dtype=torch.float32, device=base.device), -1.0
+    if grasp_pose_reached:
+        for target_name, target in zip(
+            ("lift", "waypoint", "goal") if waypoint is not None else ("lift", "goal"),
+            targets,
         ):
-            break
-    for _ in range(config.settle_steps):
-        if len(actions) >= config.max_steps or step(
-            torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)
-        ):
-            break
+            if len(actions) >= config.max_steps:
+                trace["phase_status"].append((target_name, "max_steps"))
+                break
+            status = move_to(
+                torch.as_tensor(target, dtype=torch.float32, device=base.device), -1.0
+            )
+            trace["phase_status"].append((target_name, status or "reached"))
+            if status is not None:
+                break
+    if grasp_pose_reached:
+        for _ in range(config.settle_steps):
+            if len(actions) >= config.max_steps or step(
+                torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)
+            ):
+                break
     native = base.evaluate()["native_success"]
     safety = {
         "native_success": bool(native[0].item()),
