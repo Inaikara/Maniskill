@@ -1,7 +1,10 @@
 import torch
+import numpy as np
 
 from examples.baselines.constrain.pickcube_expert import (
     make_pickcube_env,
+    project_collision_vertices_xy,
+    scale_native_euler_action,
     restore_execution_state,
     run_pickcube_expert,
     snapshot_execution_state,
@@ -60,14 +63,37 @@ def test_native_success_and_safety_violation_on_same_control_step_is_not_safe_su
         env.close()
 
 
+def test_cylinder_sweep_projection_excludes_vertices_above_cylinder_top():
+    vertices = torch.tensor([
+        [0.1, 0.2, 0.20],
+        [0.3, 0.4, 0.26],
+        [0.5, 0.6, 0.25],
+    ]).numpy()
+
+    projected = project_collision_vertices_xy(vertices, max_height=0.25)
+
+    np.testing.assert_allclose(projected, [[0.1, 0.2], [0.5, 0.6]], atol=1e-7)
+
+
+def test_native_euler_action_uses_signed_controller_rotation_bounds():
+    action = scale_native_euler_action(
+        [0.1, -0.2, 0.3], [-0.5, 0.5, -1.0], action_cap=0.35
+    )
+
+    np.testing.assert_allclose(action, [-0.2, -0.35, -0.3], atol=1e-7)
+
+
 def test_explicit_controller_snapshot_restores_same_action_continuation():
     env = make_pickcube_env()
     try:
         env.reset(seed=7, options={"obstacle_enabled": False})
         base = env.unwrapped
         snapshot = snapshot_execution_state(env)
+        expected_snapshot = _clone_nested(snapshot)
         action = torch.tensor([0.2, -0.1, 0.1, 0.15, 0.0, -0.1, 1.0])
         env.step(action)
+        _assert_nested_tensors_equal(expected_snapshot[0], snapshot[0])
+        _assert_nested_tensors_equal(expected_snapshot[1], snapshot[1])
         first = base.get_state_dict()
         restore_execution_state(env, snapshot)
         _assert_nested_tensors_equal(snapshot[1], base.agent.controller.get_state())
@@ -87,3 +113,9 @@ def _assert_nested_tensors_equal(expected, actual):
             _assert_nested_tensors_equal(expected[key], actual[key])
         else:
             assert torch.equal(expected[key], actual[key]), key
+
+
+def _clone_nested(value):
+    if isinstance(value, dict):
+        return {key: _clone_nested(item) for key, item in value.items()}
+    return value.clone() if torch.is_tensor(value) else value

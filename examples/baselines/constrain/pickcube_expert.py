@@ -61,6 +61,7 @@ def run_pickcube_expert(
     obstacle_enabled=False,
     obstacle_center=(0.8, 0.8),
     config=PickCubeExpertConfig(),
+    initial_snapshot=None,
     layout_config=LayoutGeometryConfig(
         table_bounds=(-0.25, -0.25, 0.25, 0.35),
         min_transport_distance=0.14,
@@ -87,15 +88,30 @@ def run_pickcube_expert(
             raise ValueError(f"invalid_pickcube_waypoint:{sampled.reason}")
         waypoint = sampled.waypoint_xy
 
-    obs, reset_info = env.reset(
-        seed=config.seed,
-        options={
-            "cube_xy": cube_xy,
-            "goal_pos": [*goal_xy, 0.12],
-            "obstacle_enabled": obstacle_enabled,
-            "obstacle_center": obstacle_center,
-        },
-    )
+    if initial_snapshot is None:
+        obs, reset_info = env.reset(
+            seed=config.seed,
+            options={
+                "cube_xy": cube_xy,
+                "goal_pos": [*goal_xy, 0.12],
+                "obstacle_enabled": obstacle_enabled,
+                "obstacle_center": obstacle_center,
+            },
+        )
+    else:
+        state, controller = initial_snapshot
+        state = _clone_tree(state)
+        if obstacle_enabled:
+            extra = state["pickcube_obstacle"]
+            extra[0, :2] = torch.as_tensor(obstacle_center, dtype=extra.dtype, device=extra.device)
+            extra[0, 3] = 1
+            extra[0, 4:7] = 0
+            base.set_state_dict(state)
+        else:
+            base.set_state_dict(state)
+        base.agent.controller.set_state(_clone_tree(controller))
+        obs = base.get_obs()
+        reset_info = base.evaluate()
     # Official Panda PickCube expert geometry and grasp convention.
     approaching = np.array([0.0, 0.0, -1.0])
     closing = base.agent.tcp.pose.to_transformation_matrix()[0, :3, 1].cpu().numpy()
@@ -105,7 +121,10 @@ def run_pickcube_expert(
     grasp_pose = base.agent.build_grasp_pose(
         approaching, grasp["closing"], base.cube.pose.sp.p
     )
-    actions, states, observations = [], [base.get_state_dict()], [obs]
+    actions, states, observations = [], [_clone_tree(base.get_state_dict())], [_clone_tree(obs)]
+    infos = [_clone_tree(reset_info)]
+    terminated_rows, truncated_rows = [False], [False]
+    initial_snapshot = snapshot_execution_state(env)
     trace = {
         "swept_xy": [],
         "cube_xy": [],
@@ -123,10 +142,15 @@ def run_pickcube_expert(
         action = torch.as_tensor(action, dtype=torch.float32, device=base.device)
         obs, _, terminated, truncated, last_info = env.step(action)
         actions.append(action.detach().cpu().numpy().copy())
-        states.append(base.get_state_dict())
-        observations.append(obs)
+        states.append(_clone_tree(base.get_state_dict()))
+        observations.append(_clone_tree(obs))
+        infos.append(_clone_tree(last_info))
+        terminated_rows.append(bool(terminated))
+        truncated_rows.append(bool(truncated))
         trace["cube_xy"].append(base.cube.pose.p[0, :2].detach().cpu().numpy().copy())
-        trace["swept_xy"].extend(_collision_vertices_xy(base))
+        trace["swept_xy"].extend(
+            _collision_vertices_xy(base, max_height=float(base.obstacle_height))
+        )
         done = bool(terminated) or bool(truncated) or bool(
             base.evaluate()["native_success"][0].item()
         )
@@ -152,11 +176,12 @@ def run_pickcube_expert(
                 delta_euler = delta_rotation.as_euler("XYZ")
                 arm_controller = base.agent.controller.controllers["arm"]
                 rotation = torch.as_tensor(
-                    delta_euler / np.asarray(arm_controller.config.rot_lower),
+                    scale_native_euler_action(
+                        delta_euler, arm_controller.config.rot_lower, config.action_cap
+                    ),
                     dtype=torch.float32,
                     device=base.device,
                 )
-                rotation = rotation.clamp(-config.action_cap, config.action_cap)
                 rotation_done = np.linalg.norm(delta_rotation.as_rotvec()) < 0.03
             if float(torch.linalg.norm(delta).item()) < tolerance and rotation_done:
                 return None
@@ -228,14 +253,41 @@ def run_pickcube_expert(
         "observations": observations,
         "initial_state": states[0],
         "initial_observation": observations[0],
+        "initial_snapshot": initial_snapshot,
         "safety": safety,
         "native_info": last_info,
+        "infos": infos,
+        "terminated": np.asarray(terminated_rows, dtype=np.uint8),
+        "truncated": np.asarray(truncated_rows, dtype=np.uint8),
         "trace": trace,
         "layout": {"start_xy": cube_xy.tolist(), "goal_xy": goal_xy.tolist()},
     }
 
 
-def _collision_vertices_xy(env):
+def _clone_tree(value):
+    if isinstance(value, dict):
+        return {key: _clone_tree(item) for key, item in value.items()}
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    return value
+
+
+def project_collision_vertices_xy(vertices_world, max_height):
+    """Project collision vertices occupying the cylinder's vertical envelope."""
+    vertices_world = np.asarray(vertices_world, dtype=np.float64).reshape(-1, 3)
+    return vertices_world[vertices_world[:, 2] <= max_height, :2]
+
+
+def scale_native_euler_action(delta_euler, rot_lower, action_cap):
+    """Map native XYZ Euler deltas through the signed controller lower scale."""
+    return np.clip(
+        np.asarray(delta_euler, dtype=np.float64) / np.asarray(rot_lower, dtype=np.float64),
+        -action_cap,
+        action_cap,
+    )
+
+
+def _collision_vertices_xy(env, max_height):
     points = []
     for link in env.agent.robot.links:
         for shape in link._bodies[0].collision_shapes:
@@ -244,7 +296,9 @@ def _collision_vertices_xy(env):
             except AttributeError:
                 get_half_size = getattr(shape, "get_half_size", None)
                 if get_half_size is None:
-                    continue
+                    raise RuntimeError(
+                        f"cannot enumerate collision geometry for robot link {link.name}"
+                    )
                 half = np.asarray(get_half_size()).reshape(3)
                 vertices = np.array(
                     [[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]
@@ -254,14 +308,18 @@ def _collision_vertices_xy(env):
             world = link.pose.to_transformation_matrix()[0].cpu().numpy() @ (
                 np.asarray(local) @ homogeneous
             )
-            points.extend(world[:2].T.tolist())
-    cube = env.cube.pose.p[0, :2].detach().cpu().numpy()
+            points.extend(project_collision_vertices_xy(world[:3].T, max_height).tolist())
     half = float(env.cube_half_size)
-    points.extend((cube + np.array([x, y])).tolist() for x in (-half, half) for y in (-half, half))
+    cube_pose = env.cube.pose.p[0].detach().cpu().numpy()
+    cube_vertices = np.asarray([
+        cube_pose + np.array([x, y, z])
+        for x in (-half, half) for y in (-half, half) for z in (-half, half)
+    ])
+    points.extend(project_collision_vertices_xy(cube_vertices, max_height).tolist())
     return points
 
 
-def make_pickcube_env():
+def make_pickcube_env(render_mode=None):
     return gym.make(
         ENV_ID,
         num_envs=1,
@@ -271,6 +329,7 @@ def make_pickcube_env():
         robot_init_qpos_noise=0.02,
         control_mode="pd_ee_delta_pose",
         max_episode_steps=500,
+        render_mode=render_mode,
     )
 
 
