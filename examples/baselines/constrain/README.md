@@ -423,6 +423,18 @@ training losses and independent short obstacle-scene rollout are recorded in
 be loaded through `PickCubeBaseDPAdapter.initialize_constrain_base()` for the
 task-specific ConstrainNet branch.
 
+## PickCube obstacle ConstrainNet (multitask-obstacle Ticket 04)
+
+`pickcube_constrain.py` provides the native 42d/7d task contract, strict
+selection of the 100 formal safe obstacle demonstrations, shared latest-frame
+relative TCP/cylinder hint extraction, a standalone EMA checkpoint loader, and
+the fixed 30,000-update training entry point. The control branch retains all
+three rotation action channels. The frozen Base DP checkpoint, data hashes,
+contract, loss log, independent zero-control equivalence, control-update
+evidence, and bounded real rollout are documented in
+[PICKCUBE_TRAINING.md](PICKCUBE_TRAINING.md); current artifact locations are in
+[OUTPUTS.md](OUTPUTS.md). This rollout is not the formal 100-scene evaluation.
+
 ## Full training, verification and paired evaluation (Ticket 04)
 
 ```bash

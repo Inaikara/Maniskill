@@ -53,6 +53,7 @@ def save_constrain_checkpoint(
     step=0,
     rng=None,
     config=None,
+    checkpoint_format=CHECKPOINT_FORMAT,
 ):
     """Write the standalone checkpoint atomically enough for repeated saves.
 
@@ -64,7 +65,7 @@ def save_constrain_checkpoint(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = dict(
-        format=CHECKPOINT_FORMAT,
+        format=checkpoint_format,
         model=denoiser.state_dict(),
         ema=ema.state_dict() if ema is not None else None,
         optimizer=optimizer.state_dict() if optimizer is not None else None,

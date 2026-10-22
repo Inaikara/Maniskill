@@ -38,7 +38,8 @@ outputs/
 ├── ckpt/
 │   ├── base_dp_stackcube_980/best_eval_success_at_end.pt
 │   ├── constrainnet_wristcam_seed1/final.pt
-│   └── 20261022_144000_pickcube_base_dp/final.pt
+│   ├── 20261022_144000_pickcube_base_dp/final.pt
+│   └── 20261022_144835_pickcube_constrain/final.pt
 └── exp/
     ├── 20260930_base_dp_stackcube_980_seed1/
     ├── 20261021_constrainnet_wristcam_seed1/
@@ -47,7 +48,10 @@ outputs/
     ├── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
     ├── 20261022_143200_pickcube_base_dp_probe/  # bounded 45-second batch/memory probe
     ├── 20261022_144000_pickcube_base_dp/  # 30,000-update Base DP training
-    └── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
+    ├── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
+    ├── 20261022_144800_pickcube_constrain_probe/  # separate 45-second non-formal throughput probe
+    ├── 20261022_144835_pickcube_constrain/  # 30,000-update ControlNet run, logs/config/verification
+    └── 20261022_150600_pickcube_constrain_rollout/  # 32-step real-scene interface rollout, not evaluation
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -98,6 +102,17 @@ log, checkpoint and short interface rollout are documented in
 100 obstacle examples were filtered out by the frozen episode manifest. The
 full 30,000-update run completed in 896.09 seconds and its final EMA checkpoint
 is stored separately under `outputs/ckpt/`.
+
+Ticket 04's task-specific PickCube ConstrainNet uses exactly the 100 formal safe
+obstacle episodes (IDs 1000–1099) and the trusted Ticket 03 final EMA. Its
+complete configuration, 30,000 finite per-step losses, independent-base and
+control-update evidence are under
+`outputs/exp/20261022_144835_pickcube_constrain/`; the standalone final EMA is
+under `outputs/ckpt/20261022_144835_pickcube_constrain/`. The separate bounded
+throughput probe and 32-step real-scene rollout are retained in the listed
+experiment directories. Reproduction details, full artifact identities, exact
+condition/action contract, rollout outcome and verification are in
+`PICKCUBE_TRAINING.md` under Ticket 04.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and

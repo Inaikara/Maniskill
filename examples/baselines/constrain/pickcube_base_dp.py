@@ -199,7 +199,7 @@ class PickCubeBaseDPAdapter:
     """Strict standalone inference and ConstrainNet base-network seam."""
 
     @staticmethod
-    def validate_checkpoint(checkpoint):
+    def validate_checkpoint(checkpoint, expected_episode_ids=None, trusted_h5_sha256=None):
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
         schema = ck.get("named_state_schema", {})
         data = ck.get("data_identity", {})
@@ -211,6 +211,13 @@ class PickCubeBaseDPAdapter:
                 or len(data.get("selected_episode_ids", [])) != 1000
                 or not data.get("h5_sha256") or not data.get("manifest_sha256")):
             raise ValueError("PickCube checkpoint contract mismatch")
+        selected = data.get("selected_episode_ids", [])
+        if len(set(selected)) != 1000:
+            raise ValueError("PickCube checkpoint data identity has duplicate episode IDs")
+        if expected_episode_ids is not None and selected != list(expected_episode_ids):
+            raise ValueError("PickCube checkpoint selected episode IDs do not match the trusted training set")
+        if trusted_h5_sha256 is not None and data.get("h5_sha256") != trusted_h5_sha256:
+            raise ValueError("PickCube checkpoint HDF5 identity does not match the trusted formal dataset")
         return ck
 
     def __init__(self, checkpoint, device="cpu", weights="ema"):
