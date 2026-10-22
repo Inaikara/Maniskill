@@ -5,6 +5,8 @@ import pytest
 from examples.baselines.constrain.pickcube_pilot import (
     PickCubePilotConfig,
     PickCubePilotDataset,
+    _same_initial_except_obstacle,
+    _value_hash,
     collect_pilot,
 )
 
@@ -52,6 +54,57 @@ def test_collector_refuses_existing_output_before_running_attempt(tmp_path):
     (output / "report.json").write_text("{}")
     with pytest.raises(FileExistsError):
         collect_pilot(output, PickCubePilotConfig(), attempt_runner=lambda *args: pytest.fail())
+
+
+@pytest.mark.parametrize("config", [
+    PickCubePilotConfig(max_attempts_per_class=0),
+    PickCubePilotConfig(target_per_class=1.5),
+    PickCubePilotConfig(max_wall_seconds=float("inf")),
+    PickCubePilotConfig(max_wall_seconds=0),
+])
+def test_collector_rejects_invalid_or_unbounded_budgets_before_creating_output(tmp_path, config):
+    output = tmp_path / "invalid"
+    with pytest.raises(ValueError):
+        collect_pilot(output, config, attempt_runner=lambda *args: pytest.fail())
+    assert not output.exists()
+
+
+def test_restore_identity_ignores_only_obstacle_condition_and_rejects_robot_perturbation():
+    baseline = {
+        "actors": {"robot": np.array([[1.0, 2.0]]), "cube": np.array([[3.0]])},
+        "pickcube_obstacle": np.array([[0.0, 0.2, 0.03, 1, 0, 0, 0, 0, 0]])
+    }
+    restored = {
+        "actors": {"robot": np.array([[1.0, 2.0]]), "cube": np.array([[3.0]])},
+        "pickcube_obstacle": np.array([[0.05, 0.2, 0.03, 1, 0, 0, 0, 0, 0]])
+    }
+    assert _same_initial_except_obstacle(baseline, restored)
+    assert _value_hash(baseline, ignore_obstacle_pose=True) == _value_hash(
+        restored, ignore_obstacle_pose=True
+    )
+    restored["actors"]["robot"][0, 0] += 0.01
+    assert not _same_initial_except_obstacle(baseline, restored)
+    assert _value_hash(baseline, ignore_obstacle_pose=True) != _value_hash(
+        restored, ignore_obstacle_pose=True
+    )
+
+
+def test_failure_result_preserves_phase_counters(tmp_path):
+    def failed(kind, seed, rng, config):
+        return {"failure": "restore_mismatch", "diagnostics": {"first_difference": "actors/cube"},
+                "counters": {"geometry_tries": 2, "waypoint_tries": 1,
+                             "template_executions": 1, "cylinder_candidates": 525}}, None
+
+    report = collect_pilot(
+        tmp_path / "diagnostic", PickCubePilotConfig(target_per_class=1, max_attempts_per_class=1), failed
+    )
+    attempt = report["attempts"][0]
+    assert attempt["failure"] == "restore_mismatch"
+    assert attempt["diagnostics"]["first_difference"] == "actors/cube"
+    assert attempt["counters"] == {
+        "geometry_tries": 2, "waypoint_tries": 1,
+        "template_executions": 1, "cylinder_candidates": 525
+    }
 
 
 def test_accepted_direct_and_obstacle_are_saved_with_full_state_and_hashes(tmp_path):

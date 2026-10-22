@@ -48,8 +48,15 @@ def snapshot_execution_state(env):
 def restore_execution_state(env, snapshot):
     state, controller = snapshot
     base = env.unwrapped
-    base.set_state_dict(state)
+    _set_state_dict_exact(base, state)
     base.agent.controller.set_state(controller)
+    # Continuing a restored episode must not inherit its previous rollout's
+    # Gym TimeLimit/native elapsed-step counters.
+    for wrapper in (env, base):
+        if hasattr(wrapper, "_elapsed_steps"):
+            wrapper._elapsed_steps = 0
+    if torch.is_tensor(getattr(base, "_elapsed_steps", None)):
+        base._elapsed_steps.zero_()
 
 
 def run_pickcube_expert(
@@ -62,6 +69,7 @@ def run_pickcube_expert(
     obstacle_center=(0.8, 0.8),
     config=PickCubeExpertConfig(),
     initial_snapshot=None,
+    deterministic_reset_restore=False,
     layout_config=LayoutGeometryConfig(
         table_bounds=(-0.25, -0.25, 0.25, 0.35),
         min_transport_distance=0.14,
@@ -80,6 +88,7 @@ def run_pickcube_expert(
     if not layout.valid:
         raise ValueError(f"invalid_pickcube_layout:{layout.reason}")
     waypoint = None
+    waypoint_attempts = 0
     if detour:
         sampled = sample_same_side_waypoint(
             cube_xy, goal_xy, base_xy, np.random.default_rng(config.seed), layout_config
@@ -87,6 +96,7 @@ def run_pickcube_expert(
         if sampled.waypoint_xy is None:
             raise ValueError(f"invalid_pickcube_waypoint:{sampled.reason}")
         waypoint = sampled.waypoint_xy
+        waypoint_attempts = sampled.attempts
 
     if initial_snapshot is None:
         obs, reset_info = env.reset(
@@ -101,17 +111,29 @@ def run_pickcube_expert(
     else:
         state, controller = initial_snapshot
         state = _clone_tree(state)
-        if obstacle_enabled:
-            extra = state["pickcube_obstacle"]
-            extra[0, :2] = torch.as_tensor(obstacle_center, dtype=extra.dtype, device=extra.device)
-            extra[0, 3] = 1
-            extra[0, 4:7] = 0
-            base.set_state_dict(state)
+        if deterministic_reset_restore:
+            obs, reset_info = env.reset(
+                seed=config.seed,
+                options={"cube_xy": cube_xy, "goal_pos": [*goal_xy, 0.12],
+                         "obstacle_enabled": obstacle_enabled,
+                         "obstacle_center": obstacle_center},
+            )
+            base.agent.controller.set_state(_clone_tree(controller))
         else:
-            base.set_state_dict(state)
-        base.agent.controller.set_state(_clone_tree(controller))
-        obs = base.get_obs()
-        reset_info = base.evaluate()
+            if obstacle_enabled:
+                extra = state["pickcube_obstacle"]
+                extra[0, :2] = torch.as_tensor(obstacle_center, dtype=extra.dtype, device=extra.device)
+                extra[0, 3] = 1
+                extra[0, 4:7] = 0
+            _set_state_dict_exact(base, state)
+            base.agent.controller.set_state(_clone_tree(controller))
+            for wrapper in (env, base):
+                if hasattr(wrapper, "_elapsed_steps"):
+                    wrapper._elapsed_steps = 0
+            if torch.is_tensor(getattr(base, "_elapsed_steps", None)):
+                base._elapsed_steps.zero_()
+            obs = base.get_obs()
+            reset_info = base.evaluate()
     # Official Panda PickCube expert geometry and grasp convention.
     approaching = np.array([0.0, 0.0, -1.0])
     closing = base.agent.tcp.pose.to_transformation_matrix()[0, :3, 1].cpu().numpy()
@@ -129,6 +151,7 @@ def run_pickcube_expert(
         "swept_xy": [],
         "cube_xy": [],
         "waypoint_xy": None if waypoint is None else waypoint.tolist(),
+        "waypoint_sampling_attempts": waypoint_attempts,
         "phase_status": [],
     }
     last_info = reset_info
@@ -272,6 +295,48 @@ def _clone_tree(value):
     return value
 
 
+def _set_state_dict_exact(env, expected):
+    """Correct only measured SAPIEN root-pose round-trip drift, then verify all leaves."""
+    candidate = _clone_tree(expected)
+    for _ in range(4):
+        env.set_state_dict(candidate)
+        actual = env.get_state_dict()
+        if _state_tree_equal(expected, actual):
+            return
+        wanted_root = expected.get("articulations", {}).get("panda")
+        actual_root = actual.get("articulations", {}).get("panda")
+        if (not torch.is_tensor(wanted_root) or not torch.is_tensor(actual_root)
+                or wanted_root.shape != actual_root.shape or wanted_root.shape[-1] < 7):
+            break
+        normalized_actual = _clone_tree(actual)
+        normalized_actual["articulations"]["panda"][..., :3] = wanted_root[..., :3]
+        if not _state_tree_equal(expected, normalized_actual):
+            break
+        # SAPIEN's float32 world-pose round trip can accumulate a few ulps in
+        # the Panda root translation. Feed back the measured residual; never
+        # accept it as equal unless the complete resulting state is bit-exact.
+        candidate["articulations"]["panda"][..., :3] += (
+            wanted_root[..., :3] - actual_root[..., :3]
+        )
+    raise RuntimeError("exact native state restore failed after root-pose residual correction")
+
+
+def _state_tree_equal(expected, actual):
+    if not isinstance(expected, dict) or not isinstance(actual, dict) or expected.keys() != actual.keys():
+        return False
+    for key in expected:
+        left, right = expected[key], actual[key]
+        if isinstance(left, dict):
+            if not _state_tree_equal(left, right):
+                return False
+        elif torch.is_tensor(left):
+            if not torch.is_tensor(right) or not torch.equal(left, right):
+                return False
+        elif not np.array_equal(left, right):
+            return False
+    return True
+
+
 def project_collision_vertices_xy(vertices_world, max_height):
     """Project collision vertices occupying the cylinder's vertical envelope."""
     vertices_world = np.asarray(vertices_world, dtype=np.float64).reshape(-1, 3)
@@ -311,10 +376,11 @@ def _collision_vertices_xy(env, max_height):
             points.extend(project_collision_vertices_xy(world[:3].T, max_height).tolist())
     half = float(env.cube_half_size)
     cube_pose = env.cube.pose.p[0].detach().cpu().numpy()
-    cube_vertices = np.asarray([
-        cube_pose + np.array([x, y, z])
-        for x in (-half, half) for y in (-half, half) for z in (-half, half)
+    local_cube_vertices = np.asarray([
+        [x, y, z] for x in (-half, half) for y in (-half, half) for z in (-half, half)
     ])
+    cube_rotation = env.cube.pose.to_transformation_matrix()[0, :3, :3].cpu().numpy()
+    cube_vertices = local_cube_vertices @ cube_rotation.T + cube_pose
     points.extend(project_collision_vertices_xy(cube_vertices, max_height).tolist())
     return points
 

@@ -16,7 +16,16 @@ The Base DP date below comes from its TensorBoard event timestamp.
 ```text
 demos/
 ├── StackCube-obstacle/
-└── PickCube-obstacle/20261022_120016_pilot/  # incomplete pilot attempt
+├── PickCube-obstacle/20261022_120016_pilot/  # retained incomplete attempt
+├── PickCube-obstacle/20261022_153000_pilot_diag/  # interrupted diagnostic (bug found)
+├── PickCube-obstacle/20261022_153200_pilot_diag/  # 1 direct + 3 obstacle attempts
+├── PickCube-obstacle/20261022_153500_pilot_diag/  # interrupted diagnostic (bug found)
+├── PickCube-obstacle/20261022_153700_pilot_diag/  # 1 direct + 6 obstacle attempts
+├── PickCube-obstacle/20261022_154000_pilot_diag/  # 1 direct + 20 obstacle attempts
+├── PickCube-obstacle/20261022_154500_pilot_diag/  # 1 direct + 6 obstacle attempts
+├── PickCube-obstacle/20261022_160000_pilot_diag/  # 1 direct + 6 obstacle attempts
+├── PickCube-obstacle/20261022_160200_pilot_diag/  # 1 direct + 6 obstacle attempts
+└── PickCube-obstacle/20261022_160500_pilot_diag/  # 1 direct + 6 obstacle attempts
 
 outputs/
 ├── ckpt/
@@ -36,7 +45,7 @@ trajectories. The paired evaluation retains both policies' 100 episode records,
 manifests, summaries, videos and final audit. Pilot/profiling/failed outputs and
 the large intermediate scene-template report were removed during cleanup.
 
-## PickCube pilot attempt (incomplete)
+## PickCube pilot attempts (incomplete)
 
 `demos/PickCube-obstacle/20261022_120016_pilot/` retains 20 accepted direct
 trajectories and the complete attempt report. The obstacle phase exhausted its
@@ -44,10 +53,15 @@ trajectories and the complete attempt report. The obstacle phase exhausted its
 initial-state restoration mismatches); it did not meet the ticket's 20-obstacle
 acceptance target and is not a usable obstacle dataset. The data, contract,
 configuration, report and artifact hashes are retained for traceability.
-Validation diagnostics and the saved-batch model check are under
-`outputs/exp/20261022_120016_pickcube_pilot/`. The later height-aware footprint
-correction is code-only; it has not been validated by another obstacle
-collection run because this attempt's obstacle budget was consumed.
+Validation diagnostics and the saved-batch model check for the prior pilot are
+under `outputs/exp/20261022_120016_pickcube_pilot/`. Round-8 code changes and
+bounded live diagnostics are documented in
+`examples/baselines/constrain/PICKCUBE_PILOT.md`. Those attempts accepted no
+obstacle examples, so no new videos or saved-batch model evidence are claimed.
+Final bounded diagnostics had zero state-restoration failures after exact
+residual correction, but retained observation-index-18 mismatches and native
+robot-obstacle contact failures; the underlying observation contract is not
+verified.
 
 Bounded calibration records are retained at
 `demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
