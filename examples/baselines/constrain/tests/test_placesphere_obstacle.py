@@ -1,3 +1,5 @@
+import hashlib
+
 import numpy as np
 import pytest
 import torch
@@ -233,6 +235,18 @@ def test_collector_freezes_contract_before_attempt_and_uses_each_target(tmp_path
     def accepted(kind, seed, rng, config):
         contract = json.loads((output / "frozen_contract.json").read_text())
         assert contract["limits"]["targets_per_class"] == {"direct": 2, "obstacle": 1}
+        source_manifest = json.loads((output / "source_snapshot_manifest.json").read_text())
+        assert source_manifest["capture_point"] == "before_first_attempt"
+        assert contract["local_source_snapshot_manifest_sha256"] == hashlib.sha256(
+            (output / "source_snapshot_manifest.json").read_bytes()).hexdigest()
+        assert source_manifest["local_sources"] == {
+            path: {"sha256": digest,
+                   "snapshot_path": f"source_snapshot/{path}"}
+            for path, digest in contract["local_source_sha256_before_collection"].items()
+        }
+        for path, record in source_manifest["local_sources"].items():
+            data = (output / record["snapshot_path"]).read_bytes()
+            assert hashlib.sha256(data).hexdigest() == record["sha256"]
         calls.append(kind)
         info = {"native_success": [True], "success": [True],
                 "is_obj_on_bin": [True], "is_obj_static": [True],
@@ -257,6 +271,9 @@ def test_collector_freezes_contract_before_attempt_and_uses_each_target(tmp_path
             (output / "attempts.jsonl").read_text().splitlines()] == calls
     manifest = json.loads((output / "trajectory.json").read_text())
     assert len(manifest["episodes"]) == 3
+    artifact_hashes = json.loads((output / "artifact_hashes.json").read_text())
+    for path, record in json.loads((output / "source_snapshot_manifest.json").read_text())["local_sources"].items():
+        assert artifact_hashes[record["snapshot_path"]] == record["sha256"]
 
 
 def test_native_seven_channel_action_limits_allow_full_gripper_range():

@@ -153,6 +153,38 @@ trajectory SHA remains
 `0a415d203ee023368c357bcb34c9173128633230cca210ac9abf6f562aca8220`; it is
 excluded from all formal counts and files.
 
+## Retrospective source audit
+
+Ticket review found that the frozen contract's pre-attempt pin for
+`placesphere_formal.py` (`15fe2080…`) differed from the then-current file
+(`66cd8150…`) and that the executed source bytes had not been retained. The exact
+executed source has now been recovered from the workspace OpenCode snapshot Git
+object `85e38256b2c857d568b8b5b04171a1f7ec744421`; the recovered file SHA-256 is
+**`15fe2080f5a0c8a3d2ecbac7157190b3c799def9543f0c3a30c427881cca4135`**, an
+exact match to the frozen contract. The immutable copy is
+`outputs/exp/20261022_184558_placesphere_formal/provenance_source/placesphere_formal.py`.
+
+The complete diff to current source is
+`provenance_source/post_collection_source.diff` (SHA-256
+`ad78f949d1e4b09e2a457df92da99273f868c9a822b1ac442601e73862f4f74c`). It adds
+only measured restore-delta diagnostics to validation output; collector,
+expert, action, and episode-generation behavior are unchanged. The other frozen
+local pins match the worktree, except `placesphere_pilot.py` which is recovered
+from committed source at `aa985ab:examples/baselines/constrain/placesphere_pilot.py`
+with the exact frozen SHA-256. Its current diff is separately reviewable in
+`provenance_source/current_pilot_snapshotting.diff` and adds only future
+pre-attempt source archiving. Both native source pins match their committed and
+current bytes. The complete mapping, object identities, recovered hash proof,
+all original dataset hashes, and change classifications are in
+`provenance_source/source_recovery_manifest.json`.
+
+Future PlaceSphere collections now archive all local source bytes under
+`<dataset>/source_snapshot/` before runtime preflight, contract creation, and
+the first attempt. The manifest SHA is pinned in the frozen contract, and each
+snapshot is included in the dataset artifact hash list. A regression test
+asserts that snapshots and their hashes exist and match before an attempt runner
+is invoked.
+
 The first formal preflight at `20261022_180137` is preserved separately. It
 returned one successful expert rollout but raised before writing that attempt
 row because validation incorrectly applied the ±0.35 pose-channel bound to the

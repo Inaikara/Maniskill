@@ -274,3 +274,9 @@ The first preflight at `20261022_180137` is retained with its source contract an
 accounting sidecar: the initial validator incorrectly applied the ±0.35 pose
 bound to the native ±1 gripper channel, returning one rollout before journaling
 the attempt and accepting no trajectory.
+The qualifying dataset's retrospective exact source recovery, matching
+SHA-256 proof, validation-only source delta, full local/native source pin audit,
+and future pre-attempt source snapshot behavior are documented in
+`outputs/exp/20261022_184558_placesphere_formal/provenance_source/` and
+`PLACE_SPHERE_DATA.md`. The original frozen contract, dataset, validation, and
+formal identity files retain their original bytes and hashes.

@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -601,6 +602,30 @@ def _state_write(group, key, value):
         group.create_dataset(key, data=value.detach().cpu().numpy() if torch.is_tensor(value) else np.asarray(value))
 
 
+def _snapshot_local_sources(repo, output_dir, local_paths, revision):
+    """Archive and hash each local source before runtime preflight or any attempt."""
+    root = Path(output_dir)
+    sources = {}
+    for name in local_paths:
+        relative = f"examples/baselines/constrain/{name}"
+        data = (repo / relative).read_bytes()
+        snapshot_path = Path("source_snapshot") / relative
+        destination = root / snapshot_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open("xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        sources[relative] = {"sha256": hashlib.sha256(data).hexdigest(),
+                             "snapshot_path": snapshot_path.as_posix()}
+    manifest = {"capture_point": "before_first_attempt",
+                "capture_order": "before runtime preflight and frozen contract creation",
+                "git_commit": revision, "local_sources": sources}
+    manifest_path = root / "source_snapshot_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    return sources, hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
 def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=None):
     targets = {kind: config.target(kind) for kind in ("direct", "obstacle")}
     positive = (*targets.values(), config.max_attempts_per_class,
@@ -626,13 +651,11 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
     local_paths = ("placesphere_obstacle.py", "placesphere_pilot.py",
                    "placesphere_formal.py",
                    "pickcube_expert.py", "layout_geometry.py")
-    local_pins = {
-        f"examples/baselines/constrain/{name}": hashlib.sha256(
-            (repo / "examples/baselines/constrain" / name).read_bytes()).hexdigest()
-        for name in local_paths
-    }
     import subprocess
     revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    source_records, source_manifest_sha256 = _snapshot_local_sources(
+        repo, root, local_paths, revision)
+    local_pins = {path: record["sha256"] for path, record in source_records.items()}
     native_paths = ("mani_skill/envs/tasks/tabletop/place_sphere.py",
                     "mani_skill/examples/motionplanning/panda/solutions/place_sphere.py")
     native_git_pins = {
@@ -666,6 +689,7 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         "native_git_pins_sha256": native_git_pins,
         "native_worktree_source_sha256": native_worktree_pins,
         "local_source_sha256_before_collection": local_pins,
+        "local_source_snapshot_manifest_sha256": source_manifest_sha256,
         "config": asdict(config),
         "native_geometry": {
             "sphere_radius_m": actual_radius,
@@ -918,10 +942,12 @@ def collect_pilot(output_dir, config=PlaceSpherePilotConfig(), attempt_runner=No
         report["trajectory_sha256"] = hashlib.sha256((root / "trajectory.h5").read_bytes()).hexdigest()
         (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         names = ("trajectory.h5", "trajectory.json", "frozen_contract.json",
-                 "collection_config.json", "report.json")
-        (root / "artifact_hashes.json").write_text(json.dumps({
-            name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names
-        }, indent=2) + "\n")
+                 "collection_config.json", "report.json", "source_snapshot_manifest.json")
+        hashes = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}
+        for record in source_records.values():
+            name = record["snapshot_path"]
+            hashes[name] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+        (root / "artifact_hashes.json").write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n")
         return report
     except BaseException:
         report["interrupted"] = True
