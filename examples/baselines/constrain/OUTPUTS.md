@@ -54,7 +54,8 @@ outputs/
 │   ├── base_dp_stackcube_980/best_eval_success_at_end.pt
 │   ├── constrainnet_wristcam_seed1/final.pt
 │   ├── 20261022_144000_pickcube_base_dp/final.pt
-│   └── 20261022_144835_pickcube_constrain/final.pt
+│   ├── 20261022_144835_pickcube_constrain/final.pt
+│   └── 20261022_193900_placesphere_base_dp/final.pt  # Ticket 09 independent 30,000-update EMA
 └── exp/
     ├── 20260930_base_dp_stackcube_980_seed1/
     ├── 20261021_constrainnet_wristcam_seed1/
@@ -84,7 +85,11 @@ outputs/
     ├── 20261022_173110_placesphere_pilot/  # Ticket 07 validation, logs, hashes and videos
     ├── 20261022_180137_placesphere_formal/  # retained failed preflight/accounting
     ├── 20261022_180516_placesphere_formal/  # retained intermediate run; raw obs absent
-    └── 20261022_184558_placesphere_formal/  # Ticket 08 qualifying collection/audit
+    ├── 20261022_184558_placesphere_formal/  # Ticket 08 qualifying collection/audit
+    ├── 20261022_193725_placesphere_base_dp_probe/  # separate 45-second throughput probe
+    ├── 20261022_193900_placesphere_base_dp/  # Ticket 09 30,000 updates, source/config/loss
+    ├── 20261022_193900_placesphere_base_dp_rollout/  # initial native action-bound diagnostic
+    └── 20261022_195600_placesphere_base_dp_rollout/  # corrected 32-step interface rollout
 ```
 
 The ConstrainNet experiment retains its loss log, provenance, run configuration,
@@ -280,3 +285,15 @@ and future pre-attempt source snapshot behavior are documented in
 `outputs/exp/20261022_184558_placesphere_formal/provenance_source/` and
 `PLACE_SPHERE_DATA.md`. The original frozen contract, dataset, validation, and
 formal identity files retain their original bytes and hashes.
+
+Ticket 09's independent PlaceSphere Base DP uses only direct formal IDs 0–999,
+with a 39-D named-state condition, all seven native Euler/gripper action
+channels, and PlaceSphere-specific open-gripper tail padding. Its 30,000-update
+final EMA, strict loader, source/config snapshots, complete finite loss log, and
+short restored obstacle rollout are documented in `PLACE_SPHERE_TRAINING.md`.
+The independent throughput probe and both rollout records are retained; the
+initial rollout exposed model outputs outside the formal native pose bound and
+is kept as a diagnostic. The exact pre-run source archive and reviewable
+post-training action-bound delta are under the training experiment directory.
+The corrected 32-step rollout is an interface check only; no PlaceSphere policy
+evaluation or ControlNet training was run.
