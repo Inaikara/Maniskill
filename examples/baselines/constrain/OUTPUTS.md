@@ -86,6 +86,9 @@ Also retained:
   diagnosis for 28 old PickCube scenes. It does not replace
   `20261022_162002_pickcube_paired_eval/`. The earlier incomplete run
   `20261023_122333_pickcube_contact_diagnosis/` is not the evidence set.
+- `outputs/exp/20261023_141712_placesphere_failure_diagnosis/`: Ticket 02
+  crossing and terminal diagnosis for 28 old PlaceSphere scenes. It does not
+  replace `20261022_213500_placesphere_paired_eval/`.
 
 ## Reports
 
