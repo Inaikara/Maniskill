@@ -82,6 +82,10 @@ Also retained:
   12-ticket acceptance audit, whose pre-cleanup scope is unchanged.
 - `outputs/exp/20261023_105159_final_artifact_cleanup/`: current pruning and
   retained-identity audit. This supersedes historical *retention* descriptions.
+- `outputs/exp/20261023_122842_pickcube_contact_diagnosis/`: Ticket 01 contact
+  diagnosis for 28 old PickCube scenes. It does not replace
+  `20261022_162002_pickcube_paired_eval/`. The earlier incomplete run
+  `20261023_122333_pickcube_contact_diagnosis/` is not the evidence set.
 
 ## Reports
 
