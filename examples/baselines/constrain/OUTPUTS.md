@@ -100,6 +100,15 @@ Also retained:
   `demos/PickCube-transport-detour/20261023_165956/`. Incomplete same-day runs
   `20261023_164921_pickcube_transport_detour/` and
   `20261023_165430_pickcube_transport_detour/` are not this evidence set.
+- `outputs/exp/20261023_235744_pickcube_learning_pilot_r2/`: Ticket 05
+  learnability pilot, round 2 of 2. Gate is **pause**. It does not replace
+  `20261022_162002_pickcube_paired_eval/` and does not admit Ticket 07.
+  Round 1 `outputs/exp/20261023_183243_pickcube_learning_pilot/` is retained
+  and was not used for training. Weights:
+  `outputs/ckpt/20261023_235744_pickcube_pilot_base/final.pt`,
+  `outputs/ckpt/20261023_235744_pickcube_pilot_constrain/final.pt`.
+  Training demos: `demos/PickCube-transport-detour/20261023_235744_pilot_r2/`.
+  These are not formal performance results.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
