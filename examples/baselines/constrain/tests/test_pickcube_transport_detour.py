@@ -127,21 +127,32 @@ def test_midsegment_candidates_stay_on_the_anti_detour_side_of_the_segment():
 
 
 def test_fork_shares_lift_and_goal_and_inserts_only_a_side_waypoint():
+    join = {"measured": True, "max_commanded_heading_step_deg": 8.0,
+            "max_tcp_heading_step_deg": 9.0, "transport_steps": 8}
     direct = {
-        "phases": [("lift", "reached"), ("goal", "episode_ended")],
+        "phases": [("lift", "reached"), ("transport", "reached"), ("goal_entry", "reached")],
         "targets": {
             "lift_xyz": [0.0, 0.0, 0.14],
             "goal_xyz": [1.0, 0.0, 0.12],
             "waypoint_xyz": None,
+            "transport_exit_xyz": [1.0, 0.0, 0.14],
+            "goal_entry_xyz": [1.0, 0.0, 0.12],
+            "retreat_required": False,
         },
+        "join": join,
     }
     detour = {
-        "phases": [("lift", "reached"), ("waypoint", "reached"), ("goal", "episode_ended")],
+        "phases": [("lift", "reached"), ("waypoint", "reached"), ("transport", "reached"),
+                   ("goal_entry", "reached")],
         "targets": {
             "lift_xyz": [0.0, 0.0, 0.14],
             "goal_xyz": [1.0, 0.0, 0.12],
             "waypoint_xyz": [0.5, 0.2, 0.14],
+            "transport_exit_xyz": [1.0, 0.0, 0.14],
+            "goal_entry_xyz": [1.0, 0.0, 0.12],
+            "retreat_required": False,
         },
+        "join": join,
     }
 
     ok, reason = shared_transport_fork(direct, detour)
@@ -177,7 +188,7 @@ def test_fork_rejects_a_direct_waypoint_and_a_hooked_detour():
     direct["targets"]["waypoint_xyz"] = None
     ok, reason = shared_transport_fork(direct, detour)
     assert not ok
-    assert reason == "detour_not_side_continuous"
+    assert reason == "shared_endpoint_missing"
 
 
 def test_deadline_kills_the_worker_and_counts_the_attempt(tmp_path):
@@ -260,6 +271,211 @@ def test_cube_center_above_the_cylinder_still_crosses_the_xy_disk():
         assert bool(info["obstacle_crossing"].item())
     finally:
         env.close()
+
+
+def test_goal_entry_episode_end_still_shares_the_target_phase():
+    join = {"measured": True, "max_commanded_heading_step_deg": 8.0,
+            "max_tcp_heading_step_deg": 9.0, "transport_steps": 8}
+    direct = {
+        "phases": [("lift", "reached"), ("transport", "reached"), ("goal_entry", "episode_ended")],
+        "targets": {
+            "lift_xyz": [0.0, 0.0, 0.14], "goal_xyz": [1.0, 0.0, 0.12], "waypoint_xyz": None,
+            "transport_exit_xyz": [1.0, 0.0, 0.14], "goal_entry_xyz": [1.0, 0.0, 0.12],
+            "retreat_required": False,
+        },
+        "join": join,
+    }
+    detour = {
+        "phases": [("lift", "reached"), ("transport", "reached"), ("goal_entry", "episode_ended")],
+        "targets": {
+            "lift_xyz": [0.0, 0.0, 0.14], "goal_xyz": [1.0, 0.0, 0.12],
+            "waypoint_xyz": [0.5, 0.2, 0.14],
+            "transport_exit_xyz": [1.0, 0.0, 0.14], "goal_entry_xyz": [1.0, 0.0, 0.12],
+            "retreat_required": False,
+        },
+        "join": join,
+    }
+
+    ok, reason = shared_transport_fork(direct, detour)
+
+    assert ok
+    assert reason is None
+
+
+def test_angle_under_150_without_executed_motion_is_not_a_smooth_join():
+    lift = [0.0, 0.0, 0.14]
+    waypoint = [0.30, 0.0, 0.14]
+    goal = [0.15, 0.2598076211353316, 0.12]
+    transport_exit = [goal[0], goal[1], lift[2]]
+    direct = {
+        "phases": [("lift", "reached"), ("transport", "reached"), ("goal_entry", "reached")],
+        "targets": {
+            "lift_xyz": lift, "goal_xyz": goal, "waypoint_xyz": None,
+            "transport_exit_xyz": transport_exit, "goal_entry_xyz": goal,
+            "retreat_required": False,
+        },
+        "join": {"measured": True, "max_commanded_heading_step_deg": 4.0,
+                 "max_tcp_heading_step_deg": 5.0, "transport_steps": 8},
+    }
+    detour = {
+        "phases": [("lift", "reached"), ("waypoint", "reached"), ("transport", "reached"),
+                   ("goal_entry", "reached")],
+        "targets": {
+            "lift_xyz": lift, "goal_xyz": goal, "waypoint_xyz": waypoint,
+            "transport_exit_xyz": transport_exit, "goal_entry_xyz": goal,
+            "retreat_required": False,
+        },
+    }
+    corner = _turn_deg(lift[:2], waypoint[:2], goal[:2])
+
+    ok, reason = shared_transport_fork(direct, detour)
+
+    assert 90.0 < corner < 150.0
+    assert not ok
+    assert reason == "join_not_measured"
+
+
+def test_executed_heading_step_cap_is_45_degrees_not_a_polyline_corner():
+    from examples.baselines.constrain.pickcube_transport_detour import measure_executed_join
+
+    sharp_actions = np.array([
+        [0.30, 0.00, 0, 0, 0, 0, -1],
+        [0.30, 0.00, 0, 0, 0, 0, -1],
+        [0.00, 0.30, 0, 0, 0, 0, -1],
+        [0.00, 0.30, 0, 0, 0, 0, -1],
+    ], dtype=np.float64)
+    sharp_tcp = np.array([
+        [0.00, 0.00, 0.14],
+        [0.02, 0.00, 0.14],
+        [0.04, 0.00, 0.14],
+        [0.04, 0.02, 0.14],
+        [0.04, 0.04, 0.14],
+    ])
+    sharp = measure_executed_join(sharp_tcp, sharp_actions, ["transport"] * 4)
+
+    assert not sharp.continuous
+    assert sharp.reason == "transport_join_discontinuous"
+    assert sharp.max_commanded_heading_step_deg == pytest.approx(90.0)
+    assert sharp.max_tcp_heading_step_deg == pytest.approx(90.0)
+
+    angles = np.deg2rad(np.arange(8) * 10.0)
+    smooth_actions = np.column_stack([
+        0.30 * np.cos(angles), 0.30 * np.sin(angles), np.zeros((8, 5)),
+    ])
+    smooth_actions[:, 6] = -1.0
+    smooth_tcp = np.zeros((9, 3))
+    smooth_tcp[0] = [0.0, 0.0, 0.14]
+    for index, angle in enumerate(angles):
+        smooth_tcp[index + 1, :2] = smooth_tcp[index, :2] + 0.01 * np.array([np.cos(angle), np.sin(angle)])
+        smooth_tcp[index + 1, 2] = 0.14
+    smooth = measure_executed_join(smooth_tcp, smooth_actions, ["transport"] * 8)
+
+    assert smooth.continuous
+    assert smooth.reason is None
+    assert smooth.max_commanded_heading_step_deg == pytest.approx(10.0, abs=1e-6)
+    assert smooth.max_commanded_heading_step_deg <= 45.0
+
+
+def test_endpoint_sweep_is_phase_based_and_keeps_both_paths():
+    from examples.baselines.constrain.pickcube_transport_detour import (
+        classify_direct_block,
+        endpoint_column_clear,
+        endpoint_sweep_points,
+    )
+
+    sweep = [
+        {"phase": "goal_entry", "bodies": {
+            "cube": np.array([[0.20, 0.0, 0.12]]),
+            "panda_link6": np.array([[0.01, 0.0, 0.08]]),
+        }},
+        {"phase": "transport", "bodies": {
+            "panda_hand": np.array([[0.0, 0.0, 0.08]]),
+            "cube": np.array([[0.05, 0.0, 0.12]]),
+        }},
+        {"phase": "settle", "bodies": {"panda_leftfinger": np.array([[0.02, 0.01, 0.10]])}},
+    ]
+    points = endpoint_sweep_points(sweep)
+
+    assert any(np.allclose(point, [0.01, 0.0, 0.08]) for point in points)
+    assert any(np.allclose(point, [0.02, 0.01, 0.10]) for point in points)
+    assert not any(np.allclose(point, [0.0, 0.0, 0.08]) for point in points)
+    ok, reason = endpoint_column_clear(
+        points, np.array([[0.20, 0.0, 0.05]]), center_xy=(0.0, 0.0), radius=0.03, height=0.15,
+    )
+    assert not ok
+    assert reason == "direct_endpoint_occupies_cylinder_column"
+    ok, reason = endpoint_column_clear(
+        np.zeros((0, 3)), np.array([[0.20, 0.0, 0.05]]), center_xy=(0.0, 0.0), radius=0.03, height=0.15,
+    )
+    assert not ok
+    assert reason == "endpoint_sweep_incomplete"
+    ok, reason = classify_direct_block({"phase": "transport", "cube_xyz": [0.02, 0.0, 0.12]})
+    assert ok
+    assert reason is None
+    ok, reason = classify_direct_block({"phase": "goal_entry", "cube_xyz": [5.0, 5.0, 0.12]})
+    assert not ok
+    assert reason == "direct_block_contact_in_endpoint"
+
+
+def test_generate_freezes_working_tree_source_identity_before_artifacts(tmp_path):
+    import hashlib
+    import json
+
+    out = tmp_path / "batch"
+    generate(
+        out, seed=1, target=1, max_attempts=1, max_wall_seconds=10, per_attempt_deadline=5,
+        worker_argv_fn=lambda seed, result_dir: ["python", "-c", "import sys; sys.exit(3)"],
+    )
+    identity = json.loads((out / "source_identity.json").read_text())
+    report = json.loads((out / "report.json").read_text())
+
+    assert identity["git_head_is_code_identity"] is False
+    assert "source_identity_sha256" not in identity
+    rel = "examples/baselines/constrain/pickcube_transport_detour.py"
+    assert identity["files"][rel] == hashlib.sha256(Path(rel).read_bytes()).hexdigest()
+    assert "examples/baselines/constrain/pickcube_expert.py" in identity["files"]
+    assert "source_identity.json" not in identity["files"]
+    assert report["source_files_sha256"] == identity["files_sha256"]
+    assert report["source_identity_sha256"] == hashlib.sha256((out / "source_identity.json").read_bytes()).hexdigest()
+
+
+def test_continuous_join_execution_is_smoother_than_its_polyline_corner():
+    from examples.baselines.constrain.pickcube_expert import make_pickcube_env, run_pickcube_expert
+    from examples.baselines.constrain.pickcube_transport_detour import measure_executed_join
+
+    env = make_pickcube_env(obstacle_radius=0.03, obstacle_height=0.05)
+    try:
+        result = run_pickcube_expert(
+            env, cube_xy=(-0.12, 0.07), goal_xy=(0.12, 0.07), detour=True,
+            waypoint_xy=(0.0, 0.24), obstacle_enabled=False, continuous_join=True,
+            record_body_sweep=True,
+        )
+        targets = result["trace"]["shared_targets"]
+        corner = _turn_deg(targets["lift_xyz"][:2], targets["waypoint_xyz"][:2], targets["transport_exit_xyz"][:2])
+        join = measure_executed_join(
+            result["trace"]["tcp_xyz"], result["actions"], result["trace"]["step_phase"],
+        )
+        phases = [name for name, _status in result["trace"]["phase_status"]]
+        assert result["safety"]["native_success"] and result["safety"]["held_at_success"]
+        assert targets["retreat_required"] is False
+        assert "transport" in phases and "goal_entry" in phases and "settle" in phases
+        assert corner > 90.0
+        assert join.continuous
+        assert join.max_commanded_heading_step_deg <= 45.0
+        assert join.max_tcp_heading_step_deg <= 45.0
+        assert join.max_commanded_heading_step_deg + 20.0 < corner
+    finally:
+        env.close()
+
+
+def _turn_deg(start, corner, end):
+    start = np.asarray(start, dtype=np.float64)
+    corner = np.asarray(corner, dtype=np.float64)
+    end = np.asarray(end, dtype=np.float64)
+    incoming = corner - start
+    outgoing = end - corner
+    cosine = float(np.dot(incoming, outgoing) / (np.linalg.norm(incoming) * np.linalg.norm(outgoing)))
+    return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
 
 
 def _no_lingering_sleep():

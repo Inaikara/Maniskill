@@ -89,11 +89,17 @@ Also retained:
 - `outputs/exp/20261023_141712_placesphere_failure_diagnosis/`: Ticket 02
   crossing and terminal diagnosis for 28 old PlaceSphere scenes. It does not
   replace `20261022_213500_placesphere_paired_eval/`.
-- `outputs/exp/20261023_153133_pickcube_transport_detour/`: Ticket 03 development
-  batch, 8 measured-height side-detour scenes. It does not replace
-  `20261022_152157_pickcube_scenes/` or `20261022_162002_pickcube_paired_eval/`.
-  Matching trajectories are `demos/PickCube-transport-detour/20261023_153133/`.
-  Earlier same-day probe and incomplete runs are not this evidence set.
+- `outputs/exp/20261023_153133_pickcube_transport_detour/`: retained Ticket 03
+  batch. It does not close the parent end-sweep, join, or source-identity gaps.
+  Bytes are unchanged. Matching trajectories remain
+  `demos/PickCube-transport-detour/20261023_153133/`.
+- `outputs/exp/20261023_165956_pickcube_transport_detour/`: Ticket 03 acceptance
+  batch, 8/22 attempts. It supersedes `20261023_153133` for those three gaps
+  and does not replace `20261022_152157_pickcube_scenes/` or
+  `20261022_162002_pickcube_paired_eval/`. Matching trajectories are
+  `demos/PickCube-transport-detour/20261023_165956/`. Incomplete same-day runs
+  `20261023_164921_pickcube_transport_detour/` and
+  `20261023_165430_pickcube_transport_detour/` are not this evidence set.
 
 ## Reports
 

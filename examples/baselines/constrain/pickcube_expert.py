@@ -3,6 +3,7 @@
 import argparse
 import dataclasses
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,8 @@ from examples.baselines.constrain.layout_geometry import (
     validate_layout,
 )
 from examples.baselines.constrain.pickcube_obstacle import ENV_ID
+
+GOAL_ENTRY_STANDOFF_M = 0.05
 from mani_skill.examples.motionplanning.base_motionplanner.utils import (
     compute_grasp_info_by_obb,
     get_actor_obb,
@@ -33,6 +36,8 @@ class PickCubeExpertConfig:
     waypoint_tolerance: float = 0.006
     action_cap: float = 0.35
     lift_height: float = 0.12
+    transport_lookahead_m: float = 0.12
+    transport_fillet_radius_m: float = 0.12
     grasp_steps: int = 10
     settle_steps: int = 10
     seed: int = 0
@@ -70,6 +75,7 @@ def run_pickcube_expert(
     waypoint_xy=None,
     record_body_sweep=False,
     stop_on_contact=False,
+    continuous_join=False,
     layout_config=LayoutGeometryConfig(
         table_bounds=(-0.25, -0.25, 0.25, 0.35),
         min_transport_distance=0.14,
@@ -160,6 +166,8 @@ def run_pickcube_expert(
         "waypoint_sampling_attempts": waypoint_attempts,
         "phase_status": [],
         "body_sweep": [],
+        "tcp_xyz": [base.agent.tcp.pose.p[0].detach().cpu().numpy().copy()],
+        "step_phase": [],
     }
     trace["phase_timings"] = {"geometry": time.monotonic() - expert_started,
                               "expert_execution": 0.0}
@@ -188,6 +196,8 @@ def run_pickcube_expert(
                 "phase": current_phase,
                 "bodies": collision_body_vertices(base),
             })
+        trace["tcp_xyz"].append(base.agent.tcp.pose.p[0].detach().cpu().numpy().copy())
+        trace["step_phase"].append(current_phase)
         states.append(_clone_tree(base.get_state_dict()))
         observations.append(_clone_tree(obs))
         infos.append(_clone_tree(last_info))
@@ -266,35 +276,85 @@ def run_pickcube_expert(
                 break
     lift = grasp_pose.p.copy()
     lift[2] += config.lift_height
-    targets = [lift]
-    if waypoint is not None:
-        targets.append(np.array([waypoint[0], waypoint[1], cube_z + config.lift_height]))
     goal_xyz = base.goal_site.pose.p[0].detach().cpu().numpy().copy()
-    targets.append(goal_xyz)
-    trace["shared_targets"] = {
-        "lift_xyz": np.asarray(lift, dtype=np.float64).tolist(),
-        "goal_xyz": np.asarray(goal_xyz, dtype=np.float64).tolist(),
-        "waypoint_xyz": None if waypoint is None else [
-            float(waypoint[0]), float(waypoint[1]), float(cube_z + config.lift_height)
-        ],
-        "lift_height_m": float(config.lift_height),
-        "cube_z_m": float(cube_z),
-    }
-    if grasp_pose_reached:
-        for target_name, target in zip(
-            ("lift", "waypoint", "goal") if waypoint is not None else ("lift", "goal"),
-            targets,
-        ):
-            current_phase = target_name
-            if len(actions) >= config.max_steps:
-                trace["phase_status"].append((target_name, "max_steps"))
-                break
-            status = move_to(
-                torch.as_tensor(target, dtype=torch.float32, device=base.device), -1.0
-            )
-            trace["phase_status"].append((target_name, status or "reached"))
+    if continuous_join:
+        transport_z = float(lift[2])
+        approach = np.asarray(goal_xy, dtype=np.float64) - np.asarray(cube_xy, dtype=np.float64)
+        approach = approach / np.linalg.norm(approach)
+        exit_xy = np.asarray(goal_xyz[:2], dtype=np.float64) - approach * GOAL_ENTRY_STANDOFF_M
+        transport_exit = np.array([float(exit_xy[0]), float(exit_xy[1]), transport_z])
+        waypoint_xyz = None if waypoint is None else np.array(
+            [float(waypoint[0]), float(waypoint[1]), transport_z]
+        )
+        trace["shared_targets"] = {
+            "lift_xyz": np.asarray(lift, dtype=np.float64).tolist(),
+            "goal_xyz": np.asarray(goal_xyz, dtype=np.float64).tolist(),
+            "waypoint_xyz": None if waypoint_xyz is None else waypoint_xyz.tolist(),
+            "transport_exit_xyz": transport_exit.tolist(),
+            "goal_entry_xyz": np.asarray(goal_xyz, dtype=np.float64).tolist(),
+            "retreat_xyz": None,
+            "retreat_required": False,
+            "goal_entry_standoff_m": GOAL_ENTRY_STANDOFF_M,
+            "lift_height_m": float(config.lift_height),
+            "cube_z_m": float(cube_z),
+        }
+        if grasp_pose_reached:
+            current_phase = "lift"
+            status = move_to(torch.as_tensor(lift, dtype=torch.float32, device=base.device), -1.0)
+            trace["phase_status"].append(("lift", status or "reached"))
             if status is not None:
-                break
+                grasp_pose_reached = False
+        if grasp_pose_reached:
+            path = [np.asarray(lift, dtype=np.float64)]
+            if waypoint_xyz is not None:
+                path.append(waypoint_xyz)
+            path.append(transport_exit)
+            current_phase = "transport"
+            status = _follow_transport_polyline(
+                base, path, step, config, done_fn=lambda: done or len(actions) >= config.max_steps,
+            )
+            trace["phase_status"].append(("transport", status or "reached"))
+            if status is not None:
+                grasp_pose_reached = False
+        if grasp_pose_reached:
+            trace["goal_entry_action_index"] = len(actions)
+            trace["goal_entry_snapshot"] = snapshot_execution_state(env)
+            current_phase = "goal_entry"
+            status = move_to(
+                torch.as_tensor(goal_xyz, dtype=torch.float32, device=base.device), -1.0
+            )
+            trace["phase_status"].append(("goal_entry", status or "reached"))
+            if status == "timeout":
+                grasp_pose_reached = False
+    else:
+        targets = [lift]
+        if waypoint is not None:
+            targets.append(np.array([waypoint[0], waypoint[1], cube_z + config.lift_height]))
+        targets.append(goal_xyz)
+        trace["shared_targets"] = {
+            "lift_xyz": np.asarray(lift, dtype=np.float64).tolist(),
+            "goal_xyz": np.asarray(goal_xyz, dtype=np.float64).tolist(),
+            "waypoint_xyz": None if waypoint is None else [
+                float(waypoint[0]), float(waypoint[1]), float(cube_z + config.lift_height)
+            ],
+            "lift_height_m": float(config.lift_height),
+            "cube_z_m": float(cube_z),
+        }
+        if grasp_pose_reached:
+            for target_name, target in zip(
+                ("lift", "waypoint", "goal") if waypoint is not None else ("lift", "goal"),
+                targets,
+            ):
+                current_phase = target_name
+                if len(actions) >= config.max_steps:
+                    trace["phase_status"].append((target_name, "max_steps"))
+                    break
+                status = move_to(
+                    torch.as_tensor(target, dtype=torch.float32, device=base.device), -1.0
+                )
+                trace["phase_status"].append((target_name, status or "reached"))
+                if status is not None:
+                    break
     if grasp_pose_reached:
         current_phase = "settle"
         for _ in range(config.settle_steps):
@@ -302,6 +362,8 @@ def run_pickcube_expert(
                 torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)
             ):
                 break
+        if continuous_join:
+            trace["phase_status"].append(("settle", "reached"))
     evaluated = base.evaluate()
     native = evaluated["native_success"]
     held = bool(evaluated["is_grasped"][0].item())
@@ -329,6 +391,158 @@ def run_pickcube_expert(
         "trace": trace,
         "layout": {"start_xy": cube_xy.tolist(), "goal_xy": goal_xy.tolist()},
     }
+
+
+def _follow_transport_polyline(base, points, step, config, done_fn):
+    """Track a filleted polyline with the same delta-pose feedback law as move_to."""
+    path = _fillet_polyline(points, config.transport_fillet_radius_m)
+    if len(path) < 2:
+        return None
+    segment = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cumulative = np.concatenate([[0.0], np.cumsum(segment)])
+    total = float(cumulative[-1])
+    if total < 1e-6:
+        return None
+    limit = config.max_steps_per_waypoint * 3
+    progress = 0.0
+    previous_xy = None
+    for _ in range(limit):
+        if done_fn():
+            return "episode_ended"
+        tcp = base.agent.tcp.pose.p[0].detach().cpu().numpy()
+        if float(np.linalg.norm(tcp - path[-1])) <= config.waypoint_tolerance:
+            return None
+        window_end = min(total, progress + config.transport_lookahead_m)
+        local = _closest_in_window(path, cumulative, tcp, progress, window_end)
+        if local > progress:
+            progress = min(local, progress + 0.01)
+        target = _point_along(path, cumulative, min(total, progress + config.transport_lookahead_m))
+        delta = torch.as_tensor(target - tcp, dtype=torch.float32, device=base.device)
+        transport_cap = min(config.action_cap, 0.2)
+        pos = (delta / 0.1).clamp(-transport_cap, transport_cap)
+        xy = pos[:2]
+        if previous_xy is not None and float(torch.linalg.norm(xy)) > 0.02 and float(torch.linalg.norm(previous_xy)) > 0.02:
+            xy = _limit_heading_step(previous_xy, xy, max_step_deg=25.0).to(device=base.device)
+        previous_xy = xy.detach().clone()
+        action = torch.cat([
+            xy, pos[2:], torch.zeros(3, device=base.device), torch.tensor([-1.0], device=base.device),
+        ])
+        if step(action):
+            return "episode_ended"
+    tcp = base.agent.tcp.pose.p[0].detach().cpu().numpy()
+    if float(np.linalg.norm(tcp - path[-1])) <= config.waypoint_tolerance:
+        return None
+    return "timeout"
+
+
+def _limit_heading_step(previous, current, max_step_deg):
+    previous = previous.detach().cpu().numpy()
+    current = current.detach().cpu().numpy()
+    cross = float(previous[0] * current[1] - previous[1] * current[0])
+    dot = float(previous[0] * current[0] + previous[1] * current[1])
+    angle = math.degrees(math.atan2(cross, dot))
+    if abs(angle) <= max_step_deg:
+        return torch.as_tensor(current, dtype=torch.float32)
+    limited = math.radians(math.copysign(max_step_deg, angle))
+    cosine, sine = math.cos(limited), math.sin(limited)
+    rotated = np.array([
+        previous[0] * cosine - previous[1] * sine,
+        previous[0] * sine + previous[1] * cosine,
+    ])
+    rotated = rotated / np.linalg.norm(rotated) * np.linalg.norm(current)
+    return torch.as_tensor(rotated, dtype=torch.float32)
+
+
+def _fillet_polyline(points, radius, samples=8):
+    points = [np.asarray(point, dtype=np.float64).reshape(3) for point in points]
+    if len(points) < 3 or radius <= 0.0:
+        return np.asarray(points, dtype=np.float64)
+    output = [points[0]]
+    for index in range(1, len(points) - 1):
+        corner = points[index]
+        incoming = corner - points[index - 1]
+        outgoing = points[index + 1] - corner
+        incoming_norm = float(np.linalg.norm(incoming))
+        outgoing_norm = float(np.linalg.norm(outgoing))
+        if incoming_norm < 1e-8 or outgoing_norm < 1e-8:
+            output.append(corner)
+            continue
+        unit_in = incoming / incoming_norm
+        unit_out = outgoing / outgoing_norm
+        theta = math.acos(float(np.clip(np.dot(unit_in, unit_out), -1.0, 1.0)))
+        if theta < 1e-3 or theta > math.pi - 1e-3:
+            output.append(corner)
+            continue
+        tan_half = math.tan(theta / 2.0)
+        if tan_half < 1e-6:
+            output.append(corner)
+            continue
+        trim = min(radius * tan_half, 0.45 * incoming_norm, 0.45 * outgoing_norm)
+        if trim < 1e-4:
+            output.append(corner)
+            continue
+        actual_radius = trim / tan_half
+        start = corner - unit_in * trim
+        end = corner + unit_out * trim
+        start[2] = corner[2]
+        end[2] = corner[2]
+        turn = float(unit_in[0] * unit_out[1] - unit_in[1] * unit_out[0])
+        if abs(turn) < 1e-8:
+            output.append(corner)
+            continue
+        sign = math.copysign(1.0, turn)
+        perpendicular = np.array([-unit_in[1], unit_in[0], 0.0]) * sign
+        center = start + perpendicular * actual_radius
+        start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
+        end_angle = math.atan2(end[1] - center[1], end[0] - center[0])
+        short = (end_angle - start_angle + math.pi) % (2.0 * math.pi) - math.pi
+        long = short - math.copysign(2.0 * math.pi, short)
+        sweep = short if abs(abs(short) - theta) <= abs(abs(long) - theta) else long
+        output.append(start)
+        for sample in range(1, samples):
+            angle = start_angle + sweep * (sample / samples)
+            point = center + actual_radius * np.array([math.cos(angle), math.sin(angle), 0.0])
+            point[2] = corner[2]
+            output.append(point)
+        output.append(end)
+    output.append(points[-1])
+    return np.asarray(output, dtype=np.float64)
+
+
+def _closest_in_window(points, cumulative, tcp, start_s, end_s):
+    best = float(start_s)
+    best_distance = float("inf")
+    for index in range(len(points) - 1):
+        seg_start = float(cumulative[index])
+        seg_end = float(cumulative[index + 1])
+        if seg_end < start_s or seg_start > end_s:
+            continue
+        span = points[index + 1] - points[index]
+        length = float(np.linalg.norm(span))
+        if length < 1e-8:
+            arc = min(max(seg_start, start_s), end_s)
+        else:
+            along = float(np.clip(np.dot(tcp - points[index], span) / (length * length), 0.0, 1.0))
+            arc = min(max(seg_start + along * length, start_s), end_s)
+        point = _point_along(points, cumulative, arc)
+        distance = float(np.linalg.norm(np.asarray(tcp) - point))
+        if distance < best_distance:
+            best_distance = distance
+            best = arc
+    return best
+
+
+def _point_along(points, cumulative, distance):
+    if distance <= 0.0:
+        return points[0]
+    if distance >= float(cumulative[-1]):
+        return points[-1]
+    index = int(np.searchsorted(cumulative, distance, side="right") - 1)
+    index = min(max(index, 0), len(points) - 2)
+    span = float(cumulative[index + 1] - cumulative[index])
+    if span < 1e-8:
+        return points[index]
+    return points[index] + ((distance - float(cumulative[index])) / span) * (points[index + 1] - points[index])
 
 
 def _clone_tree(value):

@@ -21,7 +21,8 @@ import numpy as np
 
 RADIUS_M = 0.03
 GEOMETRIC_TOP_COVER_M = 0.01
-MAX_DETOUR_TURN_DEG = 150.0
+MAX_JOIN_HEADING_STEP_DEG = 45.0
+MIN_JOIN_TRANSPORT_STEPS = 4
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,15 @@ class HeightDecision:
     accepted: bool
     height_m: float | None
     reason: str | None
+
+
+@dataclass(frozen=True)
+class JoinReport:
+    continuous: bool
+    reason: str | None
+    max_commanded_heading_step_deg: float | None
+    max_tcp_heading_step_deg: float | None
+    transport_steps: int
 
 
 @dataclass(frozen=True)
@@ -118,6 +128,8 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
         raise ValueError("target, attempt budget, deadline, and wall budget must be positive and finite")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=False)
+    identity = freeze_source_identity()
+    (output / "source_identity.json").write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n")
     _write_run_config(output, seed, target, max_attempts, max_wall_seconds, per_attempt_deadline)
     if worker_argv_fn is None:
         from examples.baselines.constrain.pickcube_base_dp import verify_runtime_observation_contract
@@ -197,7 +209,12 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
               "per_attempt_deadline_seconds": per_attempt_deadline,
               "generation_seed": seed, "restore_audit_ok": audit_ok,
               "phase_elapsed_seconds": phase_elapsed}
+    identity_bytes = (output / "source_identity.json").read_bytes()
+    report["source_files_sha256"] = json.loads(identity_bytes)["files_sha256"]
+    report["source_identity_sha256"] = hashlib.sha256(identity_bytes).hexdigest()
+    report["git_head_is_code_identity"] = False
     (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    _write_artifact_hashes(output)
     return report
 
 
@@ -237,10 +254,10 @@ def _default_worker_argv(seed, result_dir, deadline):
 
 
 def shared_transport_fork(direct, detour):
-    """Direct and detour share lift/goal; only the detour inserts a side waypoint."""
+    """Direct and detour share lift, transport exit, and goal entry; only detour inserts a waypoint."""
     if _has_waypoint(direct):
         return False, "direct_has_waypoint"
-    if not _phase_reached(detour, "waypoint") or detour["targets"]["waypoint_xyz"] is None:
+    if detour["targets"].get("waypoint_xyz") is None:
         return False, "detour_missing_waypoint"
     if not _phase_reached(direct, "lift") or not _phase_reached(detour, "lift"):
         return False, "lift_not_shared"
@@ -254,9 +271,85 @@ def shared_transport_fork(direct, detour):
     lift = np.asarray(detour_targets["lift_xyz"], dtype=np.float64)
     if abs(float(waypoint[2]) - float(lift[2])) > 1e-3:
         return False, "waypoint_z_discontinuous"
-    goal = np.asarray(detour_targets["goal_xyz"], dtype=np.float64)
-    if _turn_deg(lift[:2], waypoint[:2], goal[:2]) > MAX_DETOUR_TURN_DEG:
-        return False, "detour_not_side_continuous"
+    if not _shared_endpoints(direct, detour):
+        return False, "shared_endpoint_missing"
+    for record in (direct, detour):
+        accepted, reason = _join_accepted(record)
+        if not accepted:
+            return False, reason
+    return True, None
+
+
+def measure_executed_join(tcp_xyz, actions, phases, *, max_heading_step_deg=MAX_JOIN_HEADING_STEP_DEG):
+    """Score executed transport continuity. A polyline corner angle is not an input."""
+    tcp = np.asarray(tcp_xyz, dtype=np.float64).reshape(-1, 3)
+    actions = np.asarray(actions, dtype=np.float64).reshape(-1, 7)
+    phases = list(phases)
+    if len(phases) != len(actions) or len(tcp) != len(actions) + 1 or not np.isfinite(tcp).all():
+        return JoinReport(False, "join_not_measured", None, None, 0)
+    indices = [index for index, phase in enumerate(phases) if phase == "transport"]
+    if len(indices) < MIN_JOIN_TRANSPORT_STEPS:
+        return JoinReport(False, "join_not_measured", None, None, len(indices))
+    commanded, executed = [], []
+    for left, right in zip(indices, indices[1:]):
+        if right != left + 1:
+            continue
+        command_delta = _heading_delta_deg(actions[left, :2], actions[right, :2])
+        if (command_delta is not None
+                and float(np.linalg.norm(actions[left, :2])) >= 0.02
+                and float(np.linalg.norm(actions[right, :2])) >= 0.02):
+            commanded.append(command_delta)
+        previous = tcp[left + 1, :2] - tcp[left, :2]
+        current = tcp[right + 1, :2] - tcp[right, :2]
+        motion_delta = _heading_delta_deg(previous, current)
+        if (motion_delta is not None
+                and float(np.linalg.norm(previous)) >= 0.002
+                and float(np.linalg.norm(current)) >= 0.002):
+            executed.append(motion_delta)
+    if not commanded or not executed:
+        return JoinReport(False, "join_not_measured", None, None, len(indices))
+    max_commanded = float(max(commanded))
+    max_tcp = float(max(executed))
+    if max_commanded > max_heading_step_deg or max_tcp > max_heading_step_deg:
+        return JoinReport(False, "transport_join_discontinuous", max_commanded, max_tcp, len(indices))
+    return JoinReport(True, None, max_commanded, max_tcp, len(indices))
+
+
+def endpoint_sweep_points(body_sweep):
+    """Full-robot vertices from shared start and target phases. Not a cube-distance window."""
+    rows = []
+    for step in body_sweep:
+        if step["phase"] not in ENDPOINT_START_PHASES and step["phase"] not in ENDPOINT_TARGET_PHASES:
+            continue
+        for points in step["bodies"].values():
+            rows.append(np.asarray(points, dtype=np.float64).reshape(-1, 3))
+    return _cat(rows)
+
+
+def endpoint_column_clear(direct_end, side_end, *, center_xy, radius, height):
+    """Geometric vertex occupancy of both paths. Not surface clearance and not a distance window."""
+    _require_fixed_radius(radius)
+    direct = _xyz_or_empty(direct_end)
+    side = _xyz_or_empty(side_end)
+    if len(direct) == 0 or len(side) == 0:
+        return False, "endpoint_sweep_incomplete"
+    center = np.asarray(center_xy, dtype=np.float64).reshape(2)
+    if _column_occupies(direct, center, radius, height):
+        return False, "direct_endpoint_occupies_cylinder_column"
+    if _column_occupies(side, center, radius, height):
+        return False, "side_endpoint_occupies_cylinder_column"
+    return True, None
+
+
+def classify_direct_block(contact):
+    """Transport contact stays transport even if the cube is near the goal."""
+    if not isinstance(contact, dict) or "phase" not in contact:
+        return False, "direct_transport_not_blocked"
+    phase = contact["phase"]
+    if phase in ENDPOINT_START_PHASES or phase in ENDPOINT_TARGET_PHASES or phase == "retreat":
+        return False, "direct_block_contact_in_endpoint"
+    if phase != "transport":
+        return False, "direct_block_contact_outside_transport"
     return True, None
 
 
@@ -291,6 +384,61 @@ def _close(left, right):
     return np.allclose(np.asarray(left, dtype=np.float64), np.asarray(right, dtype=np.float64), atol=1e-3)
 
 
+def _shared_endpoints(direct, detour):
+    for record in (direct, detour):
+        targets = record["targets"]
+        if targets.get("transport_exit_xyz") is None or targets.get("goal_entry_xyz") is None:
+            return False
+        if targets.get("retreat_required") is not False:
+            return False
+        if not _phase_reached(record, "transport"):
+            return False
+        if not any(phase == "goal_entry" and status in ("reached", "episode_ended")
+                   for phase, status in record["phases"]):
+            return False
+        if not _close(targets["goal_entry_xyz"], targets["goal_xyz"]):
+            return False
+    return (_close(direct["targets"]["transport_exit_xyz"], detour["targets"]["transport_exit_xyz"])
+            and _close(direct["targets"]["goal_entry_xyz"], detour["targets"]["goal_entry_xyz"]))
+
+
+def _join_accepted(record):
+    join = record.get("join")
+    if not isinstance(join, dict) or not join.get("measured"):
+        return False, "join_not_measured"
+    if int(join.get("transport_steps", 0)) < MIN_JOIN_TRANSPORT_STEPS:
+        return False, "join_not_measured"
+    commanded = join.get("max_commanded_heading_step_deg")
+    tcp = join.get("max_tcp_heading_step_deg")
+    if commanded is None or tcp is None:
+        return False, "join_not_measured"
+    if float(commanded) > MAX_JOIN_HEADING_STEP_DEG or float(tcp) > MAX_JOIN_HEADING_STEP_DEG:
+        return False, "transport_join_discontinuous"
+    return True, None
+
+
+def _heading_delta_deg(left, right):
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    denom = float(np.linalg.norm(left) * np.linalg.norm(right))
+    if denom < 1e-12:
+        return None
+    cosine = float(np.dot(left, right) / denom)
+    return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+
+
+def _xyz_or_empty(points):
+    array = np.asarray(points, dtype=np.float64)
+    if array.size == 0:
+        return np.zeros((0, 3), dtype=np.float64)
+    return _xyz(array)
+
+
+def _column_occupies(points, center, radius, height):
+    inside = (_xy_distance(points, center) <= float(radius)) & (points[:, 2] <= float(height))
+    return bool(np.any(inside))
+
+
 def _turn_deg(start, corner, end):
     incoming = np.asarray(corner, dtype=np.float64) - np.asarray(start, dtype=np.float64)
     outgoing = np.asarray(end, dtype=np.float64) - np.asarray(corner, dtype=np.float64)
@@ -301,14 +449,9 @@ def _turn_deg(start, corner, end):
     return float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
 
 
-FORMAT = "pickcube-transport-detour-scenes-v1"
-TRANSPORT_BODIES = frozenset({
-    "cube", "panda_hand", "panda_link6", "panda_link7",
-    "panda_leftfinger", "panda_rightfinger",
-    "panda_leftfinger_pad", "panda_rightfinger_pad",
-})
-START_PHASES = frozenset({"grasp_approach", "grasp_pose", "gripper_close", "lift"})
-GOAL_ENTRY_M = 0.10
+FORMAT = "pickcube-transport-detour-scenes-v2"
+ENDPOINT_START_PHASES = frozenset({"grasp_approach", "grasp_pose", "gripper_close", "lift"})
+ENDPOINT_TARGET_PHASES = frozenset({"goal_entry", "settle"})
 TABLE_BOUNDS = (-0.25, -0.25, 0.25, 0.35)
 WAYPOINT_OFFSETS_M = (0.20, 0.24, 0.28, 0.32, 0.16)
 LIFT_HEIGHTS_M = (0.12, 0.10, 0.14)
@@ -359,8 +502,8 @@ def _attempt_body(seed, result_dir, envs):
 
     counters = {"geometry_tries": 0, "direct_executions": 0, "side_executions": 0,
                 "block_executions": 0, "safe_executions": 0, "centers_tested": 0,
-                "waypoints_tested": 0, "lifts_tested": 0}
-    timings = {"measure": 0.0, "block": 0.0, "safe": 0.0}
+                "waypoints_tested": 0, "lifts_tested": 0, "goal_entry_replays": 0}
+    timings = {"measure": 0.0, "block": 0.0, "safe": 0.0, "endpoint": 0.0}
     notes = []
 
     def fail(reason, **extra):
@@ -395,7 +538,7 @@ def _attempt_body(seed, result_dir, envs):
         started = time.monotonic()
         direct = run_pickcube_expert(
             measure, cube_xy=start, goal_xy=goal, detour=False, obstacle_enabled=False,
-            config=config, record_body_sweep=True, layout_config=layout_config,
+            config=config, record_body_sweep=True, continuous_join=True, layout_config=layout_config,
         )
         counters["direct_executions"] += 1
         timings["measure"] += time.monotonic() - started
@@ -405,9 +548,8 @@ def _attempt_body(seed, result_dir, envs):
             continue
         snapshot = direct["initial_snapshot"]
         saw_geometry = False
-        direct_transport, _, direct_end = _sweep_regions(
-            direct, start, goal, transport=True, transport_bodies={"cube"}
-        )
+        direct_transport = _phase_points(direct["trace"]["body_sweep"], "transport", names={"cube"})
+        direct_end = endpoint_sweep_points(direct["trace"]["body_sweep"])
         if len(direct_transport) == 0 or len(direct_end) == 0:
             last_reason = "sweep_not_recorded"
             continue
@@ -421,29 +563,46 @@ def _attempt_body(seed, result_dir, envs):
             side = run_pickcube_expert(
                 measure, cube_xy=start, goal_xy=goal, detour=True, waypoint_xy=waypoint,
                 obstacle_enabled=False, initial_snapshot=snapshot, config=config,
-                record_body_sweep=True, layout_config=layout_config,
+                record_body_sweep=True, continuous_join=True, layout_config=layout_config,
             )
             counters["side_executions"] += 1
             timings["measure"] += time.monotonic() - started
             if not side["safety"]["native_success"] or not side["safety"]["held_at_success"]:
                 last_reason = "side_template_unsuccessful"
                 continue
-            fork_ok, fork_reason = shared_transport_fork(
-                _fork_record(direct), _fork_record(side)
-            )
+            direct_fork = _fork_record(direct)
+            side_fork = _fork_record(side)
+            fork_ok, fork_reason = shared_transport_fork(direct_fork, side_fork)
             if not fork_ok:
                 last_reason = fork_reason
+                if len(notes) < 4:
+                    notes.append({
+                        "reason": fork_reason,
+                        "direct_phases": [name for name, _status in direct["trace"]["phase_status"]],
+                        "side_phases": [name for name, _status in side["trace"]["phase_status"]],
+                        "direct_join": direct_fork["join"],
+                        "side_join": side_fork["join"],
+                    })
                 continue
-            _, side_all, side_end = _sweep_regions(side, start, goal, transport=False)
-            end_points = side_end
+            side_all = _phase_points(side["trace"]["body_sweep"], None)
+            side_end = endpoint_sweep_points(side["trace"]["body_sweep"])
+            if len(side_end) == 0 or len(side_all) == 0:
+                last_reason = "sweep_not_recorded"
+                continue
             ranked = []
             for center in midsegment_candidates(start, goal, base_xy, radius=RADIUS_M):
                 counters["centers_tested"] += 1
                 decision = select_cylinder_height(
-                    direct_transport, side_all, end_points, center_xy=center, radius=RADIUS_M
+                    direct_transport, side_all, side_end, center_xy=center, radius=RADIUS_M
                 )
                 if not decision.accepted:
                     last_reason = decision.reason
+                    continue
+                clear, clear_reason = endpoint_column_clear(
+                    direct_end, side_end, center_xy=center, radius=RADIUS_M, height=decision.height_m,
+                )
+                if not clear:
+                    last_reason = clear_reason
                     continue
                 gap = float(np.linalg.norm(side_all[:, :2] - center, axis=1).min())
                 ranked.append((gap, decision, center))
@@ -463,9 +622,16 @@ def _attempt_body(seed, result_dir, envs):
                 if not saved:
                     last_reason = safe_reason
                     continue
+                entered, entry_reason, entry = _replay_direct_goal_entry(
+                    envs, direct, center, decision.height_m, config, start, goal, counters, timings,
+                )
+                if not entered:
+                    last_reason = entry_reason
+                    continue
                 clearance = _clearance_from_run(safe, center, decision.height_m)
                 metadata = _scene_metadata(
-                    seed, start, goal, base_xy, center, decision, clearance, direct, side, safe, block, lift, offset, gap
+                    seed, start, goal, base_xy, center, decision, clearance, direct, side, safe, block,
+                    lift, offset, gap, direct_end, side_end, entry,
                 )
                 _write_attempt_scene(result_dir, safe, block, metadata)
                 return {"accepted": True, "failure": None, "counters": counters, "phase_timings": timings,
@@ -489,7 +655,7 @@ def _execute_block(envs, snapshot, start, goal, center, height, config, layout_c
         result = run_pickcube_expert(
             env, cube_xy=start, goal_xy=goal, detour=False, obstacle_enabled=True,
             obstacle_center=center, initial_snapshot=snapshot, config=config,
-            stop_on_contact=True, layout_config=layout_config,
+            stop_on_contact=True, continuous_join=True, layout_config=layout_config,
         )
     finally:
         env.close()
@@ -499,13 +665,9 @@ def _execute_block(envs, snapshot, start, goal, center, height, config, layout_c
     contact = result["trace"].get("first_obstacle_contact")
     if not result["safety"]["obstacle_collision"] or contact is None:
         return False, "direct_transport_not_blocked", result
-    if contact["phase"] in START_PHASES or contact["phase"] == "settle":
-        return False, "direct_block_contact_in_end_region", result
-    cube = np.asarray(contact["cube_xyz"][:2], dtype=np.float64)
-    if float(np.linalg.norm(cube - np.asarray(goal))) < GOAL_ENTRY_M:
-        return False, "direct_block_contact_in_end_region", result
-    if contact["phase"] != "goal":
-        return False, "direct_block_contact_outside_transport", result
+    blocked, reason = classify_direct_block(contact)
+    if not blocked:
+        return False, reason, result
     return True, None, result
 
 
@@ -523,7 +685,7 @@ def _execute_safe(envs, snapshot, start, goal, waypoint, center, height, config,
         result = run_pickcube_expert(
             env, cube_xy=start, goal_xy=goal, detour=True, waypoint_xy=waypoint,
             obstacle_enabled=True, obstacle_center=center, initial_snapshot=snapshot,
-            config=config, record_body_sweep=True, layout_config=layout_config,
+            config=config, record_body_sweep=True, continuous_join=True, layout_config=layout_config,
         )
         result["forbidden_radius_m"] = float(env.unwrapped._forbidden_radius)
     finally:
@@ -538,6 +700,10 @@ def _execute_safe(envs, snapshot, start, goal, waypoint, center, height, config,
         return False, "obstacle_contact_or_crossing", result
     if not _action_observation_contract(result, center):
         return False, "observation_action_contract", result
+    join = measure_executed_join(result["trace"]["tcp_xyz"], result["actions"], result["trace"]["step_phase"])
+    if not join.continuous:
+        return False, join.reason or "transport_join_discontinuous", result
+    result["executed_join"] = join
     return True, None, result
 
 
@@ -555,34 +721,72 @@ def _action_observation_contract(result, center):
     return float(np.linalg.norm(obs[0, -3:-1] - np.asarray(center, dtype=np.float64))) <= 1e-4
 
 
-def _sweep_regions(result, start, goal, *, transport, transport_bodies=TRANSPORT_BODIES):
-    transport_rows, all_rows, end_rows = [], [], []
-    start = np.asarray(start, dtype=np.float64)
-    goal = np.asarray(goal, dtype=np.float64)
-    for step in result["trace"].get("body_sweep", []):
-        phase = step["phase"]
-        bodies = step["bodies"]
-        cube = bodies.get("cube")
-        cube_xy = None if cube is None else np.asarray(cube, dtype=np.float64).mean(axis=0)[:2]
-        near_goal = cube_xy is not None and float(np.linalg.norm(cube_xy - goal)) <= GOAL_ENTRY_M
-        for name, points in bodies.items():
-            points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-            all_rows.append(points)
-            if phase in START_PHASES or phase == "settle" or (phase == "goal" and near_goal):
-                end_rows.append(points)
-            if transport and phase == "goal" and name in transport_bodies:
-                window = (_along(points[:, :2], start, goal) >= 0.40) & (_along(points[:, :2], start, goal) <= 0.60)
-                if np.any(window):
-                    transport_rows.append(points[window])
-    return _cat(transport_rows), _cat(all_rows), _cat(end_rows)
+def _phase_points(body_sweep, phase, names=None):
+    rows = []
+    for step in body_sweep:
+        if phase is not None and step["phase"] != phase:
+            continue
+        for name, points in step["bodies"].items():
+            if names is not None and name not in names:
+                continue
+            rows.append(np.asarray(points, dtype=np.float64).reshape(-1, 3))
+    return _cat(rows)
 
 
-def _along(points, start, goal):
-    direction = goal - start
-    length_sq = float(direction @ direction)
-    if length_sq == 0.0:
-        return np.zeros(len(points))
-    return ((points - start) @ direction) / length_sq
+def _replay_direct_goal_entry(envs, direct, center, height, config, start, goal, counters, timings):
+    """Physically replay the direct goal-entry actions with the obstacle present."""
+    from examples.baselines.constrain.pickcube_expert import (
+        _clone_tree, _reset_elapsed_steps, _set_state_dict_exact, make_pickcube_env,
+    )
+    import torch
+
+    snapshot = direct["trace"].get("goal_entry_snapshot")
+    index = direct["trace"].get("goal_entry_action_index")
+    if snapshot is None or index is None:
+        return False, "direct_goal_entry_not_recorded", None
+    actions = np.asarray(direct["actions"][index:])
+    if len(actions) == 0:
+        return False, "direct_goal_entry_not_recorded", None
+    env = make_pickcube_env(obstacle_radius=RADIUS_M, obstacle_height=float(height))
+    envs.append(env)
+    started = time.monotonic()
+    try:
+        env.reset(seed=config.seed, options={
+            "cube_xy": np.asarray(start), "goal_pos": [*np.asarray(goal), 0.12],
+            "obstacle_enabled": True, "obstacle_center": np.asarray(center),
+        })
+        state, controller = snapshot
+        state = _clone_tree(state)
+        extra = state["pickcube_obstacle"]
+        extra[0, :2] = torch.as_tensor(center, dtype=extra.dtype, device=extra.device)
+        extra[0, 3] = 1
+        extra[0, 4] = 0
+        extra[0, 5] = 0
+        base = env.unwrapped
+        _set_state_dict_exact(base, state)
+        base.agent.controller.set_state(_clone_tree(controller))
+        base._first_obstacle_contact = None
+        _reset_elapsed_steps(env, base)
+        for action in actions:
+            env.step(torch.as_tensor(action, dtype=torch.float32, device=base.device))
+            if bool(base._obstacle_collision[0].item()) or bool(base._forbidden_crossing[0].item()):
+                return False, "direct_goal_entry_contact", {
+                    "contact": _jsonable(base._first_obstacle_contact),
+                    "crossing": bool(base._forbidden_crossing[0].item()),
+                }
+        evaluated = base.evaluate()
+        held = bool(evaluated["native_success"][0].item()) and bool(evaluated["is_grasped"][0].item())
+        if not held:
+            return False, "direct_goal_entry_unsuccessful", None
+        return True, None, {
+            "steps": int(len(actions)), "contact": False, "crossing": False,
+            "native_success": True, "held": True,
+        }
+    finally:
+        timings["endpoint"] += time.monotonic() - started
+        counters["goal_entry_replays"] += 1
+        env.close()
+        envs.remove(env)
 
 
 def _cat(rows):
@@ -612,11 +816,24 @@ def _explicit_waypoint(start, goal, base, offset):
 
 
 def _fork_record(result):
-    return {"phases": list(result["trace"]["phase_status"]), "targets": result["trace"]["shared_targets"]}
+    join = measure_executed_join(
+        result["trace"]["tcp_xyz"], result["actions"], result["trace"]["step_phase"],
+    )
+    return {
+        "phases": list(result["trace"]["phase_status"]),
+        "targets": result["trace"]["shared_targets"],
+        "join": {
+            "measured": join.reason != "join_not_measured",
+            "continuous": join.continuous,
+            "max_commanded_heading_step_deg": join.max_commanded_heading_step_deg,
+            "max_tcp_heading_step_deg": join.max_tcp_heading_step_deg,
+            "transport_steps": join.transport_steps,
+        },
+    }
 
 
 def _clearance_from_run(result, center, height):
-    points = _sweep_regions(result, result["layout"]["start_xy"], result["layout"]["goal_xy"], transport=False)[1]
+    points = _phase_points(result["trace"].get("body_sweep", []), None)
     occupied = points[points[:, 2] <= float(height)] if len(points) else points
     if len(occupied) == 0:
         vertex_distance = None
@@ -664,8 +881,12 @@ def _grasped_cube_distance(result, center):
     return None if not distances else min(distances)
 
 
-def _scene_metadata(seed, start, goal, base_xy, center, decision, clearance, direct, side, safe, block, lift, offset, gap):
+def _scene_metadata(seed, start, goal, base_xy, center, decision, clearance, direct, side, safe, block,
+                    lift, offset, gap, direct_end, side_end, entry):
     contact = block["trace"]["first_obstacle_contact"]
+    join = safe["executed_join"]
+    targets = side["trace"]["shared_targets"]
+    corner = _turn_deg(targets["lift_xyz"][:2], targets["waypoint_xyz"][:2], targets["transport_exit_xyz"][:2])
     return {
         "seed": int(seed),
         "start_xy": np.asarray(start, dtype=np.float64).tolist(),
@@ -695,9 +916,46 @@ def _scene_metadata(seed, start, goal, base_xy, center, decision, clearance, dir
             "direct_block_contact": contact,
             "clearance": clearance,
             "side_column_gap_m": float(gap),
-            "fork_targets": side["trace"]["shared_targets"],
+            "fork_targets": targets,
+            "retreat_required": False,
+            "endpoint_clearance": {
+                "method": "full_robot_phase_vertices",
+                "phases": ["grasp_approach", "grasp_pose", "gripper_close", "lift", "goal_entry", "settle"],
+                "retreat_phase_included": False,
+                "retreat_required": False,
+                "cube_distance_window_m": None,
+                "paths": ["direct", "side"],
+                "geometric_is_surface_clearance": False,
+                "direct_min_vertex_gap_m": _vertex_gap(direct_end, center, decision.height_m),
+                "side_min_vertex_gap_m": _vertex_gap(side_end, center, decision.height_m),
+                "physical_direct_start_contact": False,
+                "physical_direct_goal_entry_contact": False,
+                "physical_direct_block_phase": contact["phase"],
+                "physical_side_contact": False,
+                "direct_goal_entry_replay": entry,
+                "note": "vertex gap is column occupancy, not surface clearance; physical proof is contact-free endpoint execution",
+            },
+            "join": {
+                "continuous": True,
+                "max_commanded_heading_step_deg": join.max_commanded_heading_step_deg,
+                "max_tcp_heading_step_deg": join.max_tcp_heading_step_deg,
+                "transport_steps": join.transport_steps,
+                "polyline_corner_deg": corner,
+                "polyline_corner_is_acceptance_criterion": False,
+                "criterion": "executed command and tcp XY heading step <= 45 deg",
+            },
         },
     }
+
+
+def _vertex_gap(points, center, height):
+    points = _xyz_or_empty(points)
+    if len(points) == 0:
+        return None
+    occupied = points[points[:, 2] <= float(height)]
+    if len(occupied) == 0:
+        return None
+    return float(np.linalg.norm(occupied[:, :2] - np.asarray(center), axis=1).min() - RADIUS_M)
 
 
 def _write_attempt_scene(result_dir, safe, block, metadata):
@@ -760,6 +1018,7 @@ def _ingest_scene(output, result_dir, index, payload, demo_dir):
     metadata["observation_dtype"] = str(np.asarray(obs).dtype)
     if not metadata["expert"].get("direct_transport_blocked") or not metadata["expert"].get("held_at_success"):
         raise ValueError("scene is missing block or held-success evidence")
+    metadata["source_files_sha256"] = json.loads((Path(output) / "source_identity.json").read_text())["files_sha256"]
     aggregate = Path(output) / "scenes.h5"
     with h5py.File(aggregate, "a") as handle:
         if scene_id in handle:
@@ -807,12 +1066,57 @@ def _write_manifest(output, rows, seed):
             "per scene, max z of direct-transport cube samples inside the 0.03 m cylinder "
             "column, plus 0.01 m geometric top cover; not a StackCube height"
         ),
+        "source_files_sha256": json.loads((output / "source_identity.json").read_text())["files_sha256"],
+        "git_head_is_code_identity": False,
         "config_sha256": hashlib.sha256((output / "config.json").read_bytes()).hexdigest() if (output / "config.json").exists() else None,
         "scenes_file_sha256": hashlib.sha256(scenes.read_bytes()).hexdigest() if scenes.exists() else None,
     }
     encoded = json.dumps(payload, sort_keys=True, indent=2).encode()
     payload["manifest_sha256"] = hashlib.sha256(encoded).hexdigest()
     (output / "manifest.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+SOURCE_IDENTITY_FILES = (
+    "examples/baselines/constrain/pickcube_transport_detour.py",
+    "examples/baselines/constrain/pickcube_expert.py",
+    "examples/baselines/constrain/pickcube_obstacle.py",
+    "examples/baselines/constrain/layout_geometry.py",
+    "examples/baselines/constrain/pickcube_scenes.py",
+)
+
+
+def freeze_source_identity(repo_root=None):
+    """Hash generator bytes before artifacts exist. Git HEAD is context, not identity."""
+    repo = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[3]
+    files = {
+        rel: hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+        for rel in SOURCE_IDENTITY_FILES
+    }
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    return {
+        "basis": "working-tree bytes frozen before this run writes artifacts",
+        "git_head": head,
+        "git_head_is_code_identity": False,
+        "files": files,
+        "files_sha256": hashlib.sha256(
+            json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def _write_artifact_hashes(output):
+    output = Path(output)
+    identity = json.loads((output / "source_identity.json").read_text())
+    files = {}
+    for path in sorted(output.rglob("*")):
+        if path.is_file() and path.name != "artifact_hashes.json":
+            files[str(path.relative_to(output))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload = {
+        "basis": "artifact bytes after the run; not an input to source identity",
+        "source_files_sha256": identity["files_sha256"],
+        "files": files,
+    }
+    (output / "artifact_hashes.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _write_run_config(output, seed, target, max_attempts, max_wall_seconds, per_attempt_deadline):
@@ -827,6 +1131,13 @@ def _write_run_config(output, seed, target, max_attempts, max_wall_seconds, per_
         "robot_surface_clearance": "not measured from vertices; safety proof is contact-free execution",
         "over_top_remains_xy_forbidden": True,
         "native_success": "held cube at the goal; no release added",
+        "retreat_required": False,
+        "endpoint_sweep": "full-robot collision vertices of grasp/lift and goal_entry/settle on direct and side paths",
+        "endpoint_cube_distance_window_m": None,
+        "goal_entry_standoff_m": 0.05,
+        "goal_entry_standoff_reason": "native goal_thresh 0.025 m plus cube half-size; shared phase boundary, not a clearance window",
+        "join_criterion": "executed command and tcp XY heading step <= 45 deg; polyline corner is not the criterion",
+        "join_max_heading_step_deg": MAX_JOIN_HEADING_STEP_DEG,
         "seed": seed,
         "target": target,
         "max_attempts": max_attempts,
@@ -863,6 +1174,21 @@ class TransportDetourSceneSet:
             raise ValueError("scene expert acceptance evidence is unsafe or incomplete")
         if expert.get("obstacle_collision") is not False or expert.get("obstacle_crossing") is not False:
             raise ValueError("scene expert acceptance evidence is unsafe or incomplete")
+        clearance = expert.get("endpoint_clearance") or {}
+        join = expert.get("join") or {}
+        if clearance.get("method") != "full_robot_phase_vertices" or clearance.get("cube_distance_window_m") is not None:
+            raise ValueError("scene endpoint sweep is not a phase-based full-robot sweep")
+        if clearance.get("paths") != ["direct", "side"] or clearance.get("retreat_required") is not False:
+            raise ValueError("scene endpoint sweep did not cover both shared paths")
+        if clearance.get("physical_direct_goal_entry_contact") is not False or clearance.get("physical_side_contact") is not False:
+            raise ValueError("scene endpoint physical clearance is incomplete")
+        if not join.get("continuous") or join.get("polyline_corner_is_acceptance_criterion") is not False:
+            raise ValueError("scene transport join was not measured from execution")
+        if (float(join.get("max_commanded_heading_step_deg", 180)) > MAX_JOIN_HEADING_STEP_DEG
+                or float(join.get("max_tcp_heading_step_deg", 180)) > MAX_JOIN_HEADING_STEP_DEG):
+            raise ValueError("scene heading step exceeds the join cap")
+        if (expert.get("direct_block_contact") or {}).get("phase") != "transport":
+            raise ValueError("scene direct block is not a transport contact")
         if row["cylinder"]["height_source"] != "measured_direct_cube_occupancy_plus_geometric_top_cover":
             raise ValueError("scene height was not measured from direct transport")
         if abs(float(row["cylinder"]["radius"]) - RADIUS_M) > 1e-12:
