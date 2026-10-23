@@ -42,8 +42,8 @@ SHA-256 `b1c736ccfbd4411b20dcb1495ffbf220afd6d7b08dbf46528c4047358d139caf`.
 
 | Policy | Checkpoint / weights | SHA-256 |
 | --- | --- | --- |
-| Base DP | `outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt`, `ema_agent` | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
-| ConstrainNet | `outputs/ckpt/constrainnet_wristcam_seed1/final.pt`, EMA, step 30000 | `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02` |
+| Base DP | `outputs/ckpt/20260930_base_dp_stackcube_980/best_eval_success_at_end.pt`, `ema_agent` | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
+| ConstrainNet | `outputs/ckpt/20261021_constrainnet_wristcam_seed1/final.pt`, EMA, step 30000 | `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02` |
 
 ConstrainNet inference uses the saved 2-frame / 51-feature observation, 48-base
 condition plus its relative-condition hint, 16 prediction horizon, 8 action
@@ -138,8 +138,8 @@ conda activate maniskill
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=10s 14400s \
   python -m examples.baselines.constrain.evaluate_fixed_scenes \
    --scene-dir outputs/exp/20261021_wristcam_scenes \
-   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
-   --constrain-checkpoint outputs/ckpt/constrainnet_wristcam_seed1/final.pt \
+   --base-checkpoint outputs/ckpt/20260930_base_dp_stackcube_980/best_eval_success_at_end.pt \
+   --constrain-checkpoint outputs/ckpt/20261021_constrainnet_wristcam_seed1/final.pt \
    --output-dir outputs/exp/YYYYMMDD_HHMMSS_wristcam_paired_eval \
   --device cuda --num-scenes 100 --max-steps 500
 ```
@@ -158,8 +158,8 @@ No rerun is needed to validate the already audited results.
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --kill-after=5s 14400s \
   python -m examples.baselines.constrain.evaluate_fixed_scenes \
    --scene-dir outputs/exp/20261021_wristcam_scenes \
-   --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
-   --constrain-checkpoint outputs/ckpt/constrainnet_wristcam_seed1/final.pt \
+   --base-checkpoint outputs/ckpt/20260930_base_dp_stackcube_980/best_eval_success_at_end.pt \
+   --constrain-checkpoint outputs/ckpt/20261021_constrainnet_wristcam_seed1/final.pt \
    --output-dir outputs/exp/YYYYMMDD_HHMMSS_wristcam_paired_eval_resume \
    --resume-from outputs/exp/20261021_wristcam_paired_eval \
   --device cuda --num-scenes 100 --max-steps 500

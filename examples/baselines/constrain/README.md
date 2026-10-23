@@ -2,6 +2,11 @@
 
 ## Current retained outputs
 
+The post-cleanup comparison of all three tasks is in
+[THREE_TASK_RESULTS.md](THREE_TASK_RESULTS.md). Only selected final weights and
+the final valid paired experiments plus their formal-data/training/scene records
+remain; the cleanup inventory records removed intermediate artifacts.
+
 See [OUTPUTS.md](OUTPUTS.md) for the current `demos/`, `outputs/ckpt/`, `outputs/exp/` layout,
 artifact relocation map, and current training/evaluation commands. The sections
 below include historical experiments whose original paths may have been moved

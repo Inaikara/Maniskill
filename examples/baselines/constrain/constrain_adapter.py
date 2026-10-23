@@ -44,7 +44,7 @@ DEFAULT_CKPT = (
     Path(__file__).resolve().parents[3]
     / "outputs"
     / "ckpt"
-    / "constrainnet_wristcam_seed1"
+    / "20261021_constrainnet_wristcam_seed1"
     / "final.pt"
 )
 

@@ -1,5 +1,13 @@
 # PickCube and PlaceSphere obstacle extensions — final results index
 
+**2026-10-23 retention update:** final datasets, selected weights, training
+records, scene sets and paired evaluations remain. Pilot, intermediate and failed
+run artifacts referenced in this historical acceptance report were pruned;
+[OUTPUTS.md](OUTPUTS.md) is the current retention index and
+[THREE_TASK_RESULTS.md](THREE_TASK_RESULTS.md) adds StackCube to the comparison.
+Deleted file identities are recorded in
+`outputs/exp/20261023_105159_final_artifact_cleanup/cleanup_manifest.json`.
+
 The two tasks are independent evaluations and are reported separately. There is
 no combined success rate. Evaluation scenes are fixed, newly generated,
 expert-solvable same-distribution obstacle layouts; all data uses modified
@@ -55,11 +63,13 @@ and policy results. This is an additional 30,000 completed PlaceSphere updates
 (90,000 total across PlaceSphere Base, selected ConstrainNet and the failed
 ConstrainNet attempt), not zero-cost diagnostic work. Its elapsed training time
 was not written to a successful summary because verification failed; the exact
-30,000 updates remain visible in its loss log. Its log/config/checkpoint
-remain under `outputs/exp/20261022_200800_placesphere_constrain/` and
+30,000 updates were recorded in its loss log. Its log/config/checkpoint
+were originally under `outputs/exp/20261022_200800_placesphere_constrain/` and
 `outputs/ckpt/20261022_200800_placesphere_constrain/`; the successful selected
 model and verification are under the 20:11 run. A separate 20:07 attempt stopped
-before training.
+before training. These failed-run outputs have since been removed; their file
+identities remain in the cleanup inventory and the extra compute is still part
+of the historical training budget.
 
 ## Obstacle-only paired evaluation
 
@@ -119,5 +129,7 @@ checkpoint, scene, paired-summary, correction and video identities, and lists
 known caveats. The true goal-start base is
 `fb21bd47f3a4d8c11ac71b6be4759aca5b5018cf`; round-25 base and audited HEAD are
 `f09237a42d4e2fefbb661644918373991a2da640`. The complete goal-base-to-HEAD
-diff contains 50 paths, all under `examples/baselines/constrain/`. Round 25 is
-still uncommitted, so no final commit SHA exists; the goal branch is not merged.
+diff contains 50 paths, all under `examples/baselines/constrain/`. The goal was
+subsequently completed at `9977cc097bde26b709f3e2012bec5663be15e2a5`, the
+pre-cleanup completion point. The audit is historical pre-cleanup evidence: removed
+pilot/failed-run references now resolve through the cleanup inventory.

@@ -1,358 +1,117 @@
-# Output layout and retained artifacts
+# Final retained artifacts — three obstacle tasks
 
-Training demonstrations and their collection/validation metadata live under
-`demos/<dataset-name>/`. Formal obstacle datasets are `demos/StackCube-obstacle/`,
-`demos/PickCube-obstacle/`, and `demos/PlaceSphere-obstacle/<timestamp>_formal/`.
-PlaceSphere pilot artifacts remain separate from formal collection.
-`outputs/` has two purpose-specific directories:
+## Cleanup status
 
-- `ckpt/`: model weights, separate from training logs.
-- `exp/`: training logs, fixed evaluation scenes, results, videos and verification.
+The 2026-10-23 cleanup retains one final valid paired experiment per task,
+the six selected Base DP / ConstrainNet weights, and the formal data, training
+records, fixed scenes and verification needed to reproduce those experiments.
+Safety success is the primary comparison metric; the paired Base DP comparator
+is retained even where its safety result is worse. No checkpoint or scene was
+reselected by looking at individual evaluation outcomes.
 
-New experiment directories start with `YYYYMMDD_HHMMSS_`. Retained historical
-runs use the known date as `YYYYMMDD_`; no unknown start time is invented.
-The Base DP date below comes from its TensorBoard event timestamp.
+Pilot/calibration/probe/interface-smoke artifacts, failed or superseded runs,
+the failed PlaceSphere ConstrainNet checkpoint and the periodic PickCube Base DP
+checkpoint were deleted. The cleanup removed **992 files / 450,850,395 bytes**
+(about 430 MiB); **765 retained file identities** were verified unchanged.
 
-## Current locations
+Cleanup record:
+`outputs/exp/20261023_105159_final_artifact_cleanup/cleanup_manifest.json`.
+It records all retained and deleted file paths, sizes and SHA-256 hashes, and
+each completed deletion. `previous_OUTPUTS.md` in that directory preserves the
+previous full output index. Historical manifests/reports were not rewritten:
+references to removed diagnostics are historical, and resolve to deletion
+records rather than current files. The earlier completion audit describes the
+pre-cleanup acceptance evidence, including pilots that have now been removed.
+`final_verification.json` in the cleanup directory records a second retained-hash
+check and an independent recomputation of all six policy/task metric rows from
+the 600 retained episode records; all match their authoritative summaries.
 
-```text
-demos/
-├── StackCube-obstacle/
-├── PickCube-obstacle/20261022_120016_pilot/  # retained incomplete attempt
-├── PickCube-obstacle/20261022_130058_fresh_scene_diag/  # fresh-scene restoration check
-├── PickCube-obstacle/20261022_130157_contact_link_diag/  # 1 direct + 2 obstacle attempts
-├── PickCube-obstacle/20261022_130242_contact_phase_diag/  # contact link/step/phase evidence
-├── PickCube-obstacle/20261022_130356_layout_clearance_diag/  # one safe obstacle, one prefilter rejection
-├── PickCube-obstacle/20261022_130421_pilot/  # complete 20 + 20 pilot
-├── PickCube-obstacle/20261022_153000_pilot_diag/  # interrupted diagnostic (bug found)
-├── PickCube-obstacle/20261022_153200_pilot_diag/  # 1 direct + 3 obstacle attempts
-├── PickCube-obstacle/20261022_153500_pilot_diag/  # interrupted diagnostic (bug found)
-├── PickCube-obstacle/20261022_153700_pilot_diag/  # 1 direct + 6 obstacle attempts
-├── PickCube-obstacle/20261022_154000_pilot_diag/  # 1 direct + 20 obstacle attempts
-├── PickCube-obstacle/20261022_154500_pilot_diag/  # 1 direct + 6 obstacle attempts
-├── PickCube-obstacle/20261022_160000_pilot_diag/  # 1 direct + 6 obstacle attempts
-├── PickCube-obstacle/20261022_160200_pilot_diag/  # 1 direct + 6 obstacle attempts
-├── PickCube-obstacle/20261022_160500_pilot_diag/  # 1 direct + 6 obstacle attempts
-├── PickCube-obstacle/20261022_132753_formal/  # Ticket 02 formal 1,000 + 100 collection
-└── PlaceSphere-obstacle/
-    ├── 20261022_171100_pilot/  # invalid diagnostic seed; no complete attempt
-    ├── 20261022_171300_pilot_calibration/
-    ├── 20261022_171500_pilot_calibration/
-    ├── 20261022_171700_pilot_calibration/
-    ├── 20261022_172000_pilot_calibration/
-    ├── 20261022_172200_pilot_calibration/
-    ├── 20261022_172400_pilot_calibration/  # seven recorded calibration attempts
-    ├── 20261022_172910_pilot/  # preflight stopped before first attempt
-    ├── 20261022_173015_pilot/  # preflight stopped before first attempt
-    ├── 20261022_173110_pilot/  # complete Ticket 07: 20 + 20, excluded from formal
-    ├── 20261022_180137_formal/  # retained preflight failure; gripper bound check
-    ├── 20261022_180516_formal/  # retained 1,000 + 100 run; raw obs not stored
-    └── 20261022_184558_formal/  # Ticket 08 qualifying 1,000 + 100 incl. raw obs
+## Selected weights — exactly six files
 
-outputs/
-├── ckpt/
-│   ├── base_dp_stackcube_980/best_eval_success_at_end.pt
-│   ├── constrainnet_wristcam_seed1/final.pt
-│   ├── 20261022_144000_pickcube_base_dp/final.pt
-│   ├── 20261022_144835_pickcube_constrain/final.pt
-│   ├── 20261022_193900_placesphere_base_dp/final.pt  # Ticket 09 independent 30,000-update EMA
-│   ├── 20261022_200700_placesphere_constrain/  # incomplete; source-path failure before training
-│   ├── 20261022_200800_placesphere_constrain/  # 30,000 updates; verification failed; not selected
-│   └── 20261022_201100_placesphere_constrain/final.pt  # Ticket 10 verified final EMA
-└── exp/
-    ├── 20260930_base_dp_stackcube_980_seed1/
-    ├── 20261021_constrainnet_wristcam_seed1/
-    ├── 20261021_wristcam_scenes/
-    ├── 20261021_wristcam_paired_eval/
-    ├── 20261022_132753_pickcube_formal/  # 1,000 + 100 formal data and restore manifest
-    ├── 20261022_151350_pickcube_scenes_smoke/  # one-scene generation/restore smoke incl. bounded failures
-    ├── 20261022_152157_pickcube_scenes/  # Ticket 05: 100 fresh expert-accepted fixed PickCube obstacle scenes
-    ├── 20261022_155725_pickcube_paired_eval/  # retained failed preflight: invalid state-fingerprint normalization, no policy actions
-    ├── 20261022_160037_pickcube_paired_eval/  # retained failed attempt: Base DP condition and GPU video conversion errors
-    ├── 20261022_162002_pickcube_paired_eval/  # Ticket 06: frozen Base DP / ConstrainNet paired evaluation
-    ├── 20261022_143200_pickcube_base_dp_probe/  # bounded 45-second batch/memory probe
-    ├── 20261022_144000_pickcube_base_dp/  # 30,000-update Base DP training
-    ├── 20261022_161500_pickcube_base_dp_rollout/  # short interface rollout, not evaluation
-    ├── 20261022_144800_pickcube_constrain_probe/  # separate 45-second non-formal throughput probe
-    ├── 20261022_144835_pickcube_constrain/  # 30,000-update ControlNet run, logs/config/verification
-    ├── 20261022_150600_pickcube_constrain_rollout/  # 32-step real-scene interface rollout, not evaluation
-    ├── 20261022_171100_placesphere_pilot/  # invalid-seed diagnostic
-    ├── 20261022_171300_placesphere_pilot_calibration/
-    ├── 20261022_171500_placesphere_pilot_calibration/
-    ├── 20261022_171700_placesphere_pilot_calibration/
-    ├── 20261022_172000_placesphere_pilot_calibration/
-    ├── 20261022_172200_placesphere_pilot_calibration/
-    ├── 20261022_172400_placesphere_pilot_calibration/
-    ├── 20261022_172910_placesphere_pilot/  # preflight failure; zero complete attempts
-    ├── 20261022_173015_placesphere_pilot/  # preflight failure; zero complete attempts
-    ├── 20261022_173110_placesphere_pilot/  # Ticket 07 validation, logs, hashes and videos
-    ├── 20261022_180137_placesphere_formal/  # retained failed preflight/accounting
-    ├── 20261022_180516_placesphere_formal/  # retained intermediate run; raw obs absent
-    ├── 20261022_184558_placesphere_formal/  # Ticket 08 qualifying collection/audit
-    ├── 20261022_193725_placesphere_base_dp_probe/  # separate 45-second throughput probe
-    ├── 20261022_193900_placesphere_base_dp/  # Ticket 09 30,000 updates, source/config/loss
-    ├── 20261022_193900_placesphere_base_dp_rollout/  # initial native action-bound diagnostic
-    ├── 20261022_195600_placesphere_base_dp_rollout/  # corrected 32-step interface rollout
-    ├── 20261022_200700_placesphere_constrain/  # failed before update 1
-    ├── 20261022_200800_placesphere_constrain/  # retained run with failed verification
-    ├── 20261022_201100_placesphere_constrain/  # verified 30,000 updates, source/loss evidence
-    ├── 20261022_201100_placesphere_constrain_rollout/  # 32-step interface check
-    ├── 20261022_205500_placesphere_scenes/  # Ticket 11 fixed scenes and restore audit
-    ├── 20261022_205500_placesphere_paired_eval/  # retained source-path preflight failure
-    ├── 20261022_212200_placesphere_paired_eval/  # retained paired-audit failure
-    ├── 20261022_213500_placesphere_paired_eval/  # Ticket 12 complete 100 x 2 paired evaluation
-    └── 20261022_220000_placesphere_paired_eval/  # retained NumPy-boolean serialization failure
-```
+| Task | Model | Current path |
+| --- | --- | --- |
+| StackCube (`panda_wristcam` evaluation) | Base DP | `outputs/ckpt/20260930_base_dp_stackcube_980/best_eval_success_at_end.pt` |
+| StackCube | ConstrainNet | `outputs/ckpt/20261021_constrainnet_wristcam_seed1/final.pt` |
+| PickCube | Base DP | `outputs/ckpt/20261022_144000_pickcube_base_dp/final.pt` |
+| PickCube | ConstrainNet | `outputs/ckpt/20261022_144835_pickcube_constrain/final.pt` |
+| PlaceSphere | Base DP | `outputs/ckpt/20261022_193900_placesphere_base_dp/final.pt` |
+| PlaceSphere | ConstrainNet | `outputs/ckpt/20261022_201100_placesphere_constrain/final.pt` |
 
-The ConstrainNet experiment retains its loss log, provenance, run configuration,
-training summary and independent verification. The scene set retains its
-standalone `scenes.h5`, manifest, round-trip evidence and expert-success
-trajectories. The paired evaluation retains both policies' 100 episode records,
-manifests, summaries, videos and final audit. Superseded exploratory profiling
-outputs and the large intermediate scene-template report were removed during
-cleanup; listed PickCube diagnostic and pilot runs are retained.
+The weight files keep their original bytes and hashes. StackCube uses the
+previously selected `ema_agent` / final EMA; the two new tasks use their
+preselected final EMA after 30,000 updates per selected model.
 
-## PlaceSphere fixed scenes (Ticket 11)
+StackCube's historical runs have date-level provenance, so their weight folders
+use `YYYYMMDD_` prefixes (2026-09-30 and 2026-10-21) without inventing a start
+time. The 2026-10-23 renames preserve both checkpoint hashes. Their exact
+old/new file mappings and hashes are in
+`outputs/exp/20261023_105159_final_artifact_cleanup/path_migrations.json`;
+the cleanup verifier uses this sidecar to resolve the original retained paths.
 
-`placesphere_scenes.py` builds an independent fixed 100-scene catalog using
-the frozen formal contract. The run directory belongs under `outputs/exp/` and
-contains full native initial states, controllers, 42D raw/39D policy
-observations, expert actions/traces, actual cylinder measurements, seeds,
-layout/side/waypoint records, source snapshots, frozen-contract identity,
-attempt journal, exact counts/timings, manifest and checksums.
-`PlaceSphereSceneSet` validates these identities before exposing any scene;
-`restore()` reconstructs the physical cylinder and task/controller/safety state
-in a fresh native environment. `PLACE_SPHERE_SCENES.md` documents the recipe,
-tolerances, commands and acceptance evidence. Ticket 11 does not run policy
-evaluation and makes no isolation or cross-set deduplication claim.
+## Final data and validation
 
-Completed at `outputs/exp/20261022_205500_placesphere_scenes/`: 100/100
-accepted scenes from 166 actual complete runner invocations in 620.515 s
-(1,000-attempt/3,600-second budgets); failures were 63 template native
-failures, 1 cylinder-search exhaustion and 2 obstacle replay failures. All 100
-expert records prove native terminal success plus post-release no-contact/no-
-crossing safety. The two-fresh-environment audit passed 100/100 with exactly
-reproducible actual full-state/controller/raw/policy fingerprints; maximum
-recorded-vs-restored norms are all zero under 1e-7 limits. Artifact/source
-identities, detailed phase and stage counts, and the explicit two historical
-source-pin deltas are in `PLACE_SPHERE_SCENES.md` and the experiment directory.
+| Task | Retained formal data | Retained validation records |
+| --- | --- | --- |
+| StackCube | `demos/StackCube-obstacle/` (100 obstacle demos); Base DP source `demos/StackCube-v1/motionplanning/trajectory.filtered.state.pd_ee_delta_pos.physx_cpu.h5` (980 demos) | Dataset `validation.json`, training and scene audits below |
+| PickCube | `demos/PickCube-obstacle/20261022_132753_formal/` (1,000 direct + 100 obstacle) | `outputs/exp/20261022_132753_pickcube_formal/` |
+| PlaceSphere | `demos/PlaceSphere-obstacle/20261022_184558_formal/` (1,000 direct + 100 obstacle) | `outputs/exp/20261022_184558_placesphere_formal/` |
 
-## PickCube pilot attempts
+The historical `demos/StackCube-v1/` source/replay archive is preserved under
+the repository's original-data traceability rules. No retained data was moved
+or reserialized. PickCube and PlaceSphere pilot/intermediate datasets are gone.
 
-`demos/PickCube-obstacle/20261022_120016_pilot/` retains the historical 20 accepted direct
-trajectories and the complete attempt report. The obstacle phase exhausted its
-200-attempt budget (197 cylinder-footprint prefilter rejections and 3 exact
-initial-state restoration mismatches); it did not meet the ticket's 20-obstacle
-acceptance target and is not a usable obstacle dataset. The data, contract,
-configuration, report and artifact hashes are retained for traceability.
-Its validation diagnostics and saved-batch model check are
-under `outputs/exp/20261022_120016_pickcube_pilot/`. Round-8 code changes and
-bounded live diagnostics are retained. The round-9 resolution and measured
-failure evidence are documented in
-`examples/baselines/constrain/PICKCUBE_PILOT.md`. Those attempts accepted no
-obstacle examples and remain immutable historical evidence.
+## Final experiment directories
 
-The complete round-9 pilot at `demos/PickCube-obstacle/20261022_130421_pilot/`
-contains 20 accepted direct and 20 accepted obstacle trajectories (68 complete
-obstacle attempts). It includes configuration/contract, per-attempt and
-aggregate timings/counters, trajectory, report, and artifact hashes. Validation,
-minibatch evidence, and both representative videos are under
-`outputs/exp/20261022_130421_pilot/`, with a video/validation identity record in
-`diagnostics/pilot_evidence.json`. The saved official epsilon-loss is finite;
-see `PICKCUBE_PILOT.md` for restoration and safety diagnosis.
-Round-10 retrospective source/recipe provenance and per-trajectory base XY
-side audit are new sidecars in that same dataset directory; they preserve the
-identities and historical status of the original collection metadata.
-The separate Ticket 02 formal run (1,000 direct + 100 safe obstacle accepts,
-pilot excluded) is documented with exact commands and contract in
-`PICKCUBE_DATA.md`; its frozen source/config snapshot precedes collection.
-Collection took 1,503.52 s. All 1,100 episodes passed full native-state,
-controller-state, observation, terminal/safety, and training-window validation;
-the manifest and detailed evidence are under
-`outputs/exp/20261022_132753_pickcube_formal/validation_full_contract/`.
+All paths in this table are below `outputs/exp/`.
 
-Ticket 03's independent PickCube Base DP, full configuration, complete update
-log, checkpoint and short interface rollout are documented in
-`PICKCUBE_TRAINING.md`. The 1,000 direct demonstrations alone were used; the
-100 obstacle examples were filtered out by the frozen episode manifest. The
-full 30,000-update run completed in 896.09 seconds and its final EMA checkpoint
-is stored separately under `outputs/ckpt/`.
+| Task | Base training | ConstrainNet training | Fixed scenes | Final paired evaluation |
+| --- | --- | --- | --- | --- |
+| StackCube | `20260930_base_dp_stackcube_980_seed1/` | `20261021_constrainnet_wristcam_seed1/` | `20261021_wristcam_scenes/` | `20261021_wristcam_paired_eval/` |
+| PickCube | `20261022_144000_pickcube_base_dp/` | `20261022_144835_pickcube_constrain/` | `20261022_152157_pickcube_scenes/` | `20261022_162002_pickcube_paired_eval/` |
+| PlaceSphere | `20261022_193900_placesphere_base_dp/` | `20261022_201100_placesphere_constrain/` | `20261022_205500_placesphere_scenes/` | `20261022_213500_placesphere_paired_eval/` |
 
-Ticket 04's task-specific PickCube ConstrainNet uses exactly the 100 formal safe
-obstacle episodes (IDs 1000–1099) and the trusted Ticket 03 final EMA. Its
-complete configuration, 30,000 finite per-step losses, independent-base and
-control-update evidence are under
-`outputs/exp/20261022_144835_pickcube_constrain/`; the standalone final EMA is
-under `outputs/ckpt/20261022_144835_pickcube_constrain/`. The separate bounded
-throughput probe and 32-step real-scene rollout are retained in the listed
-experiment directories. Reproduction details, full artifact identities, exact
-condition/action contract, rollout outcome and verification are in
-`PICKCUBE_TRAINING.md` under Ticket 04.
+Each paired experiment retains both policies' complete 100-episode records,
+summaries, parsed configuration, identity/restore evidence and representative
+videos. PickCube's `termination_correction.json` remains authoritative for its
+18/17 historical 500-step-limit outcomes; original flags were not reconstructed.
+PlaceSphere's real time-limit truncations are 3/13 at the 200-step limit.
 
-Ticket 05's independently generated 100-scene PickCube obstacle catalog,
-attempt/failure and phase timing report (100/349 actual runner invocations;
-the immutable original report says 100/350 loop iterations and is corrected by
-an accounting sidecar), native controller/runtime identity,
-strict fresh-environment restoration audit, public load/restore API, exact
-reproduction command and artifact hashes are documented in
-`PICKCUBE_SCENES.md`. The complete run accepted 100/349 actual runner
-invocations in 304.33 s; the original 100/350-loop-iteration report remains
-unchanged and the corrected denominator is hash-pinned by its sidecar.
-all 100 restores passed. The small smoke run and its bounded failed attempts
-are retained separately for the implementation check.
+Also retained:
 
-Ticket 06's first frozen runner attempt at
-`outputs/exp/20261022_155725_pickcube_paired_eval/` completed 0 policy actions;
-all 200 records capture a state-fingerprint normalization error. The native
-state snapshots were hashed without flattening the vector-env batch dimension,
-matching the scene catalog's identity contract. That failed attempt is retained
-unchanged. The corrected formal attempt is at
-`outputs/exp/20261022_160037_pickcube_paired_eval/` retained 100 Base DP
-condition-shape errors and three ConstrainNet video conversion errors; the 97
-other ConstrainNet episodes were recorded, and all files remain unchanged. The
-next attempt corrects those runner interface issues without changing scenes or
-checkpoints and is at `outputs/exp/20261022_162002_pickcube_paired_eval/`.
+- `outputs/exp/20261022_221641_multitask_obstacle_completion_audit/`: original
+  12-ticket acceptance audit, whose pre-cleanup scope is unchanged.
+- `outputs/exp/20261023_105159_final_artifact_cleanup/`: current pruning and
+  retained-identity audit. This supersedes historical *retention* descriptions.
 
-Ticket 06's PickCube-only paired evaluation uses the two recorded final EMA
-checkpoints on that immutable 100-scene catalog. Run configuration, complete
-per-scene outcome/action records, restoration fingerprints, fixed-index videos,
-per-policy summaries and paired comparison are under
-`outputs/exp/20261022_162002_pickcube_paired_eval/`; reproduction and metric
-definitions are in `PICKCUBE_EVALUATION.md`. Both policies completed 100/100
-records with no runtime errors. Base DP/ConstrainNet task success was 82/83,
-safe success 2/38, obstacle contact 97/53, and XY crossing/timeouts 0/0 for
-each. A `termination_correction.json` sidecar corrects the 18/17 historical
-500-step episodes to control-step-limit outcomes (not environment terminals);
-the original episode records and summaries remain byte-identical and their
-hashes are pinned in the sidecar. Paired task outcomes were 71 both, 11
-Base-only, 12 Constrain-only, 6
-neither; paired safe outcomes were 1 both, 1 Base-only, 37 Constrain-only, 61
-neither. All full-state/controller/observation restore fingerprints matched
-across policy pairs and observations matched the catalog.
+## Reports
 
-Bounded calibration records are retained at
-`demos/PickCube-obstacle/20261022_115754_pilot_calibration/` and
-`demos/PickCube-obstacle/20261022_115841_pilot_calibration/`; the second run's
-diagnostics are under
-`outputs/exp/20261022_115841_pickcube_pilot_calibration/`. Their directory
-timestamps were corrected to the recorded local start times without changing
-artifact bytes.
+- [Current three-task results](THREE_TASK_RESULTS.md)
+- [StackCube paired results](WRISTCAM_EVALUATION.md)
+- [PickCube paired results](PICKCUBE_EVALUATION.md)
+- [PlaceSphere paired results](PLACE_SPHERE_EVALUATION.md)
+- [PickCube / PlaceSphere collection and training summary](MULTITASK_OBSTACLE_RESULTS.md)
 
-## Relocation map
+Older pilot and task reports remain source-controlled documentation. Their
+statements that diagnostic artifacts were retained describe their original
+publication state, not the post-cleanup filesystem.
 
-Completed artifact bytes are unchanged. Paths embedded in original checkpoints,
-manifests, logs and audit records identify their historical location; resolve
-them with this map instead of rewriting them and invalidating their hashes.
+## Historical relocation map
+
+These mappings still resolve retained final artifacts without rewriting old
+manifest/checkpoint paths. More specific checkpoint mappings take precedence.
 
 | Historical path | Current path |
 | --- | --- |
-| `outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt` | `outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt` |
+| `outputs/ckpt/base_dp_stackcube_980/` | `outputs/ckpt/20260930_base_dp_stackcube_980/` |
+| `outputs/ckpt/constrainnet_wristcam_seed1/` | `outputs/ckpt/20261021_constrainnet_wristcam_seed1/` |
+| `outputs/runs/dp_StackCube-v1_980_1/checkpoints/best_eval_success_at_end.pt` | `outputs/ckpt/20260930_base_dp_stackcube_980/best_eval_success_at_end.pt` |
 | `outputs/runs/dp_StackCube-v1_980_1/` (training records) | `outputs/exp/20260930_base_dp_stackcube_980_seed1/` |
-| `outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt` | `outputs/ckpt/constrainnet_wristcam_seed1/final.pt` |
+| `outputs/constrain_runs/wristcam_full30000_seed1/checkpoints/final.pt` | `outputs/ckpt/20261021_constrainnet_wristcam_seed1/final.pt` |
 | `outputs/constrain_runs/wristcam_full30000_seed1/` (training records) | `outputs/exp/20261021_constrainnet_wristcam_seed1/` |
-| `outputs/wristcam_formal_20261021/` | `demos/StackCube-obstacle/` |
-| `outputs/data/wristcam_formal_20261021/` (intermediate location) | `demos/StackCube-obstacle/` |
+| `outputs/wristcam_formal_20261021/` or `outputs/data/wristcam_formal_20261021/` | `demos/StackCube-obstacle/` |
 | `outputs/wristcam_eval_scenes_20261021/` | `outputs/exp/20261021_wristcam_scenes/` |
 | `outputs/wristcam_paired_eval_20261021_recovery/` | `outputs/exp/20261021_wristcam_paired_eval/` |
 
-The more specific checkpoint mappings take precedence over their parent-directory
-mapping. Historical paths for deleted intermediate outputs have no replacement.
-
-### Identity checks (SHA-256)
-
-| Artifact | SHA-256 |
-| --- | --- |
-| Base DP checkpoint | `ba65c507ac48aa76a911fa1af28b7155ca3c4f2d7393c775930241dbcde27c25` |
-| ConstrainNet final EMA checkpoint | `74de460532bf4188b7b019f9bb15ecd027af2a7a3b5bef14c2fc6fd4c59b7d02` |
-| Formal `trajectory.h5` | `c4811f0d1069fdc4bd247770978a6f87423b9404cfddc04567db456b0ce734c8` |
-| Scene `scenes.h5` | `b1c736ccfbd4411b20dcb1495ffbf220afd6d7b08dbf46528c4047358d139caf` |
-| Scene `manifest.json` (file bytes) | `71381bfaad5c7e36235f457b3489e30d96f508c8d7bb17db037fae34eec65c89` |
-| Evaluation `paired_summary.json` | `f4714253e9ac8980fa4f3e7599ac54f82abc1af9ab417c019372dce1597c733d` |
-
-## New runs
-
-Activate `maniskill`, then pass explicit paths. For example:
-
-```bash
-python -m examples.baselines.constrain.train_constrain \
-  --demo-path demos/StackCube-obstacle/trajectory.h5 \
-  --base-checkpoint outputs/ckpt/base_dp_stackcube_980/best_eval_success_at_end.pt \
-  --run-dir outputs/exp/YYYYMMDD_HHMMSS_constrainnet_training \
-  --checkpoint-dir outputs/ckpt/constrainnet_training
-```
-
-Replace the timestamp placeholder before running. Training defaults also split
-weights and logs; evaluation defaults use timestamp-prefixed experiment paths.
-The frozen demonstration collector is called with an explicit `--output-dir`
-under `demos/<dataset-name>/`, preserving the recorded generator source fingerprint.
-
-## PlaceSphere Ticket 07 pilot
-
-`demos/PlaceSphere-obstacle/20261022_173110_pilot/` is the complete 20 direct +
-20 safe-obstacle pilot. It used 30 direct and 31 obstacle complete attempts in
-128.984 seconds; details, per-attempt diagnostics, stage counters, phase timings,
-seeds, T/T+1 state/controller/info evidence, source/native pins, and SHA-256
-identities are in its report and `PLACE_SPHERE_PILOT.md`. The matching
-`outputs/exp/20261022_173110_placesphere_pilot/` contains the frozen contract and
-run log, both class minibatch finite epsilon-loss evidence, and the direct and
-obstacle representative videos. The trajectory hash is
-`0a415d203ee023368c357bcb34c9173128633230cca210ac9abf6f562aca8220`; video
-hashes and class-specific losses are recorded in `pilot_evidence.json`. No
-formal PlaceSphere dataset collection or training was run.
-`post_collection_source_delta.json` documents the one later configuration
-validation guard and preserves the pre-collection generator hash; it did not
-change the dataset or the recorded pilot contract.
-
-Ticket 08 formal PlaceSphere collection is documented in
-`PLACE_SPHERE_DATA.md`. The formal 1,000-direct/100-safe-obstacle dataset uses
-independent class targets, is sourced entirely from the frozen native expert,
-and excludes all 40 pilot episodes. Collection attempts, complete frozen
-contract, full validation, replay evidence and hashes are under
-`demos/PlaceSphere-obstacle/20261022_184558_formal/` and
-`outputs/exp/20261022_184558_placesphere_formal/`. The intermediate
-`20261022_180516` run had complete 1,000+100 trajectories but did not retain the
-full raw native observation, so it is preserved as a non-qualifying diagnostic.
-The first preflight at `20261022_180137` is retained with its source contract and
-accounting sidecar: the initial validator incorrectly applied the ±0.35 pose
-bound to the native ±1 gripper channel, returning one rollout before journaling
-the attempt and accepting no trajectory.
-The qualifying dataset's retrospective exact source recovery, matching
-SHA-256 proof, validation-only source delta, full local/native source pin audit,
-and future pre-attempt source snapshot behavior are documented in
-`outputs/exp/20261022_184558_placesphere_formal/provenance_source/` and
-`PLACE_SPHERE_DATA.md`. The original frozen contract, dataset, validation, and
-formal identity files retain their original bytes and hashes.
-
-Ticket 09's independent PlaceSphere Base DP uses only direct formal IDs 0–999,
-with a 39-D named-state condition, all seven native Euler/gripper action
-channels, and PlaceSphere-specific open-gripper tail padding. Its 30,000-update
-final EMA, strict loader, source/config snapshots, complete finite loss log, and
-short restored obstacle rollout are documented in `PLACE_SPHERE_TRAINING.md`.
-The independent throughput probe and both rollout records are retained; the
-initial rollout exposed model outputs outside the formal native pose bound and
-is kept as a diagnostic. The exact pre-run source archive and reviewable
-post-training action-bound delta are under the training experiment directory.
-The corrected 32-step rollout was an interface check only. Ticket 10 then
-completed the independent 30,000-update ConstrainNet run; its additional
-30,000-update verification-failed attempt remains separately documented and
-excluded from the selected checkpoint.
-
-Ticket 12's final paired PlaceSphere evaluation and independent-task summary are
-documented in `PLACE_SPHERE_EVALUATION.md` and
-`MULTITASK_OBSTACLE_RESULTS.md`. The complete run at
-`outputs/exp/20261022_213500_placesphere_paired_eval/` contains exactly 100
-records per policy, fixed preselected scene videos, paired restoration
-fingerprint audit, source snapshots, and checksums. Both models completed all
-200 episodes without runtime errors. Three non-qualifying write-once run directories
-are retained with their source-path, paired-condition, and serialization defects;
-they are explicitly excluded from the final metrics. The run metadata does not
-establish their chronological order, so directory timestamp labels are not used
-to infer it; `PLACE_SPHERE_EVALUATION.md` identifies each attempt by path.
-
-The corrected goal-wide completion audit is
-`outputs/exp/20261022_221641_multitask_obstacle_completion_audit/audit.json`
-(SHA-256 `c10fd9a5e256c6b7ac5f08f2eb401c55ecda853415b8cb2d26b50c3eee0ea15a`). It distinguishes true goal-start base
-`fb21bd47f3a4d8c11ac71b6be4759aca5b5018cf` from round-25 base/audited HEAD
-`f09237a42d4e2fefbb661644918373991a2da640`; its full goal-base-to-HEAD diff
-scope is 50 paths, all under `examples/baselines/constrain/`. Round 25 remains
-uncommitted; no final commit SHA is assigned.
+Activate `maniskill` before any execution. New data must use an explicit path
+under `demos/`; new weights belong in `outputs/ckpt/`, and experiment records in
+`outputs/exp/YYYYMMDD_HHMMSS_<name>/`. Do not overwrite the retained final runs.

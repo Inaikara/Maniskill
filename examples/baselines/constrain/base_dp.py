@@ -27,7 +27,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 CONSTRAIN_DIR = _REPO_ROOT / "examples" / "baselines" / "constrain"
 OBSTACLE_STATIC_FEATURES = 3
 
-DEFAULT_CKPT = _REPO_ROOT / "outputs" / "ckpt" / "base_dp_stackcube_980" / "best_eval_success_at_end.pt"
+DEFAULT_CKPT = _REPO_ROOT / "outputs" / "ckpt" / "20260930_base_dp_stackcube_980" / "best_eval_success_at_end.pt"
 
 _OFFICIAL_DP_DIR = _REPO_ROOT / "examples" / "baselines" / "diffusion_policy"
 
