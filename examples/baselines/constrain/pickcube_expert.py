@@ -53,11 +53,7 @@ def restore_execution_state(env, snapshot):
     base.agent.controller.set_state(controller)
     # Continuing a restored episode must not inherit its previous rollout's
     # Gym TimeLimit/native elapsed-step counters.
-    for wrapper in (env, base):
-        if hasattr(wrapper, "_elapsed_steps"):
-            wrapper._elapsed_steps = 0
-    if torch.is_tensor(getattr(base, "_elapsed_steps", None)):
-        base._elapsed_steps.zero_()
+    _reset_elapsed_steps(env, base)
 
 
 def run_pickcube_expert(
@@ -71,6 +67,9 @@ def run_pickcube_expert(
     config=PickCubeExpertConfig(),
     initial_snapshot=None,
     deterministic_reset_restore=False,
+    waypoint_xy=None,
+    record_body_sweep=False,
+    stop_on_contact=False,
     layout_config=LayoutGeometryConfig(
         table_bounds=(-0.25, -0.25, 0.25, 0.35),
         min_transport_distance=0.14,
@@ -92,13 +91,19 @@ def run_pickcube_expert(
     waypoint = None
     waypoint_attempts = 0
     if detour:
-        sampled = sample_same_side_waypoint(
-            cube_xy, goal_xy, base_xy, np.random.default_rng(config.seed), layout_config
-        )
-        if sampled.waypoint_xy is None:
-            raise ValueError(f"invalid_pickcube_waypoint:{sampled.reason}")
-        waypoint = sampled.waypoint_xy
-        waypoint_attempts = sampled.attempts
+        if waypoint_xy is not None:
+            waypoint = np.asarray(waypoint_xy, dtype=np.float64).reshape(2)
+            if not np.isfinite(waypoint).all():
+                raise ValueError("invalid_pickcube_waypoint:non_finite")
+            waypoint_attempts = 1
+        else:
+            sampled = sample_same_side_waypoint(
+                cube_xy, goal_xy, base_xy, np.random.default_rng(config.seed), layout_config
+            )
+            if sampled.waypoint_xy is None:
+                raise ValueError(f"invalid_pickcube_waypoint:{sampled.reason}")
+            waypoint = sampled.waypoint_xy
+            waypoint_attempts = sampled.attempts
 
     if initial_snapshot is None:
         obs, reset_info = env.reset(
@@ -129,11 +134,7 @@ def run_pickcube_expert(
                 extra[0, 4:7] = 0
             _set_state_dict_exact(base, state)
             base.agent.controller.set_state(_clone_tree(controller))
-            for wrapper in (env, base):
-                if hasattr(wrapper, "_elapsed_steps"):
-                    wrapper._elapsed_steps = 0
-            if torch.is_tensor(getattr(base, "_elapsed_steps", None)):
-                base._elapsed_steps.zero_()
+            _reset_elapsed_steps(env, base)
             obs = base.get_obs()
             reset_info = base.evaluate()
     # Official Panda PickCube expert geometry and grasp convention.
@@ -158,6 +159,7 @@ def run_pickcube_expert(
         "waypoint_xy": None if waypoint is None else waypoint.tolist(),
         "waypoint_sampling_attempts": waypoint_attempts,
         "phase_status": [],
+        "body_sweep": [],
     }
     trace["phase_timings"] = {"geometry": time.monotonic() - expert_started,
                               "expert_execution": 0.0}
@@ -178,7 +180,14 @@ def run_pickcube_expert(
         if contact is not None and "first_obstacle_contact" not in trace:
             trace["first_obstacle_contact"] = {
                 **contact, "control_step": len(actions), "phase": current_phase,
+                "cube_xyz": base.cube.pose.p[0].detach().cpu().numpy().copy().tolist(),
+                "tcp_xyz": base.agent.tcp.pose.p[0].detach().cpu().numpy().copy().tolist(),
             }
+        if record_body_sweep:
+            trace["body_sweep"].append({
+                "phase": current_phase,
+                "bodies": collision_body_vertices(base),
+            })
         states.append(_clone_tree(base.get_state_dict()))
         observations.append(_clone_tree(obs))
         infos.append(_clone_tree(last_info))
@@ -191,6 +200,8 @@ def run_pickcube_expert(
         done = bool(terminated) or bool(truncated) or bool(
             base.evaluate()["native_success"][0].item()
         )
+        if stop_on_contact and bool(base._obstacle_collision[0].item()):
+            done = True
         return done
 
     def move_to(target, grip, tolerance=None, target_quat=None):
@@ -258,7 +269,17 @@ def run_pickcube_expert(
     targets = [lift]
     if waypoint is not None:
         targets.append(np.array([waypoint[0], waypoint[1], cube_z + config.lift_height]))
-    targets.append(base.goal_site.pose.p[0].detach().cpu().numpy())
+    goal_xyz = base.goal_site.pose.p[0].detach().cpu().numpy().copy()
+    targets.append(goal_xyz)
+    trace["shared_targets"] = {
+        "lift_xyz": np.asarray(lift, dtype=np.float64).tolist(),
+        "goal_xyz": np.asarray(goal_xyz, dtype=np.float64).tolist(),
+        "waypoint_xyz": None if waypoint is None else [
+            float(waypoint[0]), float(waypoint[1]), float(cube_z + config.lift_height)
+        ],
+        "lift_height_m": float(config.lift_height),
+        "cube_z_m": float(cube_z),
+    }
     if grasp_pose_reached:
         for target_name, target in zip(
             ("lift", "waypoint", "goal") if waypoint is not None else ("lift", "goal"),
@@ -281,13 +302,16 @@ def run_pickcube_expert(
                 torch.tensor([0, 0, 0, 0, 0, 0, -1.0], device=base.device)
             ):
                 break
-    native = base.evaluate()["native_success"]
+    evaluated = base.evaluate()
+    native = evaluated["native_success"]
+    held = bool(evaluated["is_grasped"][0].item())
     trace["phase_timings"]["expert_execution"] = time.monotonic() - execution_started
     safety = {
         "native_success": bool(native[0].item()),
         "obstacle_collision": bool(base._obstacle_collision[0].item()),
         "obstacle_crossing": bool(base._forbidden_crossing[0].item()),
-        "safe_success": bool(base.evaluate()["success"][0].item()),
+        "safe_success": bool(evaluated["success"][0].item()),
+        "held_at_success": bool(native[0].item()) and held,
     }
     return {
         "actions": np.asarray(actions),
@@ -370,6 +394,53 @@ def scale_native_euler_action(delta_euler, rot_lower, action_cap):
         -action_cap,
         action_cap,
     )
+
+
+def _reset_elapsed_steps(env, base):
+    """Zero wrapper counters without replacing the env's tensor step counter."""
+    for wrapper in (env, base):
+        if wrapper is base:
+            continue
+        steps = getattr(wrapper, "_elapsed_steps", None)
+        if steps is not None and not torch.is_tensor(steps):
+            wrapper._elapsed_steps = 0
+    if torch.is_tensor(getattr(base, "_elapsed_steps", None)):
+        base._elapsed_steps.zero_()
+
+
+def collision_body_vertices(env):
+    """World collision vertices keyed by link name, plus the cube. Not a surface gap."""
+    bodies = {}
+    for link in env.agent.robot.links:
+        points = [_shape_world_vertices(link, shape) for shape in link._bodies[0].collision_shapes]
+        points = [item for item in points if len(item)]
+        if points:
+            bodies[link.name] = np.concatenate(points, axis=0)
+    bodies["cube"] = _cube_vertices(env)
+    return bodies
+
+
+def _shape_world_vertices(link, shape):
+    try:
+        vertices = np.asarray(shape.get_vertices())
+    except AttributeError:
+        get_half_size = getattr(shape, "get_half_size", None)
+        if get_half_size is None:
+            raise RuntimeError(f"cannot enumerate collision geometry for robot link {link.name}")
+        half = np.asarray(get_half_size()).reshape(3)
+        vertices = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]) * half
+    local = shape.get_local_pose().to_transformation_matrix()
+    homogeneous = np.concatenate([vertices.T, np.ones((1, len(vertices)))])
+    world = link.pose.to_transformation_matrix()[0].cpu().numpy() @ (np.asarray(local) @ homogeneous)
+    return np.asarray(world[:3].T, dtype=np.float64)
+
+
+def _cube_vertices(env):
+    half = float(env.cube_half_size)
+    center = env.cube.pose.p[0].detach().cpu().numpy()
+    local = np.asarray([[x, y, z] for x in (-half, half) for y in (-half, half) for z in (-half, half)])
+    rotation = env.cube.pose.to_transformation_matrix()[0, :3, :3].cpu().numpy()
+    return local @ rotation.T + center
 
 
 def _collision_vertices_xy(env, max_height):
