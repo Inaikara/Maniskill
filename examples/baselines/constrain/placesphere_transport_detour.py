@@ -225,7 +225,8 @@ def classify_direct_block(contact):
 
 
 def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1.0,
-             per_attempt_deadline=1.0, worker_argv_fn=None, demo_dir=None):
+             per_attempt_deadline=1.0, worker_argv_fn=None, demo_dir=None,
+             reject_metadata=None, note_accepted=None):
     """Finite attempt loop. Every invocation counts, including deadlines."""
     if (target < 1 or max_attempts < 1 or per_attempt_deadline <= 0
             or not np.isfinite(per_attempt_deadline)
@@ -270,12 +271,20 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
             reason = f"worker_exit_{outcome['returncode']}"
         if accepted_row and reason:
             accepted_row = False
+        if accepted_row and reject_metadata is not None:
+            rejection = reject_metadata(payload.get("metadata") or {})
+            if rejection:
+                accepted_row = False
+                reason = rejection
         if accepted_row and not (result_dir / "scene.h5").exists():
             accepted_row = False
             reason = "missing_scene"
         if accepted_row:
             try:
-                accepted_rows.append(_ingest_scene(output, result_dir, len(accepted_rows), payload, demo_dir))
+                ingested = _ingest_scene(output, result_dir, len(accepted_rows), payload, demo_dir)
+                accepted_rows.append(ingested)
+                if note_accepted is not None:
+                    note_accepted(ingested)
             except Exception as exc:
                 accepted_row = False
                 reason = f"ingest_failed:{type(exc).__name__}"
@@ -486,7 +495,7 @@ def _attempt_body(seed, result_dir, envs):
                 metadata = _scene_metadata(
                     seed, start, goal, base_xy, center, decision, clearance, direct, side, safe,
                     block, lift, offset, gap, direct_end, side_end, entry)
-                _write_attempt_scene(result_dir, safe, block, metadata)
+                _write_attempt_scene(result_dir, safe, block, metadata, direct=direct)
                 return {"accepted": True, "failure": None, "counters": counters,
                         "phase_timings": timings, "metadata": metadata,
                         "diagnostics": {"rejections": notes, "selected_gap_m": gap}}
@@ -1096,6 +1105,13 @@ def _scene_metadata(seed, start, goal, base_xy, center, decision, clearance, dir
             "release_phase_reached": True,
             "retreat_phase_reached": True,
             "settle_phase_reached": True,
+            "direct_release_phase_reached": _phase_reached(direct["trace"], "release"),
+            "direct_retreat_phase_reached": _phase_reached(direct["trace"], "retreat"),
+            "direct_settle_phase_reached": _phase_reached(direct["trace"], "settle"),
+            "direct_native_success": bool(direct["terminal"]["native_success"]),
+            "direct_on_bin": bool(direct["terminal"]["on_bin"]),
+            "direct_static": bool(direct["terminal"]["static"]),
+            "direct_ungrasped": bool(direct["terminal"]["ungrasped"]),
             "steps": int(len(safe["actions"])),
             "waypoint_xy": side["trace"]["waypoint_xy"],
             "lift_height_m": float(lift),
@@ -1141,7 +1157,12 @@ def _scene_metadata(seed, start, goal, base_xy, center, decision, clearance, dir
     }
 
 
-def _write_attempt_scene(result_dir, safe, block, metadata):
+def _phase_reached(trace, name):
+    return any(phase == name and status in ("reached", "episode_ended")
+               for phase, status in (trace or {}).get("phase_status", []))
+
+
+def _write_attempt_scene(result_dir, safe, block, metadata, direct=None):
     import h5py
 
     path = Path(result_dir) / "scene.h5"
@@ -1161,6 +1182,23 @@ def _write_attempt_scene(result_dir, safe, block, metadata):
         group.create_dataset("safe_success", data=np.asarray(
             [_flag(info, "success") for info in safe["infos"]], dtype=np.uint8))
         group.create_dataset("direct_block_actions", data=np.asarray(block["actions"], dtype=np.float32))
+        if direct is not None:
+            group.create_dataset("direct_actions", data=np.asarray(direct["actions"], dtype=np.float32))
+            group.create_dataset("direct_policy_observations", data=np.asarray(
+                direct["policy_observations"], dtype=np.float32))
+            group.create_dataset("direct_raw_observations", data=np.asarray(
+                direct["raw_observations"], dtype=np.float32))
+            group.create_dataset("direct_terminated", data=np.asarray(direct["terminated"], dtype=np.uint8))
+            group.create_dataset("direct_truncated", data=np.asarray(direct["truncated"], dtype=np.uint8))
+            terminal = direct.get("terminal") or {}
+            trace = direct.get("trace") or {}
+            group.attrs["direct_native_success"] = int(bool(terminal.get("native_success")))
+            group.attrs["direct_on_bin"] = int(bool(terminal.get("on_bin")))
+            group.attrs["direct_static"] = int(bool(terminal.get("static")))
+            group.attrs["direct_ungrasped"] = int(bool(terminal.get("ungrasped")))
+            group.attrs["direct_release_reached"] = int(_phase_reached(trace, "release"))
+            group.attrs["direct_retreat_reached"] = int(_phase_reached(trace, "retreat"))
+            group.attrs["direct_settle_reached"] = int(_phase_reached(trace, "settle"))
         group.attrs["metadata_json"] = json.dumps(metadata, sort_keys=True)
 
 
@@ -1186,6 +1224,24 @@ def _ingest_scene(output, result_dir, index, payload, demo_dir):
             "env_states": _read_tree(source["scene"]["env_states"]),
             "controller_states": _read_tree(source["scene"]["controller_states"]),
         }
+        direct_names = (
+            "direct_actions", "direct_policy_observations", "direct_raw_observations",
+            "direct_terminated", "direct_truncated",
+        )
+        direct_arrays = {name: np.asarray(source["scene"][name]) for name in direct_names
+                         if name in source["scene"]}
+        direct_attr_names = (
+            "direct_native_success", "direct_on_bin", "direct_static", "direct_ungrasped",
+            "direct_release_reached", "direct_retreat_reached", "direct_settle_reached",
+        )
+        direct_attrs = {key: int(source["scene"].attrs[key]) for key in direct_attr_names
+                        if key in source["scene"].attrs}
+        obstacle_arrays = {
+            "terminated": np.asarray(source["scene"]["terminated"]),
+            "truncated": np.asarray(source["scene"]["truncated"]),
+            "native_success": np.asarray(source["scene"]["native_success"]),
+            "safe_success": np.asarray(source["scene"]["safe_success"]),
+        }
     metadata = dict(metadata)
     metadata["scene_id"] = scene_id
     metadata["state_sha256"] = _tree_hash(state)
@@ -1205,6 +1261,12 @@ def _ingest_scene(output, result_dir, index, payload, demo_dir):
         group.create_dataset("raw_observations", data=raw)
         group.create_dataset("initial_policy_observation", data=policy[0])
         group.create_dataset("initial_raw_observation", data=raw[0])
+        for name, value in obstacle_arrays.items():
+            group.create_dataset(name, data=value)
+        for name, value in direct_arrays.items():
+            group.create_dataset(name, data=value)
+        for key, value in direct_attrs.items():
+            group.attrs[key] = value
         group.attrs["metadata_json"] = json.dumps(metadata, sort_keys=True)
     if demo_dir is not None:
         _append_demo(Path(demo_dir), scene_id, metadata, demo_payload, state)

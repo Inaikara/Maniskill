@@ -109,6 +109,14 @@ Also retained:
   `outputs/ckpt/20261023_235744_pickcube_pilot_constrain/final.pt`.
   Training demos: `demos/PickCube-transport-detour/20261023_235744_pilot_r2/`.
   These are not formal performance results.
+- `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
+  learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
+  `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.
+  No second round was started. Weights:
+  `outputs/ckpt/20261024_014459_placesphere_pilot_base/final.pt`,
+  `outputs/ckpt/20261024_014459_placesphere_pilot_constrain/final.pt`.
+  Training demos: `demos/PlaceSphere-transport-detour/20261024_014459_pilot_r1/`.
+  These are not formal performance results.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
