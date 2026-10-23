@@ -100,6 +100,15 @@ Also retained:
   `demos/PickCube-transport-detour/20261023_165956/`. Incomplete same-day runs
   `20261023_164921_pickcube_transport_detour/` and
   `20261023_165430_pickcube_transport_detour/` are not this evidence set.
+- `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
+  acceptance batch, 4/8 attempts. It does not replace
+  `20261022_205500_placesphere_scenes/` or
+  `20261022_213500_placesphere_paired_eval/`. Matching trajectories are
+  `demos/PlaceSphere-transport-detour/20261023_175529/`. Same-day incomplete
+  runs `20261023_174606_placesphere_transport_detour/` and
+  `20261023_175100_placesphere_transport_detour/`, and the smaller successful
+  probe `20261023_175419_placesphere_transport_detour/`, are not this evidence
+  set.
 
 ## Reports
 
