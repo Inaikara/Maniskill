@@ -541,10 +541,15 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         },
         "training": training,
         "selected_weights": SELECTED_WEIGHTS,
+        "loss_weight": training.get("loss_weight"),
     }
+    weight_spec = training.get("loss_weight")
+    if weight_spec is not None and weight_spec.get("name") != "obstacle_proximity":
+        raise ValueError("unsupported constrain loss weight")
     (run_dir / "run_config.json").write_text(json.dumps(config, indent=2) + "\n")
     iterator = iter(loader)
     losses = []
+    unweighted_losses = []
     started = time.monotonic()
     for step in range(1, training["total_iters"] + 1):
         try:
@@ -560,8 +565,17 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         noise = torch.randn_like(actions)
         timesteps = torch.randint(0, 100, (len(actions),), device=device)
         noisy = scheduler.add_noise(actions, noise, timesteps)
-        loss = torch.nn.functional.mse_loss(
-            denoiser(noisy, timesteps, global_cond=obs[..., :42].flatten(1), hint=hint), noise)
+        prediction = denoiser(noisy, timesteps, global_cond=obs[..., :42].flatten(1), hint=hint)
+        unweighted = weighted_epsilon_mse(prediction, noise, None)
+        if weight_spec is None:
+            loss = unweighted
+            mean_weight = 1.0
+        else:
+            sample_weight = obstacle_proximity_weight(
+                obs, near_distance_m=float(weight_spec["near_distance_m"]),
+                max_extra=float(weight_spec["max_extra"]))
+            loss = weighted_epsilon_mse(prediction, noise, sample_weight)
+            mean_weight = float(sample_weight.detach().mean())
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at update {step}")
         optimizer.zero_grad(set_to_none=True)
@@ -570,8 +584,13 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         lr_sched.step()
         ema.step(params)
         losses.append(float(loss.detach().cpu()))
+        unweighted_losses.append(float(unweighted.detach().cpu()))
         if step == 1 or step == training["total_iters"] or step % 1000 == 0:
-            print(f"constrain step {step}/{training['total_iters']} loss={losses[-1]:.6f}", flush=True)
+            print(
+                f"constrain step {step}/{training['total_iters']} loss={losses[-1]:.6f} "
+                f"unweighted={unweighted_losses[-1]:.6f} mean_weight={mean_weight:.4f}",
+                flush=True,
+            )
     if _state_sha(denoiser.base_net.state_dict()) != base_sha:
         raise RuntimeError("frozen base changed during constrain training")
     if not any(not torch.equal(param, start) for param, start in zip(denoiser.trainable_parameters(), initial)):
@@ -584,7 +603,9 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "status": "complete", "actual_updates": training["total_iters"],
         "selected_weights": SELECTED_WEIGHTS, "base_unchanged": True,
         "control_parameter_changed": True, "loss_first": losses[0], "loss_last": losses[-1],
-        "all_losses_finite": bool(np.isfinite(losses).all()),
+        "unweighted_loss_first": unweighted_losses[0], "unweighted_loss_last": unweighted_losses[-1],
+        "loss_weight": weight_spec,
+        "all_losses_finite": bool(np.isfinite(losses).all() and np.isfinite(unweighted_losses).all()),
         "elapsed_seconds": time.monotonic() - started, "checkpoint": str(final),
         "checkpoint_sha256": sha256_file(final),
         "dataset_coverage": dataset_coverage(
@@ -1043,6 +1064,36 @@ def build_episode_index(rows, checkpoint_sha, checkpoint):
             "checkpoint_sha256": checkpoint_sha,
         } for row in rows],
     }
+
+
+def obstacle_proximity_weight(observations, near_distance_m=0.08, max_extra=1.5):
+    """Upweight windows whose latest TCP is inside ``near_distance_m`` of the cylinder.
+
+    Weight is 1 at and beyond the cutoff and ``1 + max_extra`` at zero distance.
+    The cutoff and extra come from the training-set epsilon gap below 0.08 m,
+    not from development success rates.
+    """
+    from examples.baselines.constrain.pickcube_constrain import OBSTACLE_XY, TCP_XY
+
+    observations = torch.as_tensor(observations)
+    if near_distance_m <= 0 or max_extra < 0:
+        raise ValueError("proximity weight cutoff must be positive and extra nonnegative")
+    latest = observations[..., -1, :]
+    distance = torch.linalg.norm(
+        latest[..., list(OBSTACLE_XY)] - latest[..., list(TCP_XY)], dim=-1)
+    closeness = ((near_distance_m - distance) / near_distance_m).clamp(0, 1)
+    return 1 + max_extra * closeness
+
+
+def weighted_epsilon_mse(prediction, noise, weight=None):
+    """Epsilon MSE. ``weight`` is per sample and is normalized by its sum."""
+    if weight is None:
+        return torch.nn.functional.mse_loss(prediction, noise)
+    per_sample = (prediction - noise).pow(2).flatten(1).mean(1)
+    weight = torch.as_tensor(weight, dtype=per_sample.dtype, device=per_sample.device)
+    if weight.shape != per_sample.shape or not torch.isfinite(weight).all() or float(weight.sum()) <= 0:
+        raise ValueError("epsilon weights must be finite, positive in sum, and one per sample")
+    return (weight * per_sample).sum() / weight.sum()
 
 
 def dataset_coverage(windows, episodes, updates, batch_size):

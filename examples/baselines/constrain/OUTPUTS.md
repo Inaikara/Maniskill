@@ -115,9 +115,19 @@ Also retained:
   pilot, and does not admit Ticket 07. Weights:
   `outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt`,
   `outputs/ckpt/20261024_104348_pickcube_expansion_constrain/final.pt`.
-  Training demos: `demos/PickCube-transport-detour/20261024_104348_expansion/`
-  (1,000 direct + 100 obstacle, including the original 20+20). Not a formal
-  performance or generalization result.
+   Training demos: `demos/PickCube-transport-detour/20261024_104348_expansion/`
+   (1,000 direct + 100 obstacle, including the original 20+20). Not a formal
+   performance or generalization result.
+- `outputs/exp/20261024_202858_pickcube_proximity_weight/`: Ticket 05
+  authorized training-optimization slice on the same 1,000 direct + 100
+  obstacle data and the same frozen 30 dev scenes. One control-only retrain
+  from the expansion Base EMA, with a frozen TCP-obstacle proximity weight on
+  the epsilon loss. Gate is **pause**. It does not replace the expansion run
+  or admit Ticket 07. No new demos. Weight:
+  `outputs/ckpt/20261024_202858_pickcube_proximity_weight_constrain/final.pt`
+  `22d3624941645ecac5bab4bd8679a2e40f77498b531b40f5e1d3c4be79d2a037`.
+  Same-scene result versus expansion Constrain is worse: task 22/26, safe
+  11/13, contact 18/17, XY 4/3. Not a formal performance result.
 - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
   learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
   `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.

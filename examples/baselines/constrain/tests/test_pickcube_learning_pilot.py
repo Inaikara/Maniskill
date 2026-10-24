@@ -7,10 +7,14 @@ import h5py
 import numpy as np
 import pytest
 
+import torch
+
 from examples.baselines.constrain.pickcube_learning_pilot import (
     LAYOUT_TOLERANCE_M,
     TRAIN_OBSTACLE_COUNT,
     PilotTrajectoryDataset,
+    obstacle_proximity_weight,
+    weighted_epsilon_mse,
     assert_frozen_source_identity,
     build_episode_index,
     build_expansion_preregistration,
@@ -424,6 +428,20 @@ def test_expansion_addendum_keeps_counts_and_acceptance_and_refuses_a_rule_chang
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="counts"):
         load_expansion_addendum(path)
+
+
+def test_proximity_weight_peaks_at_the_obstacle_and_is_one_beyond_8cm():
+    observations = torch.zeros(4, 2, 45)
+    observations[:, -1, 42] = torch.tensor([0.0, 0.04, 0.08, 0.16])
+    weight = obstacle_proximity_weight(observations, near_distance_m=0.08, max_extra=1.5)
+    assert weight.tolist() == [2.5, 1.75, 1.0, 1.0]
+
+
+def test_weighted_epsilon_mse_normalizes_by_weight_sum():
+    prediction = torch.zeros(2, 1, 1)
+    noise = torch.tensor([[[2.0]], [[4.0]]])
+    assert weighted_epsilon_mse(prediction, noise, torch.tensor([1.0, 3.0])).item() == 13.0
+    assert weighted_epsilon_mse(prediction, noise, None).item() == 10.0
 
 
 def test_source_identity_mismatch_is_not_masked():
