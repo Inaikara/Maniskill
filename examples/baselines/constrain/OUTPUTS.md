@@ -126,9 +126,25 @@ Also retained:
   or admit Ticket 07. No new demos. Weight:
   `outputs/ckpt/20261024_202858_pickcube_proximity_weight_constrain/final.pt`
   `22d3624941645ecac5bab4bd8679a2e40f77498b531b40f5e1d3c4be79d2a037`.
-  Same-scene result versus expansion Constrain is worse: task 22/26, safe
-  11/13, contact 18/17, XY 4/3. Not a formal performance result.
-- `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
+   Same-scene result versus expansion Constrain is worse: task 22/26, safe
+   11/13, contact 18/17, XY 4/3. Not a formal performance result.
+ - `outputs/exp/20261024_213325_pickcube_obstacle300/`: Ticket 05 authorized
+   100→300 obstacle increment on the same frozen 30 dev scenes. The existing
+   1,000 direct arrays were copied, not re-collected, and Base was not
+   retrained. Unweighted epsilon; the rejected proximity weight stayed off.
+   Gate is **pause**. It does not replace the expansion run or admit Ticket 07.
+   Weight: `outputs/ckpt/20261024_213325_pickcube_obstacle300_constrain/final.pt`
+   `bd7757122b75ad0bcc9cc5bd88a4b5174d48dfc520d1c8459332eea157732801`.
+   Training demos: `demos/PickCube-transport-detour/20261024_213325_obstacle300/`
+   `3c15f50993b5ab5967b1a40695e53288b0f9464f4b61504a93d9989499ded7e6`
+   (1,000 copied direct, not claimed unique; 300 obstacle = retained 100 plus
+   200 new unique scenes). Same-scene result versus expansion Constrain
+   26/13/17/3 is 25/12/18/2 task/safe/contact/XY. Not a formal performance
+   result. Preregistration
+   `3d37d27ac2145733c091094a5dd5245e9a237294abaebef6c37c1d29e28060a9`.
+   Gate `296088e5e0b7118952d7dc020ca603dcfe98eeda3a1b0dc7cba430c56828e71a`.
+   Comparison `f20d5c182c3d7079ad50e2411857670d96c77e6d7ee3b6b0e6f1474b7ee5d92e`.
+ - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
   learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
   `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.
   No second round was started. Weights:

@@ -16,21 +16,31 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     obstacle_proximity_weight,
     weighted_epsilon_mse,
     assert_frozen_source_identity,
+    assert_obstacle_increment_independence,
+    base_replay_reusable,
     build_episode_index,
     build_expansion_preregistration,
+    build_obstacle_increment_preregistration,
     build_preregistration,
     dataset_coverage,
     decide_gate,
     direct_candidate_accepted,
+    enforce_runtime_source_identity,
+    load_obstacle_increment_addendum,
     expansion_id_plan,
     expansion_transitions,
     layouts_conflict,
+    layouts_from_episodes,
     load_preregistration,
+    main,
+    obstacle_increment_id_plan,
     package_records,
     partition_task_independent,
+    retained_expansion_records,
     separate_failed_attempts,
     split_is_independent,
     validate_expansion_ids,
+    validate_obstacle_increment_ids,
     write_preregistration,
 )
 from examples.baselines.constrain.pickcube_transport_detour import (
@@ -449,3 +459,190 @@ def test_source_identity_mismatch_is_not_masked():
     assert assert_frozen_source_identity(registration, {"files_sha256": "frozen"})["files_sha256"] == "frozen"
     with pytest.raises(RuntimeError, match="source identity"):
         assert_frozen_source_identity(registration, {"files_sha256": "changed"})
+
+
+def test_training_optimization_kind_cannot_skip_source_identity(tmp_path):
+    registration = {
+        "kind": "authorized_training_optimization",
+        "source_identity": {"files_sha256": "frozen"},
+        "paths": {"exp": str(tmp_path)},
+    }
+    with pytest.raises(RuntimeError, match="source identity"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "changed"}, "train-constrain")
+    matched = enforce_runtime_source_identity(
+        registration, {"files_sha256": "frozen"}, "evaluate")
+    assert matched["matched"] == "preregistration"
+    recovery = {
+        "files_sha256": "changed",
+        "preregistration_files_sha256": "frozen",
+        "reason": "appended before rerun",
+        "exempt": True,
+    }
+    (tmp_path / "recovery_identity.json").write_text(json.dumps(recovery))
+    with pytest.raises(RuntimeError, match="bypass"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "changed"}, "train-constrain")
+
+
+def test_train_constrain_refuses_optimization_identity_mismatch(tmp_path):
+    payload = build_preregistration(1, "opt", {"exp": str(tmp_path)})
+    payload["kind"] = "authorized_training_optimization"
+    payload["source_identity"] = {"files_sha256": "not-the-running-tree"}
+    payload["paths"]["exp"] = str(tmp_path)
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    with pytest.raises(RuntimeError, match="source identity"):
+        main([
+            "train-constrain", "--registration", str(path),
+            "--demo-dir", str(tmp_path), "--base-checkpoint", str(tmp_path / "missing.pt"),
+            "--run-dir", str(tmp_path / "run"), "--checkpoint-dir", str(tmp_path / "ckpt"),
+        ])
+
+
+def test_obstacle_increment_locks_300_and_rejects_proximity_baseline():
+    payload = build_obstacle_increment_preregistration(
+        version="obstacle300",
+        paths={"exp": "outputs/exp/x"},
+        reason="authorized 100 to 300 obstacle increment; direct stays the existing 1000",
+        prior_version="outputs/exp/20261024_104348_pickcube_data_expansion",
+    )
+    assert payload["kind"] == "authorized_obstacle_increment"
+    assert payload["train_direct_count"] == 1000
+    assert payload["train_obstacle_count"] == 300
+    assert payload["obstacle_plan_cap"] == 300
+    assert payload["authorized_obstacle_cap"] == 1000
+    assert payload["slice_is_not_the_authorized_cap"] is True
+    assert payload["selected_direct_ids"] == list(range(1000))
+    assert payload["selected_obstacle_ids"] == list(range(1000, 1300))
+    assert payload["training"]["loss_weight"] is None
+    assert payload["training"]["proximity_weight"] == "off"
+    assert payload["training"]["base_retrained"] is False
+    assert payload["direct_unique_claim"] is False
+    assert payload["layout_dedup"]["within_run_enforced"] is True
+    assert payload["layout_dedup"]["external_excludes"] == ["ticket03", "dev30", "existing100"]
+    assert payload["comparison"]["constrain_counts"] == {"task": 26, "safe": 13, "contact": 17, "xy": 3}
+    assert payload["comparison"]["rejected_proximity_is_not_baseline"] is True
+    assert payload["comparison"]["rejected_proximity_counts"] == {
+        "task": 22, "safe": 11, "contact": 18, "xy": 4,
+    }
+    assert payload["collection"]["obstacle"]["target"] == 200
+    assert payload["collection"]["obstacle"]["per_attempt_deadline"] == 150
+    assert payload["collection"]["obstacle"]["max_attempts"] == 3000
+    assert payload["gate"]["formal_performance_claim"] is False
+    with pytest.raises(ValueError):
+        build_obstacle_increment_preregistration(
+            version="x", paths={}, reason="", prior_version="prior")
+
+
+def test_obstacle_increment_ids_keep_original_100_and_refuse_a_larger_slice():
+    plan = obstacle_increment_id_plan()
+    assert plan["direct"] == list(range(1000))
+    assert plan["retained_obstacle"] == list(range(1000, 1100))
+    assert plan["new_obstacle"] == list(range(1100, 1300))
+    validate_obstacle_increment_ids(plan["direct"], plan["obstacle"])
+    with pytest.raises(ValueError, match="original"):
+        validate_obstacle_increment_ids(plan["direct"], list(range(1100, 1400)))
+    with pytest.raises(ValueError, match="300"):
+        validate_obstacle_increment_ids(plan["direct"], list(range(1000, 2000)))
+
+
+def test_new_obstacle_layouts_must_be_unique_against_existing_100_dev_and_prior():
+    existing = [_layout(index, (index * 0.05, 0.0), (index * 0.05, 0.2), (0.0, 0.1)) for index in range(3)]
+    new = [_layout(100 + index, (0.4 + index * 0.05, -0.2), (0.4, 0.2), (0.5, 0.0)) for index in range(2)]
+    dev = [_layout(8, (-0.2, 0.2), (0.2, 0.2), (0.0, 0.3))]
+    prior = [_layout(9, (-0.3, -0.2), (0.3, -0.2), (0.0, -0.3))]
+    assert_obstacle_increment_independence(existing, new, dev, prior)
+    clash = list(new)
+    clash.append(_layout(50, (0.01, 0.0), (0.01, 0.2), (0.4, 0.4)))
+    with pytest.raises(ValueError, match="unique"):
+        assert_obstacle_increment_independence(existing, clash, dev, prior)
+
+
+def test_base_replay_requires_checkpoint_state_and_seed():
+    rows = [{
+        "scene_index": 0, "scene_id": "pickcube-000", "status": "evaluated",
+        "checkpoint_sha256": "abc", "seed": 7, "restored_state_sha256": "state",
+    }]
+    scenes = [{"seed": 7, "state_sha256": "state"}]
+    assert base_replay_reusable(rows, scenes, "abc", {"files_sha256": "same"}, {"files_sha256": "same"})
+    assert not base_replay_reusable(rows, scenes, "abc", {"files_sha256": "same"}, {"files_sha256": "other"})
+    assert not base_replay_reusable(rows, scenes, "other", {"files_sha256": "same"}, {"files_sha256": "same"})
+    assert not base_replay_reusable(rows, [{"seed": 8, "state_sha256": "state"}], "abc",
+                                    {"files_sha256": "same"}, {"files_sha256": "same"})
+
+
+def test_obstacle_increment_addendum_keeps_identity_and_refuses_a_rule_change(tmp_path):
+    registration = build_obstacle_increment_preregistration(
+        version="obstacle300", paths={"exp": "outputs/exp/x"},
+        reason="authorized 100 to 300", prior_version="prior",
+    )
+    payload = {
+        "reason": "measured_yield_below_preregistered_attempt_budget",
+        "does_not_change": [
+            "counts", "task_identity_definition", "gate", "training", "geometry",
+            "expert", "external_excludes", "within_run_dedup", "acceptance_predicate",
+        ],
+        "within_run_mutual_exclusion": True,
+        "target": 200,
+        "measured_kept": 169,
+        "continuation": {
+            "name": "deficit", "seed": 2026135001, "max_attempts": 1600,
+            "wall_seconds": 18000, "per_attempt_deadline": 150,
+        },
+    }
+    path = tmp_path / "obstacle_increment_addendum.json"
+    path.write_text(json.dumps(payload))
+    loaded = load_obstacle_increment_addendum(path, registration)
+    assert loaded["continuation"]["seed"] == 2026135001
+    assert loaded["target"] == 200
+    payload["within_run_mutual_exclusion"] = False
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="within-run"):
+        load_obstacle_increment_addendum(path, registration)
+
+
+def test_episode_layouts_read_the_nested_layout(tmp_path):
+    path = tmp_path / "trajectory.json"
+    path.write_text(json.dumps({"episodes": [{
+        "kind": "obstacle",
+        "layout": {"seed": 3, "start_xy": [0.1, 0.2], "goal_xy": [0.3, 0.4], "center_xy": [0.2, 0.3]},
+    }]}))
+    rows = layouts_from_episodes(path, "obstacle")
+    assert rows == [{
+        "seed": 3, "start_xy": [0.1, 0.2], "goal_xy": [0.3, 0.4], "center_xy": [0.2, 0.3],
+    }]
+    assert not layouts_conflict(rows[0], _layout(9, (0.4, 0.4), (0.5, 0.5), (0.0, 0.0)), cylinder=False)
+
+
+def test_retained_expansion_records_copy_arrays_and_do_not_drop_direct_duplicates(tmp_path):
+    source = tmp_path / "trajectory.h5"
+    manifest = {"episodes": [], "expansion": {"within_train_task_conflicts": 1}}
+    with h5py.File(source, "w") as handle:
+        for episode_id, kind, start in (
+            (0, "direct", (0.0, 0.0)),
+            (1, "direct", (0.01, 0.0)),
+            (1000, "obstacle", (0.2, 0.0)),
+        ):
+            group = handle.create_group(f"traj_{episode_id}")
+            group.attrs["kind"] = kind
+            group.create_dataset("obs", data=np.full((3, 45), episode_id, np.float32))
+            group.create_dataset("actions", data=np.full((2, 7), 0.1, np.float32))
+            group.create_dataset("terminated", data=np.array([0, 1], np.uint8))
+            group.create_dataset("truncated", data=np.zeros(2, np.uint8))
+            group.create_dataset("success", data=np.array([0, 0, 1], np.uint8))
+            manifest["episodes"].append({
+                "episode_id": episode_id, "kind": kind,
+                "scene_id": f"pickcube-{episode_id:03d}",
+                "layout": _layout(episode_id, start, (start[0] + 0.2, 0.0), (0.1, 0.0)),
+                "provenance": {"source": "expansion", "seed": episode_id},
+                "native_success": True, "held_at_success": True,
+                "obstacle_collision": False, "obstacle_crossing": False,
+            })
+    before = source.read_bytes()
+    records, quality = retained_expansion_records(source, manifest, expected_direct=2, expected_obstacle=1)
+    assert source.read_bytes() == before
+    assert [record["episode_id"] for record in records] == [0, 1, 1000]
+    assert quality["direct_unique_claim"] is False
+    assert quality["within_direct_task_conflicts"] == 1
+    assert np.array_equal(records[0]["obs"], np.full((3, 45), 0, np.float32))

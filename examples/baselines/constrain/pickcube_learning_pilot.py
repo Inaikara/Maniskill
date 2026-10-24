@@ -961,6 +961,18 @@ def freeze_pilot_identity(repo_root=None):
 
 EXPANSION_DIRECT_COUNT = 1000
 EXPANSION_OBSTACLE_COUNT = 100
+OBSTACLE_AUTHORIZED_CAP = 1000
+OBSTACLE_INCREMENT_COUNT = 300
+OBSTACLE_INCREMENT_NEW = 200
+EXPANSION_EXP = "outputs/exp/20261024_104348_pickcube_data_expansion"
+EXPANSION_DATASET = "demos/PickCube-transport-detour/20261024_104348_expansion"
+EXPANSION_BASE_CKPT = "outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt"
+EXPANSION_BASE_SHA = "dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d"
+EXPANSION_CONSTRAIN_CKPT = "outputs/ckpt/20261024_104348_pickcube_expansion_constrain/final.pt"
+EXPANSION_CONSTRAIN_SHA = "9ca9022aee201ae7f9ffe702d941863d6ffd4e4c6056f220fcdb2d2fe23c830d"
+EXPANSION_H5_SHA = "2af959e3d3ebeba8bb046db6d9583d300e1533fc638c7d36eb6393dd28024dff"
+PROXIMITY_CKPT_SHA = "22d3624941645ecac5bab4bd8679a2e40f77498b531b40f5e1d3c4be79d2a037"
+EXISTING_OBSTACLE_MANIFEST = f"{EXPANSION_EXP}/pair_scenes/merged/manifest.json"
 RETAINED_COUNT = 20
 PAIR_ACCEPTANCE_CHECKS = (
     "direct_native_success", "direct_held", "direct_transport_blocked",
@@ -999,6 +1011,264 @@ def validate_expansion_ids(direct_ids, obstacle_ids):
     if direct_ids != list(range(EXPANSION_DIRECT_COUNT)):
         raise ValueError("direct ids are not the frozen 1000")
     return True
+
+
+def obstacle_increment_id_plan():
+    return {
+        "direct": list(range(EXPANSION_DIRECT_COUNT)),
+        "obstacle": list(range(1000, 1000 + OBSTACLE_INCREMENT_COUNT)),
+        "retained_obstacle": list(range(1000, 1100)),
+        "new_obstacle": list(range(1100, 1000 + OBSTACLE_INCREMENT_COUNT)),
+    }
+
+
+def validate_obstacle_increment_ids(direct_ids, obstacle_ids):
+    direct_ids = [int(item) for item in direct_ids]
+    obstacle_ids = [int(item) for item in obstacle_ids]
+    if set(range(1000, 1100)) - set(obstacle_ids):
+        raise ValueError("original obstacle ids missing")
+    if obstacle_ids != list(range(1000, 1000 + OBSTACLE_INCREMENT_COUNT)):
+        raise ValueError("obstacle ids are not the frozen 300")
+    if direct_ids != list(range(EXPANSION_DIRECT_COUNT)):
+        raise ValueError("direct ids are not the frozen 1000")
+    return True
+
+
+def assert_obstacle_increment_independence(existing, new, dev, prior):
+    combined = list(existing) + list(new)
+    kept, rejected = partition_task_independent(combined)
+    if rejected or len(kept) != len(combined):
+        raise ValueError("obstacle layouts are not unique")
+    assert_external_independence(new, dev, prior)
+    assert_external_independence(existing, dev, prior)
+    return True
+
+
+def base_replay_reusable(rows, scenes, expected_sha, expansion_identity, current_identity):
+    if (current_identity or {}).get("files_sha256") != (expansion_identity or {}).get("files_sha256"):
+        return False
+    if len(rows) != len(scenes):
+        return False
+    ordered = sorted(rows, key=lambda row: row.get("scene_index", 0))
+    for row, scene in zip(ordered, scenes):
+        if row.get("status") != "evaluated" or row.get("checkpoint_sha256") != expected_sha:
+            return False
+        if int(row.get("seed")) != int(scene.get("seed")):
+            return False
+        if row.get("restored_state_sha256") != scene.get("state_sha256"):
+            return False
+    return True
+
+
+def retained_expansion_records(source_h5, manifest, expected_direct, expected_obstacle):
+    source_h5 = Path(source_h5)
+    before = sha256_file(source_h5)
+    records = []
+    with h5py.File(source_h5, "r") as handle:
+        for episode in manifest["episodes"]:
+            episode_id = int(episode["episode_id"])
+            group = handle[f"traj_{episode_id}"]
+            if group.attrs.get("kind") != episode["kind"]:
+                raise ValueError(f"traj_{episode_id} kind does not match the source manifest")
+            records.append({
+                "kind": episode["kind"],
+                "episode_id": episode_id,
+                "scene_id": episode["scene_id"],
+                "obs": np.asarray(group["obs"]),
+                "actions": np.asarray(group["actions"]),
+                "terminated": np.asarray(group["terminated"]),
+                "truncated": np.asarray(group["truncated"]),
+                "native_success": True,
+                "held_at_success": True,
+                "obstacle_collision": bool(episode.get("obstacle_collision", False)),
+                "obstacle_crossing": bool(episode.get("obstacle_crossing", False)),
+                "layout": episode["layout"],
+                "provenance": dict(episode.get("provenance") or {}),
+            })
+    if sha256_file(source_h5) != before:
+        raise RuntimeError("expansion source mutated")
+    direct = [row for row in records if row["kind"] == "direct"]
+    obstacle = [row for row in records if row["kind"] == "obstacle"]
+    if len(direct) != int(expected_direct) or len(obstacle) != int(expected_obstacle):
+        raise ValueError("retained counts do not match the expansion source")
+    conflicts = len(partition_task_independent([row["layout"] for row in direct])[1])
+    recorded = (manifest.get("expansion") or {}).get("within_train_task_conflicts")
+    if recorded is not None and conflicts != int(recorded):
+        raise ValueError("direct duplicate count changed; refusing to drop or relabel them")
+    return records, {
+        "direct_unique_claim": False,
+        "within_direct_task_conflicts": conflicts,
+        "direct_count": len(direct),
+        "retained_obstacle_count": len(obstacle),
+        "source_h5_sha256": before,
+    }
+
+
+def assert_unweighted_increment(registration):
+    training = registration["training"]
+    if training.get("loss_weight") is not None or training.get("proximity_weight") != "off":
+        raise RuntimeError("proximity weight must be off")
+    if training.get("base_retrained") is not False:
+        raise RuntimeError("this slice does not retrain base")
+    if int(registration["train_obstacle_count"]) != OBSTACLE_INCREMENT_COUNT:
+        raise RuntimeError("this slice is 300 obstacle demonstrations")
+    return True
+
+
+def layouts_from_episodes(path, kind):
+    payload = json.loads(Path(path).read_text())
+    return [layout_view(episode["layout"]) for episode in payload["episodes"] if episode["kind"] == kind]
+
+
+OBSTACLE_INCREMENT_ADDENDUM_DOES_NOT_CHANGE = [
+    "counts", "task_identity_definition", "gate", "training", "geometry",
+    "expert", "external_excludes", "within_run_dedup", "acceptance_predicate",
+]
+
+
+def load_obstacle_increment_addendum(path, registration):
+    payload = json.loads(Path(path).read_text())
+    if payload.get("reason") != "measured_yield_below_preregistered_attempt_budget":
+        raise ValueError("unrecognized obstacle increment addendum")
+    if payload.get("does_not_change") != OBSTACLE_INCREMENT_ADDENDUM_DOES_NOT_CHANGE:
+        raise ValueError("obstacle increment addendum changes a frozen rule")
+    if payload.get("within_run_mutual_exclusion") is not True:
+        raise ValueError("addendum relaxes within-run identity")
+    if int(payload.get("target")) != OBSTACLE_INCREMENT_NEW:
+        raise ValueError("addendum changes the 200 target")
+    extra = payload["continuation"]
+    if int(extra["per_attempt_deadline"]) != 150:
+        raise ValueError("addendum changes the attempt deadline")
+    if int(extra["max_attempts"]) < 1 or float(extra["wall_seconds"]) <= 0:
+        raise ValueError("addendum budget is not finite")
+    extra_span = (int(extra["seed"]) + 1, int(extra["seed"]) + int(extra["max_attempts"]))
+    for span in _seed_span(registration["collection"]["obstacle"]):
+        if not (extra_span[1] < span[0] or span[1] < extra_span[0]):
+            raise ValueError("addendum seed range overlaps the preregistered seeds")
+    return payload
+
+
+def _obstacle_increment_collection():
+    obstacle = {
+        "workers": 2,
+        "target": OBSTACLE_INCREMENT_NEW,
+        "max_attempts": 3000,
+        "wall_seconds": 28000,
+        "per_attempt_deadline": 150,
+        "blocks": [
+            {"name": "block_a", "seed": 2026130001, "target": 50, "max_attempts": 500, "wall_seconds": 7200},
+            {"name": "block_b", "seed": 2026131001, "target": 50, "max_attempts": 500, "wall_seconds": 7200},
+            {"name": "block_c", "seed": 2026132001, "target": 50, "max_attempts": 500, "wall_seconds": 7200},
+            {"name": "block_d", "seed": 2026133001, "target": 50, "max_attempts": 500, "wall_seconds": 7200},
+        ],
+        "continuation": {"name": "continuation", "seed": 2026134001, "max_attempts": 1000, "wall_seconds": 8000},
+    }
+    spans = sorted(_seed_span(obstacle))
+    if any(left[1] >= right[0] for left, right in zip(spans, spans[1:])):
+        raise ValueError("collection seed ranges overlap")
+    if sum(block["max_attempts"] for block in obstacle["blocks"]) + obstacle["continuation"]["max_attempts"] != obstacle["max_attempts"]:
+        raise ValueError("attempt budget does not add up")
+    if sum(block["target"] for block in obstacle["blocks"]) != obstacle["target"]:
+        raise ValueError("block targets do not add up")
+    return obstacle
+
+
+def build_obstacle_increment_preregistration(version, paths, *, reason, prior_version, baseline_files=None):
+    if not reason or not prior_version:
+        raise ValueError("obstacle increment requires the recorded authorization and the prior version")
+    if OBSTACLE_INCREMENT_COUNT != 300 or OBSTACLE_INCREMENT_COUNT > OBSTACLE_AUTHORIZED_CAP:
+        raise ValueError("this slice is not the authorized 300")
+    plan = obstacle_increment_id_plan()
+    training = build_preregistration(1, version, paths)["training"]
+    training["loss_weight"] = None
+    training["proximity_weight"] = "off"
+    training["base_retrained"] = False
+    training["differences_from_formal"] = [
+        "direct arrays are the existing 1000, copied and not retrained; they are not claimed unique",
+        "obstacle count is the authorized 300 slice, not the 100-plan and not the 1000 cap",
+        "control branch is trained from the matched expansion Base EMA with unweighted epsilon",
+        "development scenes are the already-used 30; this is not a formal performance claim",
+    ]
+    return {
+        "kind": "authorized_obstacle_increment",
+        "round_index": "obstacle300",
+        "version": version,
+        "reason": reason,
+        "prior_version": prior_version,
+        "prior_manifest": PRIOR_MANIFEST,
+        "paths": dict(paths),
+        "obstacle_plan_cap": OBSTACLE_INCREMENT_COUNT,
+        "authorized_obstacle_cap": OBSTACLE_AUTHORIZED_CAP,
+        "slice_is_not_the_authorized_cap": True,
+        "train_obstacle_count": OBSTACLE_INCREMENT_COUNT,
+        "train_direct_count": EXPANSION_DIRECT_COUNT,
+        "selected_direct_ids": plan["direct"],
+        "selected_obstacle_ids": plan["obstacle"],
+        "dev_scene_count": DEV_SCENE_COUNT,
+        "dev_reused": True,
+        "direct_unique_claim": False,
+        "known_within_direct_task_conflicts": 663,
+        "layout_dedup": {
+            "tolerance_m": LAYOUT_TOLERANCE_M,
+            "metric": "chebyshev",
+            "mode": "task",
+            "cylinder_proximity_is_conflict": False,
+            "within_run_enforced": True,
+            "external_excludes": ["ticket03", "dev30", "existing100"],
+            "conflict_if": "same seed, or start and goal both within tolerance",
+            "exclude_prior_source": PRIOR_MANIFEST,
+            "exclude_dev": FROZEN_DEV_SCENES,
+            "exclude_existing_obstacle": EXISTING_OBSTACLE_MANIFEST,
+        },
+        "collection": {
+            "dev_collected": False,
+            "dev_scenes": FROZEN_DEV_SCENES,
+            "direct_recollected": False,
+            "obstacle": _obstacle_increment_collection(),
+            "acceptance_predicate": "full_run_attempt",
+            "package_new_direct": False,
+        },
+        "training": training,
+        "eval": {
+            "max_steps": 500,
+            "episode_wall_seconds": 120,
+            "denominator": DEV_SCENE_COUNT,
+            "noise_seed_rule": "torch.manual_seed(scene seed) before each scene",
+            "scene_source": FROZEN_DEV_SCENES,
+            "base_reuse": "only if checkpoint sha, restored state sha, scene seed, and source identity match",
+            "video_scene_indexes_fixed_before_results": [0, 1, 2],
+        },
+        "gate": {
+            "task_success_rate_gte": 0.90,
+            "safe_success_rate_gte": 0.85,
+            "contact_rate_lte": 0.10,
+            "xy_crossing_rate_lte": 0.10,
+            "require_complete": True,
+            "require_zero_runtime_errors": True,
+            "formal_performance_claim": False,
+            "base_failure_threshold": None,
+            "benefit_threshold": None,
+            "on_fail": "dev-only pause; does not admit Ticket 07; a later slice is a new round",
+        },
+        "comparison": {
+            "name": "expansion_100_obstacle",
+            "expansion_paired": f"{EXPANSION_EXP}/paired",
+            "constrain_counts": {"task": 26, "safe": 13, "contact": 17, "xy": 3},
+            "base_counts": {"task": 10, "safe": 0, "contact": 30, "xy": 15},
+            "rejected_proximity_is_not_baseline": True,
+            "rejected_proximity_counts": {"task": 22, "safe": 11, "contact": 18, "xy": 4},
+            "rejected_proximity_sha256": PROXIMITY_CKPT_SHA,
+            "expansion_constrain_sha256": EXPANSION_CONSTRAIN_SHA,
+        },
+        "frozen_identities": {
+            "base_checkpoint_sha256": EXPANSION_BASE_SHA,
+            "expansion_h5_sha256": EXPANSION_H5_SHA,
+            "expansion_constrain_sha256": EXPANSION_CONSTRAIN_SHA,
+            "rejected_proximity_sha256": PROXIMITY_CKPT_SHA,
+        },
+        "files": dict(baseline_files or {}),
+        "formal_performance_claim": False,
+    }
 
 
 def direct_candidate_accepted(checks):
@@ -1113,6 +1383,36 @@ def assert_frozen_source_identity(registration, current):
     if current.get("files_sha256") != frozen:
         raise RuntimeError("source identity does not match preregistration")
     return current
+
+
+def enforce_runtime_source_identity(registration, current, command):
+    """Every runtime command checks the working-tree hash. No kind skips it."""
+    if registration.get("kind") == "authorized_data_expansion":
+        resolved = resolve_running_identity(registration, current)
+        resolved["command"] = command
+        return resolved
+    frozen = (registration.get("source_identity") or {}).get("files_sha256")
+    if current.get("files_sha256") == frozen:
+        return {
+            "matched": "preregistration", "files_sha256": frozen,
+            "kind": registration.get("kind"), "command": command,
+        }
+    recovery_path = Path(registration["paths"]["exp"]) / "recovery_identity.json"
+    if not recovery_path.exists():
+        raise RuntimeError("source identity does not match preregistration")
+    recovery = json.loads(recovery_path.read_text())
+    if recovery.get("exempt") is True or recovery.get("skip_identity") is True:
+        raise RuntimeError("recovery identity cannot bypass the identity gate")
+    if recovery.get("files_sha256") != current.get("files_sha256"):
+        raise RuntimeError("recovery identity does not match the running code")
+    if not recovery.get("reason"):
+        raise RuntimeError("recovery identity requires a recorded reason")
+    if recovery.get("preregistration_files_sha256") != frozen:
+        raise RuntimeError("recovery identity does not cite the preregistered hash")
+    return {
+        "matched": "recovery_identity", "files_sha256": current["files_sha256"],
+        "kind": registration.get("kind"), "command": command,
+    }
 
 
 ADDENDUM_DOES_NOT_CHANGE = [
@@ -1481,11 +1781,13 @@ def _stage_excludes(registration, extra_manifests=()):
 
 
 def collect_expansion_stage(registration, stage_name, output_root, extra_manifests=(),
-                           spec_override=None, within_run=True, drop_conflicts=True):
+                           spec_override=None, within_run=True, drop_conflicts=True,
+                           extra_layouts=()):
     spec = spec_override or registration["collection"][stage_name]
     output_root = Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     exclude = _stage_excludes(registration, extra_manifests)
+    exclude.extend(extra_layouts)
     started = time.monotonic()
     reports = []
     import threading
@@ -1709,9 +2011,12 @@ def require_baseline_counts(rows, expected, denominator=30):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "preregister", "preregister-expansion", "collect-train", "collect-dev", "package",
+        "preregister", "preregister-expansion", "preregister-obstacle-increment",
+        "collect-train", "collect-dev", "package",
         "include-original", "collect-pairs", "collect-direct", "package-expansion",
+        "collect-obstacle-increment", "package-obstacle-increment",
         "train-base", "train-constrain", "evaluate", "gate", "compare-baseline",
+        "compare-increment",
     ))
     parser.add_argument("--registration", type=Path, required=True)
     parser.add_argument("--version", default="r1")
@@ -1785,7 +2090,48 @@ def main(argv=None):
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
+    if args.command == "preregister-obstacle-increment":
+        from examples.baselines.constrain.pickcube_transport_detour import freeze_source_identity
+        exp = args.registration.parent
+        stamp = exp.name.split("_pickcube")[0]
+        expected = {
+            "expansion_h5": (f"{EXPANSION_DATASET}/trajectory.h5", EXPANSION_H5_SHA),
+            "expansion_json": (f"{EXPANSION_DATASET}/trajectory.json", None),
+            "base_checkpoint": (EXPANSION_BASE_CKPT, EXPANSION_BASE_SHA),
+            "expansion_constrain_checkpoint": (EXPANSION_CONSTRAIN_CKPT, EXPANSION_CONSTRAIN_SHA),
+            "existing_obstacle_manifest": (EXISTING_OBSTACLE_MANIFEST, None),
+            "dev_manifest": (f"{FROZEN_DEV_SCENES}/manifest.json", None),
+            "dev_scenes_h5": (f"{FROZEN_DEV_SCENES}/scenes.h5", None),
+            "ticket03_manifest": (PRIOR_MANIFEST, None),
+            "rejected_proximity_checkpoint": (
+                "outputs/ckpt/20261024_202858_pickcube_proximity_weight_constrain/final.pt",
+                PROXIMITY_CKPT_SHA,
+            ),
+        }
+        hashed = {}
+        for key, (path, digest) in expected.items():
+            actual = sha256_file(path)
+            if digest is not None and actual != digest:
+                raise RuntimeError(f"{path} hash does not match the frozen identity")
+            hashed[key] = {"path": path, "sha256": actual}
+        payload = build_obstacle_increment_preregistration(
+            args.version, {
+                "exp": str(exp),
+                "obstacle_scenes": str(exp / "obstacle_scenes"),
+                "demos": f"demos/PickCube-transport-detour/{stamp}_obstacle300",
+                "ckpt_base": EXPANSION_BASE_CKPT,
+                "ckpt_constrain": f"outputs/ckpt/{stamp}_pickcube_obstacle300_constrain",
+                "train_constrain": str(exp / "train_constrain"),
+                "paired": str(exp / "paired"),
+                "dev_scenes": FROZEN_DEV_SCENES,
+            }, reason=args.reason, prior_version=args.prior_version or EXPANSION_EXP, baseline_files=hashed)
+        payload["source_identity"] = freeze_pilot_identity()
+        payload["generator_identity"] = freeze_source_identity()
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
     registration = load_preregistration(args.registration)
+    enforce_runtime_source_identity(registration, freeze_pilot_identity(), args.command)
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
             "collect-train", "collect-dev", "package"):
         raise SystemExit("expansion registration does not use the small-pilot collector")
@@ -1905,7 +2251,93 @@ def main(argv=None):
         ]})
         print(dest, flush=True)
         return dest
+    if args.command == "collect-obstacle-increment":
+        if registration.get("kind") != "authorized_obstacle_increment":
+            raise SystemExit("obstacle increment collection requires its preregistration")
+        extra = layouts_from_episodes(registration["files"]["expansion_json"]["path"], "obstacle")
+        if len(extra) != EXPANSION_OBSTACLE_COUNT:
+            raise SystemExit("existing obstacle layouts are not the frozen 100")
+        report = collect_expansion_stage(
+            registration, "obstacle", registration["paths"]["obstacle_scenes"],
+            extra_layouts=extra, within_run=True, drop_conflicts=True)
+        _require_new_generator(registration, report)
+        addendum_path = Path(registration["paths"]["exp"]) / "obstacle_increment_addendum.json"
+        if not report["complete"] and addendum_path.exists():
+            addendum = load_obstacle_increment_addendum(addendum_path, registration)
+            initial = Path(registration["paths"]["obstacle_scenes"]) / "stage_report_initial.json"
+            if not initial.exists():
+                initial.write_bytes((Path(registration["paths"]["obstacle_scenes"]) / "stage_report.json").read_bytes())
+            report = collect_obstacle_increment_deficit(registration, report, addendum)
+            identity_path = Path(report["deficit_block"]["output_dir"]) / "source_identity.json"
+            expected = (registration.get("generator_identity") or {}).get("files_sha256")
+            if identity_path.exists() and json.loads(identity_path.read_text())["files_sha256"] != expected:
+                raise RuntimeError("deficit generator identity does not match preregistration")
+            _json_atomic(Path(registration["paths"]["obstacle_scenes"]) / "stage_report.json", report)
+        print(json.dumps({
+            "stage": report["stage"], "target": report["target"], "kept": report["kept"],
+            "complete": report["complete"], "restore_audit_ok": report["restore_audit_ok"],
+        }), flush=True)
+        if not report["complete"]:
+            raise SystemExit("obstacle increment collection incomplete")
+        return report
+    if args.command == "package-obstacle-increment":
+        if registration.get("kind") != "authorized_obstacle_increment":
+            raise SystemExit("obstacle increment packaging requires its preregistration")
+        source_h5 = Path(registration["files"]["expansion_h5"]["path"])
+        if sha256_file(source_h5) != registration["frozen_identities"]["expansion_h5_sha256"]:
+            raise RuntimeError("expansion direct source hash changed")
+        stage = json.loads((Path(registration["paths"]["obstacle_scenes"]) / "stage_report.json").read_text())
+        if not stage.get("complete") or int(stage.get("kept") or 0) != OBSTACLE_INCREMENT_NEW:
+            raise RuntimeError("new obstacle catalog is not the preregistered 200")
+        if not stage.get("restore_audit_ok"):
+            raise RuntimeError("new obstacle restore audit failed")
+        source_manifest = json.loads(Path(registration["files"]["expansion_json"]["path"]).read_text())
+        retained, quality = retained_expansion_records(
+            source_h5, source_manifest, expected_direct=1000, expected_obstacle=100)
+        new_records = new_obstacle_records_from_catalog(stage["catalog"])
+        if len(new_records) != OBSTACLE_INCREMENT_NEW:
+            raise RuntimeError("new obstacle records are not 200")
+        dev = layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json")
+        prior = layouts_from_manifest(PRIOR_MANIFEST)
+        existing = [row["layout"] for row in retained if row["kind"] == "obstacle"]
+        assert_obstacle_increment_independence(
+            existing, [row["layout"] for row in new_records], dev, prior)
+        records = retained + new_records
+        validate_obstacle_increment_ids(
+            [int(row["episode_id"]) for row in records if row["kind"] == "direct"],
+            [int(row["episode_id"]) for row in records if row["kind"] == "obstacle"])
+        dest = package_records(records, registration["paths"]["demos"], registration)
+        assert_packaged_matches_source(
+            source_h5, dest / "trajectory.h5", list(range(1000)) + list(range(1000, 1100)))
+        if sha256_file(source_h5) != registration["frozen_identities"]["expansion_h5_sha256"]:
+            raise RuntimeError("expansion source mutated during packaging")
+        manifest = json.loads((dest / "trajectory.json").read_text())
+        manifest["obstacle_increment"] = {
+            "source_h5_sha256": registration["frozen_identities"]["expansion_h5_sha256"],
+            "direct_copied": True,
+            "direct_unique_claim": False,
+            "within_direct_task_conflicts": quality["within_direct_task_conflicts"],
+            "retained_obstacle_ids": list(range(1000, 1100)),
+            "new_obstacle_ids": list(range(1100, 1300)),
+            "new_obstacle_unique": True,
+            "restore_audit_ok": True,
+            "formal_performance_claim": False,
+        }
+        (dest / "trajectory.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        quality.update({
+            "new_obstacle_count": len(new_records),
+            "obstacle_count": 300,
+            "new_obstacle_unique": True,
+            "restore_audit_ok": True,
+            "source_mutated": False,
+            "formal_performance_claim": False,
+        })
+        _json_atomic(Path(registration["paths"]["exp"]) / "data_quality.json", quality)
+        print(dest, flush=True)
+        return dest
     if args.command == "train-base":
+        if registration.get("kind") == "authorized_obstacle_increment":
+            raise SystemExit("this slice does not retrain base")
         if registration.get("kind") == "authorized_data_expansion":
             resolve_running_identity(registration, freeze_pilot_identity())
         return train_base(
@@ -1914,6 +2346,10 @@ def main(argv=None):
     if args.command == "train-constrain":
         if registration.get("kind") == "authorized_data_expansion":
             resolve_running_identity(registration, freeze_pilot_identity())
+        if registration.get("kind") == "authorized_obstacle_increment":
+            assert_unweighted_increment(registration)
+            if sha256_file(args.base_checkpoint) != registration["frozen_identities"]["base_checkpoint_sha256"]:
+                raise SystemExit("base checkpoint is not the matched expansion EMA")
         return train_constrain(
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.base_checkpoint, args.run_dir, args.checkpoint_dir, registration, args.device)
@@ -1923,6 +2359,15 @@ def main(argv=None):
             resolve_running_identity(registration, freeze_pilot_identity())
             if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
                 raise SystemExit("expansion eval must use the frozen dev scenes")
+        if registration.get("kind") == "authorized_obstacle_increment":
+            if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
+                raise SystemExit("increment eval must use the frozen dev scenes")
+            demo_json = Path(registration["paths"]["demos"]) / "trajectory.json"
+            if demo_json.exists():
+                assert_obstacle_increment_independence(
+                    layouts_from_episodes(demo_json, "obstacle"), [],
+                    layouts_from_manifest(args.scene_dir / "manifest.json"),
+                    layouts_from_manifest(PRIOR_MANIFEST))
         catalog = TransportDetourSceneSet(args.scene_dir)
         expected_dev = registration["dev_scene_count"]
         count_addendum = args.registration.parent / "dev_count_addendum.json"
@@ -1968,8 +2413,50 @@ def main(argv=None):
         args.output_dir.mkdir(parents=True, exist_ok=False)
         summaries = {}
         stored = {}
+        reuse_rows = None
+        if registration.get("kind") == "authorized_obstacle_increment":
+            expansion_rows = load_episode_directory(
+                Path(registration["comparison"]["expansion_paired"]) / "base_dp")
+            scenes = json.loads((Path(FROZEN_DEV_SCENES) / "manifest.json").read_text())["scenes"]
+            expansion_index = json.loads(
+                (Path(registration["comparison"]["expansion_paired"]) / "base_dp" / "index.json").read_text())
+            current_identity = freeze_pilot_identity()
+            reusable = base_replay_reusable(
+                expansion_rows, scenes,
+                registration["frozen_identities"]["base_checkpoint_sha256"],
+                expansion_index.get("source_identity") or {}, current_identity)
+            _json_atomic(args.output_dir / "base_reuse.json", {
+                "reusable": reusable,
+                "reevaluated": not reusable,
+                "reason": (
+                    "matched checkpoint, restored state, seed, and source identity"
+                    if reusable else
+                    "identity, restored state, or seed does not match; reevaluated"
+                ),
+            })
+            if reusable:
+                reuse_rows = expansion_rows
+                adapters.pop("base_dp")
         import signal
         episode_wall = registration["eval"]["episode_wall_seconds"]
+        if reuse_rows is not None:
+            policy_dir = args.output_dir / "base_dp"
+            policy_dir.mkdir()
+            checkpoint_sha = registration["frozen_identities"]["base_checkpoint_sha256"]
+            rows = []
+            for row in sorted(reuse_rows, key=lambda item: item["scene_index"]):
+                copied = dict(row)
+                copied["checkpoint_sha256"] = checkpoint_sha
+                copied["reused_expansion_base"] = True
+                _json_atomic(policy_dir / f"episode_{copied['scene_index']:03d}.json", copied)
+                rows.append(copied)
+            summaries["base_dp"] = summarize_pilot(rows, len(catalog))
+            stored["base_dp"] = rows
+            index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints["base_dp"]))
+            index["source_identity"] = freeze_pilot_identity()
+            index["reused_expansion_base"] = True
+            _json_atomic(policy_dir / "summary.json", summaries["base_dp"])
+            _json_atomic(policy_dir / "index.json", index)
         for name, adapter in adapters.items():
             rows = []
             policy_dir = args.output_dir / name
@@ -2031,6 +2518,15 @@ def main(argv=None):
             "formal_performance_claim": False,
         }, indent=2), flush=True)
         return report
+    if args.command == "compare-increment":
+        report = compare_obstacle_increment(registration, args.output_dir)
+        _json_atomic(args.output_dir / "obstacle_increment_comparison.json", report)
+        print(json.dumps({
+            "increment_counts": report["increment_counts"],
+            "transitions": report["transitions"],
+            "formal_performance_claim": False,
+        }, indent=2), flush=True)
+        return report
     raise ValueError(args.command)
 
 
@@ -2070,6 +2566,148 @@ def _require_new_generator(registration, report):
             actual = json.loads(identity_path.read_text())["files_sha256"]
             if actual != expected:
                 raise RuntimeError("continuation generator identity does not match preregistration")
+
+
+def collect_obstacle_increment_deficit(registration, stage_report, addendum):
+    catalog = Path(stage_report["catalog"])
+    if not (catalog / "manifest.json").exists():
+        raise RuntimeError("incomplete stage has no catalog")
+    deficit = int(stage_report["target"]) - int(stage_report["kept"])
+    if deficit < 1:
+        raise RuntimeError("obstacle increment has no deficit")
+    extra = addendum["continuation"]
+    exclude = layouts_from_episodes(registration["files"]["expansion_json"]["path"], "obstacle")
+    exclude.extend(layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json"))
+    exclude.extend(layouts_from_manifest(PRIOR_MANIFEST))
+    exclude.extend(layouts_from_manifest(catalog / "manifest.json"))
+    block = {
+        "name": extra["name"],
+        "seed": int(extra["seed"]),
+        "target": deficit,
+        "max_attempts": int(extra["max_attempts"]),
+        "wall_seconds": float(extra["wall_seconds"]),
+    }
+    report = _run_collection_block(
+        block, Path(registration["paths"]["obstacle_scenes"]) / "blocks", exclude,
+        int(extra["per_attempt_deadline"]), True)
+    sources = [catalog]
+    if (Path(report["output_dir"]) / "manifest.json").exists():
+        sources.append(Path(report["output_dir"]))
+    merged = Path(registration["paths"]["obstacle_scenes"]) / "assembled_deficit"
+    if not merged.exists():
+        assemble = assemble_catalogs(
+            sources, merged, seed=block["seed"], provenance={}, drop_conflicts=True)
+    else:
+        assemble = {
+            "kept": len(layouts_from_manifest(merged / "manifest.json")),
+            "resumed": True,
+        }
+    audit_ok = bool(stage_report.get("restore_audit_ok")) and (
+        not report.get("accepted") or bool(report.get("restore_audit_ok")))
+    kept = int(assemble["kept"])
+    updated = {
+        "stage": "obstacle",
+        "target": int(stage_report["target"]),
+        "kept": kept,
+        "complete": kept == int(stage_report["target"]) and audit_ok,
+        "restore_audit_ok": audit_ok,
+        "catalog": str(merged),
+        "prior_kept": int(stage_report["kept"]),
+        "prior_catalog": str(catalog),
+        "deficit_block": report,
+        "assemble": assemble,
+        "identity_rules_unchanged": True,
+    }
+    _json_atomic(Path(registration["paths"]["obstacle_scenes"]) / "deficit_report.json", updated)
+    return updated
+
+
+def new_obstacle_records_from_catalog(catalog, start_id=1100):
+    paired = _records_from_catalog(
+        catalog, lambda index, _scene: (1_000_000 + index, start_id + index))
+    records = [row for row in paired if row["kind"] == "obstacle"]
+    expected = list(range(start_id, start_id + len(records)))
+    if [int(row["episode_id"]) for row in records] != expected:
+        raise ValueError("new obstacle ids are not contiguous")
+    for row in records:
+        row["provenance"]["source"] = "new_obstacle"
+        if row["obstacle_collision"] or row["obstacle_crossing"] or not row["native_success"]:
+            raise ValueError("new obstacle trajectory is not expert-safe")
+    return records
+
+
+def assert_packaged_matches_source(source_h5, packaged_h5, episode_ids):
+    with h5py.File(source_h5, "r") as source, h5py.File(packaged_h5, "r") as packaged:
+        for episode_id in episode_ids:
+            left = source[f"traj_{int(episode_id)}"]
+            right = packaged[f"traj_{int(episode_id)}"]
+            for name in ("obs", "actions", "terminated", "truncated"):
+                if not np.array_equal(left[name], right[name]):
+                    raise ValueError(f"traj_{episode_id} {name} is not the source array")
+    return True
+
+
+def failure_mechanisms(rows):
+    phases, links, outcomes = {}, {}, {}
+    for row in rows:
+        if row.get("status") != "evaluated":
+            continue
+        contact = row.get("first_contact") or {}
+        if contact:
+            phases[contact.get("phase")] = phases.get(contact.get("phase"), 0) + 1
+            links[contact.get("link")] = links.get(contact.get("link"), 0) + 1
+        result = row.get("result") or {}
+        if not result.get("safe_success"):
+            key = result.get("phase")
+            outcomes[key] = outcomes.get(key, 0) + 1
+    return {
+        "first_contact_phase": phases,
+        "first_contact_link": links,
+        "unsafe_or_failed_phase": outcomes,
+    }
+
+
+def compare_obstacle_increment(registration, output_dir):
+    comparison = registration["comparison"]
+    if comparison.get("rejected_proximity_is_not_baseline") is not True:
+        raise ValueError("proximity result is not the baseline")
+    root = Path(comparison["expansion_paired"])
+    constrain = load_episode_directory(root / "constrain_dp")
+    base = load_episode_directory(root / "base_dp")
+    require_baseline_counts(constrain, comparison["constrain_counts"])
+    require_baseline_counts(base, comparison["base_counts"])
+    if any(row.get("checkpoint_sha256") == comparison["rejected_proximity_sha256"] for row in constrain):
+        raise ValueError("proximity checkpoint is not the baseline")
+    if any(row.get("checkpoint_sha256") != comparison["expansion_constrain_sha256"] for row in constrain):
+        raise ValueError("baseline constrain checkpoint is not the expansion EMA")
+    output_dir = Path(output_dir)
+    current = {
+        "base_dp": load_episode_directory(output_dir / "base_dp"),
+        "constrain_dp": load_episode_directory(output_dir / "constrain_dp"),
+    }
+    authoritative = {"base_dp": base, "constrain_dp": constrain}
+    fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
+    transitions = {}
+    for name, rows in current.items():
+        errors = [row.get("scene_id") for row in rows if row.get("status") != "evaluated"]
+        transitions[name] = {
+            "runtime_error_scene_ids": errors,
+            "transitions": None if errors else expansion_transitions(authoritative[name], rows, fields),
+        }
+    return {
+        "denominator": 30,
+        "formal_performance_claim": False,
+        "baseline": "expansion_100_obstacle",
+        "rejected_proximity_is_not_baseline": True,
+        "baseline_counts": {"base_dp": metric_counts(base), "constrain_dp": metric_counts(constrain)},
+        "increment_counts": {name: metric_counts(rows) for name, rows in current.items()},
+        "transitions": transitions,
+        "mechanisms": {
+            "baseline_constrain": failure_mechanisms(constrain),
+            "increment_constrain": failure_mechanisms(current["constrain_dp"]),
+            "increment_base": failure_mechanisms(current["base_dp"]),
+        },
+    }
 
 
 def compare_expansion_eval(registration, expansion_dir):
