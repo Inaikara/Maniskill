@@ -10,18 +10,33 @@ import torch
 
 from examples.baselines.constrain.placesphere_learning_pilot import (
     LAYOUT_TOLERANCE_M,
+    NATIVE_SUCCESS,
+    PAIR_ACCEPTANCE_CHECKS,
     batched_observation,
+    build_expansion_preregistration,
+    build_episode_index,
     build_preregistration,
     coerce_action_sequence,
     compare_ticket02,
+    dataset_coverage,
     decide_gate,
     dev_premises_hold,
+    direct_candidate_accepted,
+    expansion_id_plan,
+    expansion_transitions,
     layouts_conflict,
+    load_expansion_addendum,
     load_preregistration,
     package_records,
+    require_baseline_counts,
+    resolve_running_identity,
     split_is_independent,
+    task_duplicate_report,
     trajectory_has_release_retreat_settle,
+    validate_expansion_ids,
     write_preregistration,
+    assert_external_independence,
+    assert_retained_arrays,
 )
 from examples.baselines.constrain.placesphere_learning_pilot import PilotTrajectoryDataset
 
@@ -281,3 +296,289 @@ def test_generate_rejects_a_duplicate_layout_before_ingest(tmp_path):
     assert report["accepted"] == 0
     assert report["failures"].get("layout_duplicate") == 1
     assert not (tmp_path / "out" / "scenes.h5").exists()
+
+
+def _used_seeds(spec):
+    seeds = []
+    for block in spec["blocks"]:
+        seeds.extend(range(int(block["seed"]) + 1, int(block["seed"]) + int(block["max_attempts"]) + 1))
+    continuation = spec["continuation"]
+    seeds.extend(range(
+        int(continuation["seed"]) + 1,
+        int(continuation["seed"]) + int(continuation["max_attempts"]) + 1))
+    return seeds
+
+
+def test_expansion_preregistration_predeclares_duplicate_policy_and_place_sphere_contract(tmp_path):
+    payload = build_expansion_preregistration(
+        version="20261024_expansion",
+        paths={"exp": "outputs/exp/x"},
+        reason="user authorized one PlaceSphere data-expansion round",
+        prior_version="outputs/exp/20261024_014459_placesphere_learning_pilot",
+    )
+    assert payload["kind"] == "authorized_data_expansion"
+    assert payload["train_direct_count"] == 1000
+    assert payload["train_obstacle_count"] == 100
+    assert payload["obstacle_plan_cap"] == 100
+    assert payload["sweeps"] == "none"
+    assert payload["selected_direct_ids"] == list(range(1000))
+    assert payload["selected_obstacle_ids"] == list(range(1000, 1100))
+    assert payload["dev_scene_count"] == 30
+    assert payload["dev_reused"] is True
+    assert payload["collection"]["dev_collected"] is False
+    assert payload["native_success"] == NATIVE_SUCCESS
+    assert payload["eval"]["max_steps"] == 200
+    duplicates = payload["within_train_duplicates"]
+    assert duplicates["pairs_within_run_mutual_exclusion"] is True
+    assert duplicates["direct_within_run_mutual_exclusion"] is False
+    assert duplicates["direct_may_repeat_train_task_layouts"] is True
+    assert duplicates["packaged_count_is_unique_count"] is False
+    assert duplicates["log"] == "greedy_unique_and_conflicts"
+    assert duplicates["external_excludes"] == ["ticket04", "dev30", "retained20"]
+    assert duplicates["exclude_new_pairs"] is False
+    assert "PickCube" in duplicates["why_predeclared"]
+    assert payload["collection"]["pairs"]["within_run_mutual_exclusion"] is True
+    assert payload["collection"]["pairs"]["target"] == 80
+    assert payload["collection"]["pairs"]["workers"] == 2
+    assert payload["collection"]["pairs"]["per_attempt_deadline"] == 160
+    assert payload["collection"]["pairs"]["blocks"][0]["seed"] == 2026128001
+    assert payload["collection"]["direct"]["within_run_mutual_exclusion"] is False
+    assert payload["collection"]["direct"]["drop_conflicts"] is False
+    assert payload["collection"]["direct"]["target"] == 900
+    assert payload["collection"]["direct"]["workers"] == 4
+    assert payload["collection"]["direct"]["per_attempt_deadline"] == 160
+    assert [block["target"] for block in payload["collection"]["direct"]["blocks"]] == [225, 225, 225, 225]
+    assert [block["max_attempts"] for block in payload["collection"]["direct"]["blocks"]] == [700, 700, 700, 700]
+    selection = payload["collection_selection"]
+    assert selection["retained_direct_ids"] == list(range(20))
+    assert selection["retained_obstacle_ids"] == list(range(1000, 1020))
+    assert selection["additional_direct_count"] == 900
+    assert selection["additional_direct_obstacle_packaged"] is False
+    assert selection["additional_direct_obstacle_execution"] == "retained_as_acceptance_predicate"
+    assert "distribution" in selection["obstacle_execution_not_skipped_because"]
+    assert payload["training"]["total_iters"] == 30000
+    assert payload["training"]["batch_size"] == 1024
+    assert payload["training"]["lr"] == 1e-4
+    assert payload["training"]["seed"] == 1
+    assert payload["gate"]["task_success_rate_gte"] == 0.90
+    assert payload["gate"]["safe_success_rate_gte"] == 0.85
+    assert payload["gate"]["contact_rate_lte"] == 0.10
+    assert payload["gate"]["xy_crossing_rate_lte"] == 0.10
+    assert payload["gate"]["formal_performance_claim"] is False
+    assert "Ticket 08" in payload["gate"]["on_fail"]
+    assert "Ticket 07" not in payload["gate"]["on_fail"]
+    assert payload["baseline"]["base_counts"] == {"task": 0, "safe": 0, "contact": 29, "xy": 23}
+    assert payload["baseline"]["constrain_counts"] == {"task": 16, "safe": 11, "contact": 8, "xy": 3}
+    assert payload["baseline"]["authoritative_base"] == "base_dp"
+    assert payload["baseline"]["failed_base_attempt"] is None
+    occupied = set(range(2026108002, 2026108048)) | set(range(2026109002, 2026109069))
+    occupied.update((20261026, 20261028, 20261029, 20261031))
+    for spec in (payload["collection"]["pairs"], payload["collection"]["direct"]):
+        seeds = _used_seeds(spec)
+        assert len(seeds) == len(set(seeds))
+        assert not (set(seeds) & occupied)
+        spans = []
+        for block in spec["blocks"]:
+            spans.append((int(block["seed"]) + 1, int(block["seed"]) + int(block["max_attempts"])))
+        continuation = spec["continuation"]
+        spans.append((int(continuation["seed"]) + 1, int(continuation["seed"]) + int(continuation["max_attempts"])))
+        spans.sort()
+        assert all(left[1] < right[0] for left, right in zip(spans, spans[1:]))
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    assert load_preregistration(path)["train_direct_count"] == 1000
+    with pytest.raises(ValueError):
+        build_expansion_preregistration(version="x", paths={}, reason="", prior_version="prior")
+
+
+def test_direct_candidate_keeps_release_and_obstacle_predicate():
+    checks = {name: True for name in PAIR_ACCEPTANCE_CHECKS}
+    assert "direct_release_retreat_settle" in checks
+    assert "no_obstacle_contact" in checks
+    assert direct_candidate_accepted(checks)
+    missing_release = dict(checks, direct_release_retreat_settle=False)
+    assert not direct_candidate_accepted(missing_release)
+    contacted = dict(checks, no_obstacle_contact=False)
+    assert not direct_candidate_accepted(contacted)
+    assert not direct_candidate_accepted({})
+
+
+def test_expansion_ids_keep_original_20_and_refuse_300_obstacle():
+    plan = expansion_id_plan()
+    assert plan["direct"] == list(range(1000))
+    assert plan["obstacle"] == list(range(1000, 1100))
+    assert set(range(20)).issubset(plan["direct"])
+    assert set(range(1000, 1020)).issubset(plan["obstacle"])
+    validate_expansion_ids(plan["direct"], plan["obstacle"])
+    with pytest.raises(ValueError, match="original"):
+        validate_expansion_ids(list(range(1, 1001)), plan["obstacle"])
+    with pytest.raises(ValueError, match="100"):
+        validate_expansion_ids(plan["direct"], list(range(1000, 1300)))
+
+
+def test_duplicate_report_does_not_call_a_repeated_set_unique():
+    rows = [
+        _layout(1, (0.0, 0.0), (0.2, 0.0), (0.1, 0.0)),
+        _layout(2, (0.08, 0.05), (0.16, -0.08), (0.11, 0.01)),
+        _layout(3, (0.01, 0.0), (0.21, 0.0), (0.4, 0.4)),
+    ]
+    report = task_duplicate_report(rows)
+    assert report["packaged_count"] == 3
+    assert report["greedy_unique"] == 2
+    assert report["conflicts"] == 1
+    assert report["packaged_count_is_unique_count"] is False
+
+
+def test_expansion_transitions_label_exact_place_sphere_ids():
+    baseline = [
+        {"scene_id": "placesphere-000", "status": "evaluated", "result": {
+            "native_success": False, "safe_success": False,
+            "obstacle_contact": True, "xy_forbidden_crossing": True}},
+        {"scene_id": "placesphere-001", "status": "evaluated", "result": {
+            "native_success": True, "safe_success": True,
+            "obstacle_contact": False, "xy_forbidden_crossing": False}},
+    ]
+    expansion = [
+        {"scene_id": "placesphere-001", "status": "evaluated", "result": {
+            "native_success": False, "safe_success": False,
+            "obstacle_contact": True, "xy_forbidden_crossing": False}},
+        {"scene_id": "placesphere-000", "status": "evaluated", "result": {
+            "native_success": True, "safe_success": False,
+            "obstacle_contact": False, "xy_forbidden_crossing": True}},
+    ]
+    report = expansion_transitions(baseline, expansion, (
+        "native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing"))
+    assert report["matched_scene_ids"] == ["placesphere-000", "placesphere-001"]
+    assert report["native_success"] == {"improved": 1, "regressed": 1, "both": 0, "neither": 0}
+    assert report["safe_success"] == {"improved": 0, "regressed": 1, "both": 0, "neither": 1}
+    assert report["obstacle_contact"] == {"cleared": 1, "introduced": 1, "both": 0, "neither": 0}
+    assert report["xy_forbidden_crossing"] == {"cleared": 0, "introduced": 0, "both": 1, "neither": 1}
+
+
+def test_episode_index_stores_the_checkpoint_sha():
+    rows = [{"scene_index": 0, "scene_id": "placesphere-000", "status": "evaluated",
+             "checkpoint_sha256": "abc"}]
+    index = build_episode_index(rows, "abc", checkpoint="outputs/ckpt/x/final.pt")
+    assert index["checkpoint_sha256"] == "abc"
+    assert index["episodes"][0]["checkpoint_sha256"] == "abc"
+    assert index["checkpoint"] == "outputs/ckpt/x/final.pt"
+    with pytest.raises(ValueError, match="checkpoint"):
+        build_episode_index(rows, "def", checkpoint="outputs/ckpt/x/final.pt")
+
+
+def test_coverage_uses_the_frozen_30000_updates():
+    coverage = dataset_coverage(windows=4096, episodes=1000, updates=30000, batch_size=1024)
+    assert coverage["samples_drawn"] == 30000 * 1024
+    assert coverage["epochs"] == (30000 * 1024) / 4096
+    assert coverage["updates"] == 30000
+    with pytest.raises(ValueError):
+        dataset_coverage(windows=100, episodes=1, updates=30000, batch_size=1024)
+
+
+def test_recovery_is_dated_before_rerun_and_does_not_rewrite_preregistration(tmp_path):
+    registration = {
+        "paths": {"exp": str(tmp_path)},
+        "source_identity": {"files_sha256": "frozen"},
+        "generator_identity": {"files_sha256": "generator"},
+    }
+    prereg = tmp_path / "preregistration.json"
+    prereg.write_text(json.dumps(registration) + "\n")
+    before = prereg.read_bytes()
+    assert resolve_running_identity(registration, {"files_sha256": "frozen"})["matched"] == "preregistration"
+    with pytest.raises(RuntimeError, match="source identity"):
+        resolve_running_identity(registration, {"files_sha256": "changed"})
+    recovery = {
+        "files_sha256": "changed",
+        "generator_files_sha256": "generator-edited",
+        "recorded_before_rerun": True,
+        "recorded_at": "2026-10-24T12:00:00",
+    }
+    (tmp_path / "recovery_identity.json").write_text(json.dumps(recovery))
+    with pytest.raises(RuntimeError, match="generator"):
+        resolve_running_identity(registration, {"files_sha256": "changed"})
+    recovery["generator_files_sha256"] = "generator"
+    recovery["recorded_before_rerun"] = False
+    (tmp_path / "recovery_identity.json").write_text(json.dumps(recovery))
+    with pytest.raises(RuntimeError, match="dated|before"):
+        resolve_running_identity(registration, {"files_sha256": "changed"})
+    recovery["recorded_before_rerun"] = True
+    (tmp_path / "recovery_identity.json").write_text(json.dumps(recovery))
+    matched = resolve_running_identity(registration, {"files_sha256": "changed"})
+    assert matched["matched"] == "recovery_identity"
+    assert prereg.read_bytes() == before
+
+
+def test_external_independence_rejects_a_dev_or_prior_hit():
+    train = [_layout(1, (0.0, 0.0), (0.2, 0.0), (0.1, 0.0))]
+    dev = [_layout(2, (0.08, 0.0), (0.28, 0.0), (0.2, 0.0))]
+    prior = [_layout(3, (0.0, 0.2), (0.2, 0.2), (0.1, 0.2))]
+    assert assert_external_independence(train, dev, prior) is True
+    hit = [_layout(4, (0.01, 0.0), (0.21, 0.0), (0.4, 0.4))]
+    with pytest.raises(ValueError, match="dev"):
+        assert_external_independence(train, hit, prior)
+
+
+def test_budget_addendum_cannot_loosen_duplicate_policy_or_acceptance(tmp_path):
+    from examples.baselines.constrain.placesphere_learning_pilot import ADDENDUM_DOES_NOT_CHANGE
+
+    payload = {
+        "reason": "measured_yield_below_preregistered_attempt_budget",
+        "does_not_change": list(ADDENDUM_DOES_NOT_CHANGE),
+        "recorded_before_rerun": True,
+        "recorded_at": "2026-10-24T12:00:00",
+        "scene_contract_unchanged": True,
+        "formal_performance_claim": False,
+        "direct_rule": {
+            "within_run_mutual_exclusion": False,
+            "acceptance_predicate": "full_run_attempt",
+            "obstacle_execution": "retained_as_acceptance_predicate",
+            "obstacle_packaged": False,
+            "target": 900,
+            "external_excludes": ["ticket04", "dev30", "retained20"],
+            "exclude_new_pairs": False,
+            "workers": 4,
+            "per_attempt_deadline": 160,
+        },
+    }
+    path = tmp_path / "collection_budget_addendum.json"
+    path.write_text(json.dumps(payload))
+    assert load_expansion_addendum(path)["direct_rule"]["target"] == 900
+    payload["direct_rule"]["acceptance_predicate"] = "geometry_only"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="acceptance"):
+        load_expansion_addendum(path)
+
+
+def test_retained_arrays_match_original_bytes(tmp_path):
+    path = tmp_path / "trajectory.h5"
+    obs = np.array([[1.0, 2.0]], np.float32)
+    actions = np.array([[0.1, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]], np.float32)
+    with h5py.File(path, "w") as handle:
+        group = handle.create_group("traj_0")
+        group.create_dataset("obs", data=obs)
+        group.create_dataset("actions", data=actions)
+    before = path.read_bytes()
+    records = [{
+        "episode_id": 0,
+        "provenance": {"source": "retained_r1"},
+        "obs": obs.copy(),
+        "actions": actions.copy(),
+    }]
+    assert assert_retained_arrays(path, records) == __import__("hashlib").sha256(before).hexdigest()
+    assert path.read_bytes() == before
+    records[0]["obs"] = np.array([[9.0, 9.0]], np.float32)
+    with pytest.raises(ValueError, match="retained"):
+        assert_retained_arrays(path, records)
+    assert path.read_bytes() == before
+
+
+def test_baseline_counts_must_match_the_frozen_rows():
+    rows = [{
+        "status": "evaluated",
+        "result": {"native_success": False, "safe_success": False,
+                   "obstacle_contact": True, "xy_forbidden_crossing": True},
+    }]
+    counts = require_baseline_counts(rows, {"task": 0, "safe": 0, "contact": 1, "xy": 1}, denominator=1)
+    assert counts["task"] == 0
+    with pytest.raises(ValueError, match="baseline"):
+        require_baseline_counts(rows, {"task": 1, "safe": 0, "contact": 1, "xy": 1}, denominator=1)

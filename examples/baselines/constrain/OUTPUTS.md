@@ -126,6 +126,22 @@ Also retained:
   `outputs/ckpt/20261024_014459_placesphere_pilot_constrain/final.pt`.
   Training demos: `demos/PlaceSphere-transport-detour/20261024_014459_pilot_r1/`.
   These are not formal performance results.
+- `outputs/exp/20261024_155244_placesphere_data_expansion/`: Ticket 06
+  authorized data-expansion round on the same frozen 30 dev scenes. Gate is
+  **pause**. It does not replace `20261022_213500_placesphere_paired_eval/` or
+  the round-1 pilot, and does not admit Ticket 08. Weights:
+  `outputs/ckpt/20261024_155244_placesphere_expansion_base/final.pt`
+  `2bbb7f5e1c1f4f93d177cf12b63d182a2d4cc1a239387f51d03de6afe01c8640`,
+  `outputs/ckpt/20261024_155244_placesphere_expansion_constrain/final.pt`
+  `36518c84c0aacaadaf33eb7e35161b0e869c0d18d62e9425337021a763bfa43c`.
+  Training demos: `demos/PlaceSphere-transport-detour/20261024_155244_expansion/`
+  `df01aec45a5fcf6f04b0f0e2cb91d4bdf58d238ce41163b40cf15d1388d253ed`
+  (1,000 direct + 100 obstacle, including the original 20+20). The packaged
+  1,000 is not 1,000 unique task layouts (greedy unique 425, conflicts 575).
+  Not a formal performance or generalization result. Preregistration
+  `270ecc8712aef405f94cfdf14c6ad5f7cc1e30f4a7faf9d1d696a0185da45100`.
+  Gate `fb768c089f124780eda1a477fbe5db26544d161b7faf9822f06b3032aa854391`.
+  Comparison `3864d18c94ad775b18dfd2e5a0093df7ccae1ae7f342be574f6e79ac7612fbb0`.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
