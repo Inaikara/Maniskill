@@ -107,8 +107,17 @@ Also retained:
   and was not used for training. Weights:
   `outputs/ckpt/20261023_235744_pickcube_pilot_base/final.pt`,
   `outputs/ckpt/20261023_235744_pickcube_pilot_constrain/final.pt`.
-  Training demos: `demos/PickCube-transport-detour/20261023_235744_pilot_r2/`.
-  These are not formal performance results.
+   Training demos: `demos/PickCube-transport-detour/20261023_235744_pilot_r2/`.
+   These are not formal performance results.
+- `outputs/exp/20261024_104348_pickcube_data_expansion/`: Ticket 05 authorized
+  data-expansion round on the same frozen 30 dev scenes. Gate is **pause**.
+  It does not replace `20261022_162002_pickcube_paired_eval/` or the round-2
+  pilot, and does not admit Ticket 07. Weights:
+  `outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt`,
+  `outputs/ckpt/20261024_104348_pickcube_expansion_constrain/final.pt`.
+  Training demos: `demos/PickCube-transport-detour/20261024_104348_expansion/`
+  (1,000 direct + 100 obstacle, including the original 20+20). Not a formal
+  performance or generalization result.
 - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
   learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
   `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.

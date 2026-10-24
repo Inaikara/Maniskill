@@ -280,7 +280,7 @@ def package_records(records, dest, registration):
             success = np.zeros(len(record["obs"]), dtype=np.uint8)
             success[-1] = 1
             group.create_dataset("success", data=success)
-            episodes.append({
+            episode = {
                 "episode_id": int(record["episode_id"]),
                 "kind": record["kind"],
                 "scene_id": record["scene_id"],
@@ -289,7 +289,10 @@ def package_records(records, dest, registration):
                 "held_at_success": True,
                 "obstacle_collision": bool(record["obstacle_collision"]),
                 "obstacle_crossing": bool(record["obstacle_crossing"]),
-            })
+            }
+            if record.get("provenance"):
+                episode["provenance"] = record["provenance"]
+            episodes.append(episode)
     manifest = {"episodes": episodes, "format": "pickcube_pilot_demos_v1"}
     (dest / "trajectory.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     return dest
@@ -458,6 +461,8 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
         "all_losses_finite": bool(np.isfinite(losses).all()),
         "elapsed_seconds": time.monotonic() - started, "checkpoint": str(final),
         "checkpoint_sha256": sha256_file(final),
+        "dataset_coverage": dataset_coverage(
+            len(dataset), len(dataset.trajectory_ids), training["total_iters"], training["batch_size"]),
     }
     (run_dir / "train_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
@@ -582,6 +587,10 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "all_losses_finite": bool(np.isfinite(losses).all()),
         "elapsed_seconds": time.monotonic() - started, "checkpoint": str(final),
         "checkpoint_sha256": sha256_file(final),
+        "dataset_coverage": dataset_coverage(
+            len(dataset), len(dataset.trajectory_ids), training["total_iters"], training["batch_size"]),
+        "base_state_sha256": base_sha,
+        "strict_ema_load": True,
     }
     (run_dir / "train_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
@@ -608,7 +617,7 @@ def layouts_from_manifest(path):
 
 
 def collect_split(output_dir, *, seed, target, max_attempts, max_wall_seconds,
-                  per_attempt_deadline, exclude_layouts, cylinder=True):
+                  per_attempt_deadline, exclude_layouts, cylinder=True, within_run=True):
     from examples.baselines.constrain.pickcube_transport_detour import generate
 
     seen = [layout_view(row) for row in exclude_layouts]
@@ -621,7 +630,8 @@ def collect_split(output_dir, *, seed, target, max_attempts, max_wall_seconds,
         return None
 
     def note_accepted(row):
-        seen.append(layout_view(row))
+        if within_run:
+            seen.append(layout_view(row))
 
     return generate(
         output_dir, seed=seed, target=target, max_attempts=max_attempts,
@@ -928,11 +938,729 @@ def freeze_pilot_identity(repo_root=None):
     }
 
 
+EXPANSION_DIRECT_COUNT = 1000
+EXPANSION_OBSTACLE_COUNT = 100
+RETAINED_COUNT = 20
+PAIR_ACCEPTANCE_CHECKS = (
+    "direct_native_success", "direct_held", "direct_transport_blocked",
+    "obstacle_native_success", "obstacle_held", "no_obstacle_contact",
+    "no_obstacle_crossing", "join_continuous", "action_observation_contract",
+)
+SUCCESS_FIELDS = frozenset({"native_success", "safe_success"})
+VIOLATION_FIELDS = frozenset({"obstacle_contact", "xy_forbidden_crossing"})
+BASELINE_EXP = "outputs/exp/20261023_235744_pickcube_learning_pilot_r2"
+RETAINED_SCENES = f"{BASELINE_EXP}/train_scenes"
+RETAINED_DEMOS = "demos/PickCube-transport-detour/20261023_235744_pilot_r2"
+FROZEN_DEV_SCENES = f"{BASELINE_EXP}/dev_scenes"
+OBSTACLE_EXECUTION_REASON = (
+    "Skipping block/safe/endpoint acceptance would admit start/goal pairs that fail "
+    "those checks. Round 2 recorded 4 such post-geometry failures in 43 attempts. "
+    "That would change the effective start/goal distribution relative to the 100 pairs. "
+    "Obstacle execution is retained as the acceptance predicate and is not packaged "
+    "for the additional 900 direct trajectories."
+)
+
+
+def expansion_id_plan():
+    return {
+        "direct": list(range(EXPANSION_DIRECT_COUNT)),
+        "obstacle": list(range(1000, 1000 + EXPANSION_OBSTACLE_COUNT)),
+    }
+
+
+def validate_expansion_ids(direct_ids, obstacle_ids):
+    direct_ids = [int(item) for item in direct_ids]
+    obstacle_ids = [int(item) for item in obstacle_ids]
+    if set(range(RETAINED_COUNT)) - set(direct_ids) or set(range(1000, 1020)) - set(obstacle_ids):
+        raise ValueError("original direct or obstacle ids missing")
+    if len(obstacle_ids) != EXPANSION_OBSTACLE_COUNT or obstacle_ids != list(range(1000, 1100)):
+        raise ValueError("obstacle ids are not the frozen 100")
+    if direct_ids != list(range(EXPANSION_DIRECT_COUNT)):
+        raise ValueError("direct ids are not the frozen 1000")
+    return True
+
+
+def direct_candidate_accepted(checks):
+    return all(bool(checks.get(name)) for name in PAIR_ACCEPTANCE_CHECKS)
+
+
+def partition_task_independent(rows):
+    kept, rejected = [], []
+    for row in rows:
+        if any(layouts_conflict(row, other, cylinder=False) for other in kept):
+            rejected.append(row)
+        else:
+            kept.append(row)
+    return kept, rejected
+
+
+def expansion_transitions(baseline_rows, expansion_rows, fields):
+    baseline = {row["scene_id"]: row for row in baseline_rows}
+    expansion = {row["scene_id"]: row for row in expansion_rows}
+    if set(baseline) != set(expansion):
+        raise ValueError("scene ids do not match")
+    scene_ids = sorted(baseline)
+    report = {"matched_scene_ids": scene_ids}
+    for field in fields:
+        if field not in SUCCESS_FIELDS and field not in VIOLATION_FIELDS:
+            raise ValueError(f"unknown transition field {field}")
+        buckets = {key: 0 for key in (
+            ("cleared", "introduced", "both", "neither") if field in VIOLATION_FIELDS
+            else ("improved", "regressed", "both", "neither"))}
+        for scene_id in scene_ids:
+            left = bool(baseline[scene_id]["result"][field])
+            right = bool(expansion[scene_id]["result"][field])
+            if field in VIOLATION_FIELDS:
+                key = ("cleared" if left and not right else "introduced" if right and not left
+                       else "both" if left else "neither")
+            else:
+                key = ("improved" if right and not left else "regressed" if left and not right
+                       else "both" if left else "neither")
+            buckets[key] += 1
+        report[field] = buckets
+    return report
+
+
+def separate_failed_attempts(failed_rows, recovery_rows):
+    return {
+        "failed_attempt_errors": sum(row.get("status") != "evaluated" for row in failed_rows),
+        "failed_attempt_is_authoritative": False,
+        "recovery_authoritative": True,
+        "recovery_evaluated": sum(row.get("status") == "evaluated" for row in recovery_rows),
+    }
+
+
+def build_episode_index(rows, checkpoint_sha, checkpoint):
+    if any(row.get("checkpoint_sha256") != checkpoint_sha for row in rows):
+        raise ValueError("episode checkpoint sha does not match the index")
+    return {
+        "checkpoint": checkpoint,
+        "checkpoint_sha256": checkpoint_sha,
+        "episodes": [{
+            "scene_index": row.get("scene_index"),
+            "scene_id": row.get("scene_id"),
+            "status": row.get("status"),
+            "checkpoint_sha256": checkpoint_sha,
+        } for row in rows],
+    }
+
+
+def dataset_coverage(windows, episodes, updates, batch_size):
+    windows, episodes = int(windows), int(episodes)
+    updates, batch_size = int(updates), int(batch_size)
+    if windows < batch_size:
+        raise ValueError("windows are fewer than the batch size")
+    drawn = updates * batch_size
+    return {
+        "windows": windows, "episodes": episodes, "updates": updates, "batch_size": batch_size,
+        "samples_drawn": drawn, "epochs": drawn / windows,
+    }
+
+
+def assert_frozen_source_identity(registration, current):
+    frozen = (registration.get("source_identity") or {}).get("files_sha256")
+    if current.get("files_sha256") != frozen:
+        raise RuntimeError("source identity does not match preregistration")
+    return current
+
+
+ADDENDUM_DOES_NOT_CHANGE = [
+    "counts", "task_identity_definition", "gate", "training", "geometry",
+    "expert", "external_excludes", "acceptance_predicate",
+]
+
+
+def load_expansion_addendum(path):
+    payload = json.loads(Path(path).read_text())
+    if payload.get("reason") != "measured_yield_below_preregistered_attempt_budget":
+        raise ValueError("unrecognized collection addendum")
+    if payload.get("does_not_change") != ADDENDUM_DOES_NOT_CHANGE:
+        raise ValueError("collection addendum changes a frozen rule")
+    if payload.get("scene_contract_unchanged") is not True or payload.get("formal_performance_claim") is not False:
+        raise ValueError("addendum must keep the scene contract")
+    direct = payload["direct_rule"]
+    if direct.get("acceptance_predicate") != "full_run_attempt":
+        raise ValueError("addendum changes the acceptance predicate")
+    if direct.get("obstacle_execution") != "retained_as_acceptance_predicate" or direct.get("obstacle_packaged") is not False:
+        raise ValueError("addendum changes obstacle acceptance or packaging")
+    if int(direct.get("target")) != 900 or direct.get("external_excludes") != ["ticket03", "dev30", "retained20"]:
+        raise ValueError("addendum changes counts or external excludes")
+    if direct.get("within_run_mutual_exclusion") is not False or direct.get("exclude_new_pairs") is not False:
+        raise ValueError("addendum does not match the recorded direct rule")
+    if int(direct.get("workers")) != 4 or int(direct.get("per_attempt_deadline")) != 150:
+        raise ValueError("addendum changes the frozen worker or deadline contract")
+    return payload
+
+
+def direct_spec_from_addendum(addendum):
+    rule = addendum["direct_rule"]
+    block_attempts = (int(rule["max_attempts"]) - int(rule["continuation_max_attempts"])) // len(rule["seeds"])
+    block_target = int(rule["target"]) // len(rule["seeds"])
+    if block_attempts * len(rule["seeds"]) + int(rule["continuation_max_attempts"]) != int(rule["max_attempts"]):
+        raise ValueError("direct attempt budget does not add up")
+    if block_target * len(rule["seeds"]) != int(rule["target"]):
+        raise ValueError("direct block targets do not add up")
+    return {
+        "workers": int(rule["workers"]),
+        "target": int(rule["target"]),
+        "max_attempts": int(rule["max_attempts"]),
+        "wall_seconds": float(rule["stage_wall_seconds"]),
+        "per_attempt_deadline": int(rule["per_attempt_deadline"]),
+        "blocks": [
+            {
+                "name": f"block_{index}", "seed": int(seed), "target": block_target,
+                "max_attempts": block_attempts, "wall_seconds": float(rule["block_wall_seconds"]),
+            }
+            for index, seed in enumerate(rule["seeds"])
+        ],
+        "continuation": {
+            "name": "continuation", "seed": int(rule["continuation_seed"]),
+            "max_attempts": int(rule["continuation_max_attempts"]),
+            "wall_seconds": float(rule["block_wall_seconds"]),
+        },
+    }
+
+
+def resolve_running_identity(registration, current):
+    frozen = (registration.get("source_identity") or {}).get("files_sha256")
+    if current.get("files_sha256") == frozen:
+        return {"matched": "preregistration", "files_sha256": frozen}
+    recovery_path = Path(registration["paths"]["exp"]) / "recovery_identity.json"
+    if not recovery_path.exists():
+        raise RuntimeError("source identity does not match preregistration")
+    recovery = json.loads(recovery_path.read_text())
+    if recovery.get("files_sha256") != current.get("files_sha256"):
+        raise RuntimeError("recovery identity does not match the running code")
+    if recovery.get("reason") != "measured_yield_below_preregistered_attempt_budget":
+        raise RuntimeError("unrecognized recovery identity")
+    if recovery.get("generator_files_sha256") != (registration.get("generator_identity") or {}).get("files_sha256"):
+        raise RuntimeError("recovery changed the generator")
+    return {"matched": "recovery_identity", "files_sha256": current["files_sha256"]}
+
+
+def assert_external_independence(train, dev, prior):
+    if any(layouts_conflict(left, right, cylinder=False) for left in train for right in dev):
+        raise ValueError("train conflicts with frozen dev")
+    if any(layouts_conflict(left, right, cylinder=False) for left in train for right in prior):
+        raise ValueError("train conflicts with prior")
+    if any(layouts_conflict(left, right, cylinder=False) for left in dev for right in prior):
+        raise ValueError("dev conflicts with prior")
+    return True
+
+
+def _seed_span(spec):
+    spans = [(block["seed"] + 1, block["seed"] + int(block["max_attempts"])) for block in spec["blocks"]]
+    continuation = spec["continuation"]
+    spans.append((continuation["seed"] + 1, continuation["seed"] + int(continuation["max_attempts"])))
+    return spans
+
+
+def build_expansion_preregistration(version, paths, *, reason, prior_version, baseline_files=None):
+    if not reason or not prior_version:
+        raise ValueError("expansion requires the recorded authorization and the prior version")
+    if int(EXPANSION_OBSTACLE_COUNT) > OBSTACLE_PLAN_CAP:
+        raise ValueError("expansion obstacle count exceeds the 100-plan")
+    pairs = {
+        "workers": 2, "target": 80, "max_attempts": 400, "wall_seconds": 7200,
+        "per_attempt_deadline": 150,
+        "blocks": [
+            {"name": "block_a", "seed": 2026108001, "target": 40, "max_attempts": 160, "wall_seconds": 3600},
+            {"name": "block_b", "seed": 2026108401, "target": 40, "max_attempts": 160, "wall_seconds": 3600},
+        ],
+        "continuation": {"name": "continuation", "seed": 2026108801, "max_attempts": 80, "wall_seconds": 2400},
+    }
+    direct = {
+        "workers": 4, "target": 900, "max_attempts": 3600, "wall_seconds": 16000,
+        "per_attempt_deadline": 150,
+        "blocks": [
+            {"name": "block_a", "seed": 2026110001, "target": 225, "max_attempts": 800, "wall_seconds": 9000},
+            {"name": "block_b", "seed": 2026111001, "target": 225, "max_attempts": 800, "wall_seconds": 9000},
+            {"name": "block_c", "seed": 2026112001, "target": 225, "max_attempts": 800, "wall_seconds": 9000},
+            {"name": "block_d", "seed": 2026113001, "target": 225, "max_attempts": 800, "wall_seconds": 9000},
+        ],
+        "continuation": {"name": "continuation", "seed": 2026114001, "max_attempts": 400, "wall_seconds": 5400},
+    }
+    for spec in (pairs, direct):
+        spans = sorted(_seed_span(spec))
+        if any(left[1] >= right[0] for left, right in zip(spans, spans[1:])):
+            raise ValueError("collection seed ranges overlap")
+        if sum(block["max_attempts"] for block in spec["blocks"]) + spec["continuation"]["max_attempts"] != spec["max_attempts"]:
+            raise ValueError("attempt budget does not add up")
+        if sum(block["target"] for block in spec["blocks"]) != spec["target"]:
+            raise ValueError("block targets do not add up")
+    training = build_preregistration(1, version, paths)["training"]
+    training["differences_from_formal"] = [
+        "data identity is this expansion version, not the trusted formal hashes",
+        "checkpoint format is pilot-specific so formal loaders reject it",
+        "expert may stop on evaluate() success, so terminated[-1] need not be 1",
+        "development scenes are the already-used 30, not a held-out formal 100",
+        "counts are 1000 direct and 100 obstacle on this transport-detour distribution",
+        "result is an expansion effect on that development set, not a formal performance claim",
+    ]
+    return {
+        "kind": "authorized_data_expansion",
+        "round_index": "expansion",
+        "round_cap": "one authorized expansion; not a third small-pilot round",
+        "version": version,
+        "reason": reason,
+        "prior_version": prior_version,
+        "prior_manifest": PRIOR_MANIFEST,
+        "paths": dict(paths),
+        "obstacle_plan_cap": OBSTACLE_PLAN_CAP,
+        "train_obstacle_count": EXPANSION_OBSTACLE_COUNT,
+        "train_direct_count": EXPANSION_DIRECT_COUNT,
+        "selected_direct_ids": expansion_id_plan()["direct"],
+        "selected_obstacle_ids": expansion_id_plan()["obstacle"],
+        "dev_scene_count": DEV_SCENE_COUNT,
+        "dev_reused": True,
+        "layout_dedup": {
+            "tolerance_m": LAYOUT_TOLERANCE_M,
+            "metric": "chebyshev",
+            "mode": "task",
+            "cylinder_proximity_is_conflict": False,
+            "within_run_enforced": True,
+            "conflict_if": "same seed, or start and goal both within tolerance",
+            "splits": "new train, frozen dev30, retained original20, and Ticket 03 prior are mutually independent",
+            "exclude_prior_source": PRIOR_MANIFEST,
+            "exclude_dev": FROZEN_DEV_SCENES,
+            "exclude_retained": RETAINED_SCENES,
+        },
+        "collection_selection": {
+            "retained_direct_ids": list(range(RETAINED_COUNT)),
+            "retained_obstacle_ids": list(range(1000, 1020)),
+            "retained_source_scenes": RETAINED_SCENES,
+            "retained_source_demos": RETAINED_DEMOS,
+            "retained_copied_not_mutated": True,
+            "retained_reexecuted": False,
+            "new_pair_count": 80,
+            "new_pair_direct_ids": list(range(20, 100)),
+            "new_pair_obstacle_ids": list(range(1020, 1100)),
+            "additional_direct_count": 900,
+            "additional_direct_ids": list(range(100, 1000)),
+            "additional_direct_sampling": "same run_attempt start/goal sampler and full acceptance predicate",
+            "additional_direct_obstacle_execution": "retained_as_acceptance_predicate",
+            "additional_direct_obstacle_packaged": False,
+            "obstacle_execution_not_skipped_because": OBSTACLE_EXECUTION_REASON,
+            "generator": "examples.baselines.constrain.pickcube_transport_detour.run_attempt",
+            "geometry_and_expert_unchanged": True,
+            "parallel_workers_are_not_a_distribution_change": True,
+            "cross_block_conflicts": "rejected at assemble by task identity, then replaced from the continuation seed",
+        },
+        "collection": {
+            "dev_collected": False,
+            "dev_scenes": FROZEN_DEV_SCENES,
+            "yield_basis": {
+                "source": f"{BASELINE_EXP}/train_scenes/report.json",
+                "accepted": 20, "attempts": 43, "elapsed_seconds": 357.804,
+                "acceptance_rate": 20 / 43,
+            },
+            "pairs": pairs,
+            "direct": direct,
+        },
+        "training": training,
+        "eval": {
+            "max_steps": 500,
+            "episode_wall_seconds": 120,
+            "denominator": DEV_SCENE_COUNT,
+            "noise_seed_rule": "torch.manual_seed(scene seed) before each scene",
+            "scene_source": FROZEN_DEV_SCENES,
+            "video_scene_indexes_fixed_before_results": [0, 1, 2],
+        },
+        "gate": {
+            "task_success_rate_gte": 0.90,
+            "safe_success_rate_gte": 0.85,
+            "contact_rate_lte": 0.10,
+            "xy_crossing_rate_lte": 0.10,
+            "require_complete": True,
+            "require_zero_runtime_errors": True,
+            "formal_performance_claim": False,
+            "base_failure_threshold": None,
+            "benefit_threshold": None,
+            "on_fail": "authorized expansion is the only extra round; pause Ticket 07; no further round",
+        },
+        "baseline": {
+            "exp": BASELINE_EXP,
+            "authoritative_base": "base_dp_recovery",
+            "failed_base_attempt": "base_dp",
+            "authoritative_constrain": "constrain_dp",
+            "failed_base_is_not_authoritative": True,
+            "base_counts": {"task": 6, "safe": 0, "contact": 30, "xy": 21},
+            "constrain_counts": {"task": 11, "safe": 7, "contact": 21, "xy": 14},
+            "denominator": 30,
+            "files": dict(baseline_files or {}),
+        },
+    }
+
+
+def _kill_descendants():
+    import signal
+    my_pid = os.getpid()
+    children = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().split()
+            ppid = int(fields[3])
+        except (OSError, IndexError, ValueError):
+            continue
+        if ppid == my_pid:
+            children.append(int(entry.name))
+    for pid in children:
+        for killer in (os.killpg, os.kill):
+            try:
+                killer(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+
+
+def copy_retained_catalog(source_dir, dest_dir, expected_h5_sha=None):
+    source_dir, dest_dir = Path(source_dir), Path(dest_dir)
+    h5_path = source_dir / "scenes.h5"
+    manifest_path = source_dir / "manifest.json"
+    before_h5 = sha256_file(h5_path)
+    before_manifest = sha256_file(manifest_path)
+    if expected_h5_sha is not None and before_h5 != expected_h5_sha:
+        raise ValueError("retained scenes hash does not match preregistration")
+    manifest = json.loads(manifest_path.read_text())
+    if [row["scene_id"] for row in manifest["scenes"]] != [f"pickcube-{index:03d}" for index in range(RETAINED_COUNT)]:
+        raise ValueError("retained catalog is not the original 20")
+    dest_dir.mkdir(parents=True, exist_ok=False)
+    with h5py.File(h5_path, "r") as src, h5py.File(dest_dir / "scenes.h5", "w") as out:
+        for row in manifest["scenes"]:
+            src.copy(row["scene_id"], out, row["scene_id"])
+    (dest_dir / "source_identity.json").write_bytes((source_dir / "source_identity.json").read_bytes())
+    (dest_dir / "manifest.json").write_bytes(manifest_path.read_bytes())
+    if sha256_file(h5_path) != before_h5 or sha256_file(manifest_path) != before_manifest:
+        raise RuntimeError("retained source mutated")
+    return {
+        "copied": RETAINED_COUNT, "source_mutated": False,
+        "scenes_sha256": before_h5, "manifest_sha256": before_manifest,
+    }
+
+
+def _block_report(dest):
+    path = Path(dest) / "report.json"
+    if not path.exists():
+        return None
+    report = json.loads(path.read_text())
+    report["resumed"] = True
+    report["output_dir"] = str(dest)
+    return report
+
+
+def _run_collection_block(block, output_root, exclude_layouts, deadline, within_run=True):
+    dest = Path(output_root) / block["name"]
+    existing = _block_report(dest)
+    if existing is not None:
+        print(f"resume {dest} accepted={existing.get('accepted')}", flush=True)
+        return existing
+    if dest.exists():
+        raise RuntimeError(f"{dest} exists without a report; refusing to rerun the same seeds")
+    report = collect_split(
+        dest, seed=block["seed"], target=block["target"], max_attempts=block["max_attempts"],
+        max_wall_seconds=block["wall_seconds"], per_attempt_deadline=deadline,
+        exclude_layouts=exclude_layouts, cylinder=False, within_run=within_run)
+    report["output_dir"] = str(dest)
+    report["resumed"] = False
+    print(f"block {block['name']} {json.dumps({k: report[k] for k in ('accepted', 'attempts', 'complete')})}", flush=True)
+    return report
+
+
+def assemble_catalogs(sources, dest, seed, provenance, drop_conflicts=True):
+    dest = Path(dest)
+    dest.mkdir(parents=True, exist_ok=False)
+    rows, located = [], []
+    identities = []
+    for source in sources:
+        source = Path(source)
+        manifest_path = source / "manifest.json"
+        if not manifest_path.exists():
+            continue
+        identity = json.loads((source / "source_identity.json").read_text())["files_sha256"]
+        identities.append({"source": str(source), "files_sha256": identity})
+        manifest = json.loads(manifest_path.read_text())
+        for row in manifest["scenes"]:
+            copied = dict(row)
+            copied["provenance_source"] = provenance.get(str(source), provenance.get(source.name, "collected"))
+            rows.append(copied)
+            located.append((source / "scenes.h5", row["scene_id"], copied))
+    if drop_conflicts:
+        kept, rejected = partition_task_independent(rows)
+    else:
+        kept, rejected = list(rows), []
+    kept_ids = {id(row) for row in kept}
+    selected = [(h5_path, old_id, row) for (h5_path, old_id, row) in located if id(row) in kept_ids]
+    rejected_rows = [row for row in rows if id(row) not in kept_ids]
+    if len(selected) != len(kept) or len(rejected_rows) != len(rejected):
+        raise RuntimeError("assemble partition lost a scene")
+    with h5py.File(dest / "scenes.h5", "w") as out:
+        for index, (h5_path, old_id, row) in enumerate(selected):
+            scene_id = f"pickcube-{index:03d}"
+            with h5py.File(h5_path, "r") as src:
+                src.copy(old_id, out, scene_id)
+            row["source_scene_id"] = old_id
+            row["scene_id"] = scene_id
+    first = next(Path(source) for source in sources if (Path(source) / "source_identity.json").exists())
+    (dest / "source_identity.json").write_bytes((first / "source_identity.json").read_bytes())
+    (dest / "config.json").write_text(json.dumps({
+        "assembled_from": [str(source) for source in sources],
+        "generation_seed": seed,
+        "scene_count": len(selected),
+        "identities": identities,
+        "dedup": "task",
+    }, indent=2, sort_keys=True) + "\n")
+    from examples.baselines.constrain.pickcube_transport_detour import _write_manifest
+    _write_manifest(dest, [row for _h5, _old, row in selected], seed)
+    (dest / "rejected_layouts.json").write_text(json.dumps({
+        "count": len(rejected_rows),
+        "scenes": rejected_rows,
+    }, indent=2, sort_keys=True) + "\n")
+    return {"kept": len(selected), "rejected": len(rejected_rows)}
+
+
+def _stage_excludes(registration, extra_manifests=()):
+    rows = layouts_from_manifest(PRIOR_MANIFEST)
+    rows.extend(layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json"))
+    rows.extend(layouts_from_manifest(Path(RETAINED_SCENES) / "manifest.json"))
+    for path in extra_manifests:
+        if Path(path).exists():
+            rows.extend(layouts_from_manifest(path))
+    return rows
+
+
+def collect_expansion_stage(registration, stage_name, output_root, extra_manifests=(),
+                           spec_override=None, within_run=True, drop_conflicts=True):
+    spec = spec_override or registration["collection"][stage_name]
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    exclude = _stage_excludes(registration, extra_manifests)
+    started = time.monotonic()
+    reports = []
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    stop = threading.Event()
+
+    def _progress():
+        while not stop.wait(60):
+            for journal in output_root.rglob("attempts.jsonl"):
+                text = journal.read_text(errors="replace")
+                print(
+                    f"progress {journal.parent.name} attempts={text.count(chr(10))} "
+                    f"accepted={text.count(chr(34) + 'accepted' + chr(34) + ': true')}",
+                    flush=True)
+
+    progress = threading.Thread(target=_progress, daemon=True)
+    progress.start()
+    try:
+        with ThreadPoolExecutor(max_workers=int(spec["workers"])) as pool:
+            futures = [
+                pool.submit(
+                    _run_collection_block, block, output_root / "blocks", exclude,
+                    spec["per_attempt_deadline"], within_run)
+                for block in spec["blocks"]
+            ]
+            for future in futures:
+                reports.append(future.result())
+        sources = [Path(report["output_dir"]) for report in reports if (Path(report["output_dir"]) / "manifest.json").exists()]
+        assembled = output_root / "assembled"
+        assemble_report = {"kept": 0, "rejected": 0}
+        if sources and not assembled.exists():
+            assemble_report = assemble_catalogs(
+                sources, assembled, seed=spec["blocks"][0]["seed"], provenance={},
+                drop_conflicts=drop_conflicts)
+        elif assembled.exists():
+            assemble_report = {"kept": len(layouts_from_manifest(assembled / "manifest.json")), "rejected": None, "resumed": True}
+        attempts_used = sum(int(report.get("attempts") or 0) for report in reports)
+        deficit = int(spec["target"]) - int(assemble_report["kept"])
+        continuation_report = None
+        remaining = int(spec["max_attempts"]) - attempts_used
+        elapsed = time.monotonic() - started
+        if deficit > 0 and remaining > 0 and elapsed < float(spec["wall_seconds"]):
+            continuation = dict(spec["continuation"])
+            continuation["target"] = deficit
+            continuation["max_attempts"] = min(int(continuation["max_attempts"]), remaining)
+            continuation["wall_seconds"] = min(
+                float(continuation["wall_seconds"]), float(spec["wall_seconds"]) - elapsed)
+            if continuation["max_attempts"] >= 1 and continuation["wall_seconds"] > 0:
+                more_exclude = list(exclude)
+                if within_run and assembled.exists():
+                    more_exclude.extend(layouts_from_manifest(assembled / "manifest.json"))
+                continuation_report = _run_collection_block(
+                    continuation, output_root / "blocks", more_exclude, spec["per_attempt_deadline"], within_run)
+                if (Path(continuation_report["output_dir"]) / "manifest.json").exists():
+                    sources.append(Path(continuation_report["output_dir"]))
+                    reassembled = output_root / "assembled_final"
+                    if not reassembled.exists():
+                        assemble_report = assemble_catalogs(
+                            sources, reassembled, seed=continuation["seed"], provenance={},
+                            drop_conflicts=drop_conflicts)
+                        assembled = reassembled
+        kept = int(assemble_report["kept"])
+        audit_ok = all(report.get("restore_audit_ok", False) for report in reports if report.get("accepted"))
+        if continuation_report and continuation_report.get("accepted"):
+            audit_ok = audit_ok and bool(continuation_report.get("restore_audit_ok"))
+        report = {
+            "stage": stage_name, "target": spec["target"], "kept": kept,
+            "complete": kept == int(spec["target"]) and audit_ok,
+            "restore_audit_ok": audit_ok, "blocks": reports,
+            "continuation": continuation_report, "assemble": assemble_report,
+            "elapsed_seconds": time.monotonic() - started,
+            "catalog": str(assembled if assembled.exists() else ""),
+        }
+        _json_atomic(output_root / "stage_report.json", report)
+        return report
+    finally:
+        stop.set()
+        _kill_descendants()
+
+
+def scene_acceptance_checks(scene, group):
+    expert = scene["expert"]
+    actions = np.asarray(group["direct_actions"])
+    obs = np.asarray(group["direct_obs"])
+    contract = (
+        actions.ndim == 2 and actions.shape[1] == 7 and np.isfinite(actions).all()
+        and float(np.max(np.abs(actions))) <= 1.00001
+        and obs.ndim == 2 and obs.shape[1] == 45 and obs.shape[0] == len(actions) + 1
+        and np.isfinite(obs).all()
+    )
+    return {
+        "direct_native_success": bool(int(group.attrs["direct_native_success"])),
+        "direct_held": bool(int(group.attrs["direct_held_at_success"])),
+        "direct_transport_blocked": bool(expert.get("direct_transport_blocked")),
+        "obstacle_native_success": bool(expert.get("native_success")),
+        "obstacle_held": bool(expert.get("held_at_success")),
+        "no_obstacle_contact": expert.get("obstacle_collision") is False,
+        "no_obstacle_crossing": expert.get("obstacle_crossing") is False,
+        "join_continuous": bool((expert.get("join") or {}).get("continuous")),
+        "action_observation_contract": bool(contract),
+    }
+
+
+def _records_from_catalog(scene_dir, assign):
+    scene_dir = Path(scene_dir)
+    manifest = json.loads((scene_dir / "manifest.json").read_text())
+    records = []
+    with h5py.File(scene_dir / "scenes.h5", "r") as handle:
+        for index, scene in enumerate(manifest["scenes"]):
+            group = handle[scene["scene_id"]]
+            checks = scene_acceptance_checks(scene, group)
+            if not direct_candidate_accepted(checks):
+                raise ValueError(f"{scene['scene_id']} failed the full acceptance predicate")
+            if np.asarray(group["direct_truncated"]).any() or np.asarray(group["obstacle_truncated"]).any():
+                raise ValueError(f"{scene['scene_id']} is truncated")
+            layout = layout_view(scene)
+            provenance = {
+                "source": scene.get("provenance_source", "collected"),
+                "source_scene_id": scene.get("source_scene_id", scene["scene_id"]),
+                "seed": scene.get("seed"),
+            }
+            direct_id, obstacle_id = assign(index, scene)
+            direct = {
+                "kind": "direct", "episode_id": direct_id, "scene_id": scene["scene_id"],
+                "obs": np.asarray(group["direct_obs"]), "actions": np.asarray(group["direct_actions"]),
+                "terminated": np.asarray(group["direct_terminated"]),
+                "truncated": np.asarray(group["direct_truncated"]),
+                "native_success": True, "held_at_success": True,
+                "obstacle_collision": False, "obstacle_crossing": False,
+                "layout": layout, "provenance": provenance,
+            }
+            records.append(direct)
+            if obstacle_id is not None:
+                records.append({
+                    "kind": "obstacle", "episode_id": obstacle_id, "scene_id": scene["scene_id"],
+                    "obs": np.asarray(group["observations"]), "actions": np.asarray(group["expert_actions"]),
+                    "terminated": np.asarray(group["obstacle_terminated"]),
+                    "truncated": np.asarray(group["obstacle_truncated"]),
+                    "native_success": True, "held_at_success": True,
+                    "obstacle_collision": False, "obstacle_crossing": False,
+                    "layout": layout, "provenance": provenance,
+                })
+    return records
+
+
+def assert_retained_arrays(original_h5, records):
+    original_h5 = Path(original_h5)
+    before = sha256_file(original_h5)
+    with h5py.File(original_h5, "r") as handle:
+        for record in records:
+            if record["provenance"]["source"] != "retained_r2":
+                continue
+            group = handle[f"traj_{int(record['episode_id'])}"]
+            if not np.array_equal(group["obs"], np.asarray(record["obs"])) or not np.array_equal(
+                    group["actions"], np.asarray(record["actions"])):
+                raise ValueError(f"retained traj_{record['episode_id']} does not match the original demo")
+    if sha256_file(original_h5) != before:
+        raise RuntimeError("original demo file mutated")
+    return before
+
+
+def expansion_train_records(pair_dir, direct_dir, registration):
+    pair_manifest = json.loads((Path(pair_dir) / "manifest.json").read_text())
+    direct_manifest = json.loads((Path(direct_dir) / "manifest.json").read_text())
+    if len(pair_manifest["scenes"]) != 100 or len(direct_manifest["scenes"]) != 900:
+        raise ValueError("expansion catalogs are not 100 pairs and 900 direct")
+    retained_seeds = [scene["seed"] for scene in json.loads(Path(RETAINED_SCENES, "manifest.json").read_text())["scenes"]]
+    if [scene["seed"] for scene in pair_manifest["scenes"][:20]] != retained_seeds:
+        raise ValueError("pair catalog does not start with the original 20 seeds")
+    pair_records = _records_from_catalog(
+        pair_dir, lambda index, _scene: (index, 1000 + index))
+    for record in pair_records:
+        if int(record["episode_id"]) < 20 or 1000 <= int(record["episode_id"]) < 1020:
+            record["provenance"]["source"] = "retained_r2"
+        else:
+            record["provenance"]["source"] = "new_pair"
+    direct_records = _records_from_catalog(
+        direct_dir, lambda index, _scene: (100 + index, None))
+    for record in direct_records:
+        record["provenance"]["source"] = "additional_direct"
+    records = pair_records + direct_records
+    validate_expansion_ids(
+        [int(record["episode_id"]) for record in records if record["kind"] == "direct"],
+        [int(record["episode_id"]) for record in records if record["kind"] == "obstacle"])
+    return records
+
+
+def load_episode_directory(directory):
+    directory = Path(directory)
+    rows = []
+    for path in sorted(directory.glob("episode_*.json")):
+        rows.append(json.loads(path.read_text()))
+    if not rows:
+        raise ValueError(f"no episodes in {directory}")
+    return rows
+
+
+def metric_counts(rows):
+    evaluated = [row for row in rows if row.get("status") == "evaluated" and row.get("result")]
+    return {
+        "denominator": len(rows),
+        "evaluated": len(evaluated),
+        "runtime_errors": len(rows) - len(evaluated),
+        "task": sum(bool(row["result"]["native_success"]) for row in evaluated),
+        "safe": sum(bool(row["result"]["safe_success"]) for row in evaluated),
+        "contact": sum(bool(row["result"]["obstacle_contact"]) for row in evaluated),
+        "xy": sum(bool(row["result"]["xy_forbidden_crossing"]) for row in evaluated),
+    }
+
+
+def require_baseline_counts(rows, expected, denominator=30):
+    counts = metric_counts(rows)
+    if counts["denominator"] != denominator or counts["runtime_errors"] != 0:
+        raise ValueError("baseline denominator is not the frozen evaluated 30")
+    actual = {key: counts[key] for key in ("task", "safe", "contact", "xy")}
+    if actual != expected:
+        raise ValueError(f"baseline counts {actual} do not match frozen {expected}")
+    return counts
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "preregister", "collect-train", "collect-dev", "package", "train-base",
-        "train-constrain", "evaluate", "gate",
+        "preregister", "preregister-expansion", "collect-train", "collect-dev", "package",
+        "include-original", "collect-pairs", "collect-direct", "package-expansion",
+        "train-base", "train-constrain", "evaluate", "gate", "compare-baseline",
     ))
     parser.add_argument("--registration", type=Path, required=True)
     parser.add_argument("--version", default="r1")
@@ -973,7 +1701,43 @@ def main(argv=None):
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
+    if args.command == "preregister-expansion":
+        from examples.baselines.constrain.pickcube_transport_detour import freeze_source_identity
+        exp = args.registration.parent
+        stamp = exp.name.split("_pickcube")[0]
+        files = {
+            "retained_scenes_h5": f"{RETAINED_SCENES}/scenes.h5",
+            "retained_manifest": f"{RETAINED_SCENES}/manifest.json",
+            "retained_demos_h5": f"{RETAINED_DEMOS}/trajectory.h5",
+            "dev_manifest": f"{FROZEN_DEV_SCENES}/manifest.json",
+            "baseline_base_recovery_summary": f"{BASELINE_EXP}/paired/base_dp_recovery/summary.json",
+            "baseline_constrain_summary": f"{BASELINE_EXP}/paired/constrain_dp/summary.json",
+            "baseline_base_failed_summary": f"{BASELINE_EXP}/paired/base_dp/summary.json",
+        }
+        hashed = {key: {"path": path, "sha256": sha256_file(path)} for key, path in files.items()}
+        payload = build_expansion_preregistration(
+            args.version, {
+                "exp": str(exp),
+                "retained_scenes": str(exp / "retained_scenes"),
+                "pair_scenes": str(exp / "pair_scenes"),
+                "direct_scenes": str(exp / "direct_scenes"),
+                "demos": f"demos/PickCube-transport-detour/{stamp}_expansion",
+                "ckpt_base": f"outputs/ckpt/{stamp}_pickcube_expansion_base",
+                "ckpt_constrain": f"outputs/ckpt/{stamp}_pickcube_expansion_constrain",
+                "train_base": str(exp / "train_base"),
+                "train_constrain": str(exp / "train_constrain"),
+                "paired": str(exp / "paired"),
+                "dev_scenes": FROZEN_DEV_SCENES,
+            }, reason=args.reason, prior_version=args.prior_version or BASELINE_EXP, baseline_files=hashed)
+        payload["source_identity"] = freeze_pilot_identity()
+        payload["generator_identity"] = freeze_source_identity()
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
     registration = load_preregistration(args.registration)
+    if registration.get("kind") == "authorized_data_expansion" and args.command in (
+            "collect-train", "collect-dev", "package"):
+        raise SystemExit("expansion registration does not use the small-pilot collector")
     if args.command == "collect-train":
         spec = registration["collection"]
         if (args.seed != spec["train_seed"] or args.max_attempts != spec["train_max_attempts"]
@@ -1021,16 +1785,93 @@ def main(argv=None):
         dest = package_records(records, args.demo_dir, registration)
         print(dest, flush=True)
         return dest
+    if args.command == "include-original":
+        expected = ((registration.get("baseline") or {}).get("files") or {}).get("retained_scenes_h5", {}).get("sha256")
+        report = copy_retained_catalog(
+            RETAINED_SCENES, registration["paths"]["retained_scenes"], expected_h5_sha=expected)
+        print(json.dumps(report, indent=2), flush=True)
+        return report
+    if args.command == "collect-pairs":
+        assert_frozen_source_identity(registration, freeze_pilot_identity())
+        if not (Path(registration["paths"]["retained_scenes"]) / "manifest.json").exists():
+            raise SystemExit("include-original before collect-pairs")
+        report = collect_expansion_stage(registration, "pairs", registration["paths"]["pair_scenes"])
+        _require_new_generator(registration, report)
+        if report["complete"]:
+            report["merge"] = finalize_pair_catalog(registration, report)
+        print(json.dumps({key: report[key] for key in ("stage", "target", "kept", "complete", "catalog") if key in report}), flush=True)
+        if not report["complete"]:
+            raise SystemExit("pair collection incomplete")
+        return report
+    if args.command == "collect-direct":
+        addendum = load_expansion_addendum(args.registration.parent / "collection_budget_addendum.json")
+        identity = resolve_running_identity(registration, freeze_pilot_identity())
+        if not (Path(registration["paths"]["pair_scenes"]) / "merged" / "manifest.json").exists():
+            raise SystemExit("direct collection requires the merged pair catalog")
+        report = collect_expansion_stage(
+            registration, "direct", registration["paths"]["direct_scenes"],
+            spec_override=direct_spec_from_addendum(addendum), within_run=False, drop_conflicts=False)
+        _require_new_generator(registration, report)
+        report["running_identity"] = identity
+        report["within_run_mutual_exclusion"] = False
+        _json_atomic(Path(registration["paths"]["direct_scenes"]) / "stage_report.json", report)
+        print(json.dumps({key: report[key] for key in ("stage", "target", "kept", "complete", "catalog", "within_run_mutual_exclusion")}), flush=True)
+        if not report["complete"]:
+            raise SystemExit("direct collection incomplete")
+        return report
+    if args.command == "package-expansion":
+        pair_dir = Path(registration["paths"]["pair_scenes"]) / "merged"
+        direct_report = json.loads((Path(registration["paths"]["direct_scenes"]) / "stage_report.json").read_text())
+        records = expansion_train_records(pair_dir, direct_report["catalog"], registration)
+        original_sha = assert_retained_arrays(f"{RETAINED_DEMOS}/trajectory.h5", records)
+        if sha256_file(f"{RETAINED_SCENES}/scenes.h5") != registration["baseline"]["files"]["retained_scenes_h5"]["sha256"]:
+            raise RuntimeError("retained source scenes mutated")
+        layouts = [record["layout"] for record in records if record["kind"] == "direct"]
+        dev = layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json")
+        prior = layouts_from_manifest(PRIOR_MANIFEST)
+        addendum_path = Path(registration["paths"]["exp"]) / "collection_budget_addendum.json"
+        addendum = load_expansion_addendum(addendum_path) if addendum_path.exists() else None
+        if addendum and addendum["direct_rule"]["within_run_mutual_exclusion"] is False:
+            assert_external_independence(layouts, dev, prior)
+            within_train_conflicts = len(partition_task_independent(layouts)[1])
+        elif not split_is_independent(layouts, dev, prior, cylinder=False):
+            raise SystemExit("expansion train layouts are not independent of dev30 or prior")
+        else:
+            within_train_conflicts = 0
+        dest = package_records(records, registration["paths"]["demos"], registration)
+        manifest = json.loads((dest / "trajectory.json").read_text())
+        manifest["expansion"] = {
+            "original_demo_sha256": original_sha,
+            "selection": registration["collection_selection"],
+            "formal_performance_claim": False,
+            "within_train_task_conflicts": within_train_conflicts,
+            "within_run_mutual_exclusion": False if addendum else True,
+            "addendum": str(addendum_path) if addendum else None,
+        }
+        (dest / "trajectory.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+        _json_atomic(Path(registration["paths"]["exp"]) / "train_layouts.json", {"scenes": [
+            record["layout"] for record in records if record["kind"] == "direct"
+        ]})
+        print(dest, flush=True)
+        return dest
     if args.command == "train-base":
+        if registration.get("kind") == "authorized_data_expansion":
+            resolve_running_identity(registration, freeze_pilot_identity())
         return train_base(
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.run_dir, args.checkpoint_dir, registration, args.device)
     if args.command == "train-constrain":
+        if registration.get("kind") == "authorized_data_expansion":
+            resolve_running_identity(registration, freeze_pilot_identity())
         return train_constrain(
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.base_checkpoint, args.run_dir, args.checkpoint_dir, registration, args.device)
     if args.command == "evaluate":
         from examples.baselines.constrain.pickcube_transport_detour import TransportDetourSceneSet
+        if registration.get("kind") == "authorized_data_expansion":
+            resolve_running_identity(registration, freeze_pilot_identity())
+            if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
+                raise SystemExit("expansion eval must use the frozen dev scenes")
         catalog = TransportDetourSceneSet(args.scene_dir)
         expected_dev = registration["dev_scene_count"]
         count_addendum = args.registration.parent / "dev_count_addendum.json"
@@ -1055,11 +1896,20 @@ def main(argv=None):
             return any(layouts_conflict(rows[i], rows[j], cylinder=cylinder)
                        for i in range(len(rows)) for j in range(i + 1, len(rows)))
 
+        addendum_path = args.registration.parent / "collection_budget_addendum.json"
+        allow_within_train = (
+            registration.get("kind") == "authorized_data_expansion" and addendum_path.exists()
+            and load_expansion_addendum(addendum_path)["direct_rule"]["within_run_mutual_exclusion"] is False
+        )
         if train_layouts and (
-            _internal(train_layouts) or _internal(dev_layouts) or _hit(train_layouts, dev_layouts)
-            or _hit(train_layouts, prior) or _hit(dev_layouts, prior)
+            (not allow_within_train and _internal(train_layouts)) or _internal(dev_layouts)
+            or _hit(train_layouts, dev_layouts) or _hit(train_layouts, prior) or _hit(dev_layouts, prior)
         ):
             raise ValueError("dev scenes are not independent of train or prior source")
+        checkpoints = {
+            "base_dp": args.base_checkpoint,
+            "constrain_dp": args.constrain_checkpoint,
+        }
         adapters = {
             "base_dp": PilotBaseAdapter(args.base_checkpoint, registration, args.device),
             "constrain_dp": PilotConstrainAdapter(args.constrain_checkpoint, registration, args.device),
@@ -1073,6 +1923,7 @@ def main(argv=None):
             rows = []
             policy_dir = args.output_dir / name
             policy_dir.mkdir()
+            checkpoint_sha = adapter.metadata["checkpoint_sha256"]
             for index in range(len(catalog)):
                 previous = signal.signal(signal.SIGALRM, _episode_deadline)
                 signal.setitimer(signal.ITIMER_REAL, episode_wall)
@@ -1085,17 +1936,23 @@ def main(argv=None):
                 finally:
                     signal.setitimer(signal.ITIMER_REAL, 0)
                     signal.signal(signal.SIGALRM, previous)
+                row["checkpoint_sha256"] = checkpoint_sha
                 _json_atomic(policy_dir / f"episode_{index:03d}.json", row)
                 rows.append(row)
                 print(f"{name} scene {index} {row.get('status')}", flush=True)
             summaries[name] = summarize_pilot(rows, len(catalog))
             stored[name] = rows
             _json_atomic(policy_dir / "summary.json", summaries[name])
+            index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints[name]))
+            index["source_identity"] = freeze_pilot_identity()
+            _json_atomic(policy_dir / "index.json", index)
         paired = {
             "policies": summaries,
             "paired_counts": {
                 "task_success": paired_counts(stored["base_dp"], stored["constrain_dp"], "native_success"),
                 "safe_success": paired_counts(stored["base_dp"], stored["constrain_dp"], "safe_success"),
+                "obstacle_contact": paired_counts(stored["base_dp"], stored["constrain_dp"], "obstacle_contact"),
+                "xy_forbidden_crossing": paired_counts(stored["base_dp"], stored["constrain_dp"], "xy_forbidden_crossing"),
             },
             "ticket01_comparison": {
                 "base_dp": compare_ticket01([row.get("first_contact") for row in stored["base_dp"]]),
@@ -1114,7 +1971,96 @@ def main(argv=None):
         _json_atomic(args.output_dir / "gate.json", decision)
         print(json.dumps(decision, indent=2), flush=True)
         return decision
+    if args.command == "compare-baseline":
+        report = compare_expansion_eval(registration, args.output_dir)
+        _json_atomic(args.output_dir / "expansion_comparison.json", report)
+        print(json.dumps({
+            "expansion_counts": report["expansion_counts"],
+            "transitions": report["transitions"],
+            "formal_performance_claim": False,
+        }, indent=2), flush=True)
+        return report
     raise ValueError(args.command)
+
+
+def finalize_pair_catalog(registration, stage_report):
+    retained = Path(registration["paths"]["retained_scenes"])
+    new_catalog = Path(stage_report["catalog"])
+    merged = Path(registration["paths"]["pair_scenes"]) / "merged"
+    if merged.exists():
+        kept = len(json.loads((merged / "manifest.json").read_text())["scenes"])
+        return {"kept": kept, "rejected": 0, "resumed": True}
+    report = assemble_catalogs(
+        [retained, new_catalog], merged, seed=registration["collection"]["pairs"]["blocks"][0]["seed"],
+        provenance={
+            str(retained): "retained_r2", retained.name: "retained_r2",
+            str(new_catalog): "new_pair", new_catalog.name: "new_pair",
+        })
+    if report["kept"] != 100 or report["rejected"] != 0:
+        raise RuntimeError(f"pair merge is not 100 independent scenes: {report}")
+    return report
+
+
+def _require_new_generator(registration, report):
+    expected = (registration.get("generator_identity") or {}).get("files_sha256")
+    if not expected:
+        raise RuntimeError("preregistration has no generator identity")
+    for block in report.get("blocks") or []:
+        identity_path = Path(block["output_dir"]) / "source_identity.json"
+        if not identity_path.exists():
+            continue
+        actual = json.loads(identity_path.read_text())["files_sha256"]
+        if actual != expected:
+            raise RuntimeError("collection generator identity does not match preregistration")
+    continuation = report.get("continuation") or {}
+    if continuation.get("output_dir"):
+        identity_path = Path(continuation["output_dir"]) / "source_identity.json"
+        if identity_path.exists():
+            actual = json.loads(identity_path.read_text())["files_sha256"]
+            if actual != expected:
+                raise RuntimeError("continuation generator identity does not match preregistration")
+
+
+def compare_expansion_eval(registration, expansion_dir):
+    baseline = registration["baseline"]
+    root = Path(baseline["exp"]) / "paired"
+    failed = load_episode_directory(root / baseline["failed_base_attempt"])
+    base = load_episode_directory(root / baseline["authoritative_base"])
+    constrain = load_episode_directory(root / baseline["authoritative_constrain"])
+    require_baseline_counts(base, baseline["base_counts"])
+    require_baseline_counts(constrain, baseline["constrain_counts"])
+    fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
+    expansion_dir = Path(expansion_dir)
+    expansion_rows = {
+        "base_dp": load_episode_directory(expansion_dir / "base_dp"),
+        "constrain_dp": load_episode_directory(expansion_dir / "constrain_dp"),
+    }
+    authoritative = {"base_dp": base, "constrain_dp": constrain}
+    transitions = {}
+    for name, rows in expansion_rows.items():
+        errors = [row.get("scene_id") for row in rows if row.get("status") != "evaluated"]
+        if errors:
+            transitions[name] = {"runtime_error_scene_ids": errors, "transitions": None}
+        else:
+            transitions[name] = {
+                "runtime_error_scene_ids": [],
+                "transitions": expansion_transitions(authoritative[name], rows, fields),
+            }
+    return {
+        "denominator": 30,
+        "formal_performance_claim": False,
+        "attribution": "overall data expansion; direct and obstacle were enlarged together",
+        "failed_base_attempt": separate_failed_attempts(failed, base),
+        "baseline_counts": {"base_dp": metric_counts(base), "constrain_dp": metric_counts(constrain)},
+        "expansion_counts": {name: metric_counts(rows) for name, rows in expansion_rows.items()},
+        "transitions": transitions,
+        "mechanisms": {
+            "baseline_base": compare_ticket01([row.get("first_contact") for row in base]),
+            "baseline_constrain": compare_ticket01([row.get("first_contact") for row in constrain]),
+            "expansion_base": compare_ticket01([row.get("first_contact") for row in expansion_rows["base_dp"]]),
+            "expansion_constrain": compare_ticket01([row.get("first_contact") for row in expansion_rows["constrain_dp"]]),
+        },
+    }
 
 
 if __name__ == "__main__":

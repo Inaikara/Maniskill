@@ -11,12 +11,22 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     LAYOUT_TOLERANCE_M,
     TRAIN_OBSTACLE_COUNT,
     PilotTrajectoryDataset,
+    assert_frozen_source_identity,
+    build_episode_index,
+    build_expansion_preregistration,
     build_preregistration,
+    dataset_coverage,
     decide_gate,
+    direct_candidate_accepted,
+    expansion_id_plan,
+    expansion_transitions,
     layouts_conflict,
     load_preregistration,
     package_records,
+    partition_task_independent,
+    separate_failed_attempts,
     split_is_independent,
+    validate_expansion_ids,
     write_preregistration,
 )
 from examples.baselines.constrain.pickcube_transport_detour import (
@@ -236,3 +246,188 @@ def test_generate_rejects_a_duplicate_layout_before_ingest(tmp_path):
     assert report["accepted"] == 0
     assert report["failures"].get("layout_duplicate") == 1
     assert not (tmp_path / "out" / "scenes.h5").exists()
+
+
+def test_expansion_preregistration_freezes_counts_reuse_and_full_acceptance():
+    payload = build_expansion_preregistration(
+        version="20261024_expansion",
+        paths={"exp": "outputs/exp/x"},
+        reason="user authorized one PickCube data-expansion round",
+        prior_version="outputs/exp/20261023_235744_pickcube_learning_pilot_r2",
+    )
+    assert payload["kind"] == "authorized_data_expansion"
+    assert payload["train_direct_count"] == 1000
+    assert payload["train_obstacle_count"] == 100
+    assert payload["obstacle_plan_cap"] == 100
+    assert payload["selected_direct_ids"] == list(range(1000))
+    assert payload["selected_obstacle_ids"] == list(range(1000, 1100))
+    assert payload["dev_scene_count"] == 30
+    assert payload["collection"]["dev_collected"] is False
+    selection = payload["collection_selection"]
+    assert selection["retained_direct_ids"] == list(range(20))
+    assert selection["retained_obstacle_ids"] == list(range(1000, 1020))
+    assert selection["new_pair_count"] == 80
+    assert selection["additional_direct_count"] == 900
+    assert selection["additional_direct_obstacle_packaged"] is False
+    assert selection["additional_direct_obstacle_execution"] == "retained_as_acceptance_predicate"
+    assert "distribution" in selection["obstacle_execution_not_skipped_because"]
+    assert payload["layout_dedup"]["mode"] == "task"
+    assert payload["layout_dedup"]["cylinder_proximity_is_conflict"] is False
+    assert payload["training"]["total_iters"] == 30000
+    assert payload["training"]["batch_size"] == 1024
+    assert payload["training"]["lr"] == 1e-4
+    assert payload["training"]["seed"] == 1
+    assert payload["gate"]["task_success_rate_gte"] == 0.90
+    assert payload["gate"]["safe_success_rate_gte"] == 0.85
+    assert payload["gate"]["contact_rate_lte"] == 0.10
+    assert payload["gate"]["xy_crossing_rate_lte"] == 0.10
+    assert payload["gate"]["formal_performance_claim"] is False
+    assert payload["baseline"]["base_counts"] == {"task": 6, "safe": 0, "contact": 30, "xy": 21}
+    assert payload["baseline"]["constrain_counts"] == {"task": 11, "safe": 7, "contact": 21, "xy": 14}
+    assert payload["baseline"]["authoritative_base"] == "base_dp_recovery"
+    assert payload["baseline"]["failed_base_is_not_authoritative"] is True
+    assert payload["collection"]["pairs"]["workers"] == 2
+    assert payload["collection"]["direct"]["workers"] == 4
+    assert payload["collection"]["pairs"]["max_attempts"] == 400
+    assert payload["collection"]["direct"]["max_attempts"] == 3600
+    assert payload["collection"]["direct"]["wall_seconds"] > 0
+    assert payload["collection"]["direct"]["per_attempt_deadline"] == 150
+    with pytest.raises(ValueError):
+        build_expansion_preregistration(
+            version="x", paths={}, reason="", prior_version="prior")
+
+
+def test_direct_candidate_keeps_the_pair_acceptance_predicate():
+    checks = {
+        "direct_native_success": True,
+        "direct_held": True,
+        "direct_transport_blocked": True,
+        "obstacle_native_success": True,
+        "obstacle_held": True,
+        "no_obstacle_contact": True,
+        "no_obstacle_crossing": True,
+        "join_continuous": True,
+        "action_observation_contract": True,
+    }
+    assert direct_candidate_accepted(checks)
+    blocked = dict(checks, direct_transport_blocked=False)
+    assert not direct_candidate_accepted(blocked)
+    assert not direct_candidate_accepted({})
+
+
+def test_expansion_ids_include_original_20_and_refuse_extra_obstacle():
+    plan = expansion_id_plan()
+    assert plan["direct"] == list(range(1000))
+    assert plan["obstacle"] == list(range(1000, 1100))
+    assert set(range(20)).issubset(plan["direct"])
+    assert set(range(1000, 1020)).issubset(plan["obstacle"])
+    validate_expansion_ids(plan["direct"], plan["obstacle"])
+    with pytest.raises(ValueError, match="original"):
+        validate_expansion_ids(list(range(1, 1001)), plan["obstacle"])
+    with pytest.raises(ValueError, match="100"):
+        validate_expansion_ids(plan["direct"], list(range(1000, 1300)))
+
+
+def test_partition_uses_task_identity_and_keeps_nearby_cylinders():
+    distinct = [
+        _layout(1, (0.0, 0.0), (0.2, 0.0), (0.1, 0.0)),
+        _layout(2, (0.08, 0.05), (0.16, -0.08), (0.11, 0.01)),
+    ]
+    kept, rejected = partition_task_independent(distinct)
+    assert len(kept) == 2 and rejected == []
+    clash = [
+        _layout(1, (0.0, 0.0), (0.2, 0.0), (0.1, 0.0)),
+        _layout(3, (0.01, 0.0), (0.21, 0.0), (0.4, 0.4)),
+    ]
+    kept, rejected = partition_task_independent(clash)
+    assert len(kept) == 1 and len(rejected) == 1
+
+
+def test_expansion_transitions_match_scene_ids_and_separate_failed_attempts():
+    baseline = [
+        {"scene_id": "pickcube-000", "status": "evaluated", "result": {
+            "native_success": False, "safe_success": False,
+            "obstacle_contact": True, "xy_forbidden_crossing": True}},
+        {"scene_id": "pickcube-001", "status": "evaluated", "result": {
+            "native_success": True, "safe_success": False,
+            "obstacle_contact": True, "xy_forbidden_crossing": False}},
+    ]
+    expansion = [
+        {"scene_id": "pickcube-001", "status": "evaluated", "result": {
+            "native_success": True, "safe_success": True,
+            "obstacle_contact": False, "xy_forbidden_crossing": False}},
+        {"scene_id": "pickcube-000", "status": "evaluated", "result": {
+            "native_success": True, "safe_success": False,
+            "obstacle_contact": False, "xy_forbidden_crossing": True}},
+    ]
+    report = expansion_transitions(baseline, expansion, ("native_success", "safe_success",
+                                                         "obstacle_contact", "xy_forbidden_crossing"))
+    assert report["matched_scene_ids"] == ["pickcube-000", "pickcube-001"]
+    assert report["native_success"] == {"improved": 1, "regressed": 0, "both": 1, "neither": 0}
+    assert report["safe_success"]["improved"] == 1
+    assert report["obstacle_contact"] == {"cleared": 2, "introduced": 0, "both": 0, "neither": 0}
+    assert report["xy_forbidden_crossing"] == {"cleared": 0, "introduced": 0, "both": 1, "neither": 1}
+    failed = [{"scene_id": "pickcube-000", "status": "runtime_error"}]
+    separated = separate_failed_attempts(failed, baseline)
+    assert separated["failed_attempt_errors"] == 1
+    assert separated["failed_attempt_is_authoritative"] is False
+    assert separated["recovery_authoritative"] is True
+    assert separated["recovery_evaluated"] == 2
+
+
+def test_episode_index_stores_the_checkpoint_sha():
+    rows = [{"scene_index": 0, "scene_id": "pickcube-000", "status": "evaluated",
+             "checkpoint_sha256": "abc"}]
+    index = build_episode_index(rows, "abc", checkpoint="outputs/ckpt/x/final.pt")
+    assert index["checkpoint_sha256"] == "abc"
+    assert index["episodes"][0]["checkpoint_sha256"] == "abc"
+    assert index["checkpoint"] == "outputs/ckpt/x/final.pt"
+    with pytest.raises(ValueError, match="checkpoint"):
+        build_episode_index(rows, "def", checkpoint="outputs/ckpt/x/final.pt")
+
+
+def test_dataset_coverage_uses_the_frozen_update_budget():
+    coverage = dataset_coverage(windows=2048, episodes=1000, updates=30000, batch_size=1024)
+    assert coverage["samples_drawn"] == 30000 * 1024
+    assert coverage["epochs"] == (30000 * 1024) / 2048
+    assert coverage["updates"] == 30000
+    with pytest.raises(ValueError):
+        dataset_coverage(windows=100, episodes=1, updates=30000, batch_size=1024)
+
+
+def test_expansion_addendum_keeps_counts_and_acceptance_and_refuses_a_rule_change(tmp_path):
+    from examples.baselines.constrain.pickcube_learning_pilot import (
+        ADDENDUM_DOES_NOT_CHANGE, load_expansion_addendum,
+    )
+
+    payload = {
+        "reason": "measured_yield_below_preregistered_attempt_budget",
+        "does_not_change": list(ADDENDUM_DOES_NOT_CHANGE),
+        "scene_contract_unchanged": True,
+        "formal_performance_claim": False,
+        "direct_rule": {
+            "within_run_mutual_exclusion": False,
+            "acceptance_predicate": "full_run_attempt",
+            "obstacle_execution": "retained_as_acceptance_predicate",
+            "obstacle_packaged": False,
+            "target": 900,
+            "external_excludes": ["ticket03", "dev30", "retained20"],
+            "exclude_new_pairs": False,
+            "workers": 4,
+            "per_attempt_deadline": 150,
+        },
+    }
+    path = tmp_path / "collection_budget_addendum.json"
+    path.write_text(json.dumps(payload))
+    assert load_expansion_addendum(path)["direct_rule"]["target"] == 900
+    payload["direct_rule"]["target"] = 300
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="counts"):
+        load_expansion_addendum(path)
+
+
+def test_source_identity_mismatch_is_not_masked():
+    registration = {"source_identity": {"files_sha256": "frozen"}}
+    assert assert_frozen_source_identity(registration, {"files_sha256": "frozen"})["files_sha256"] == "frozen"
+    with pytest.raises(RuntimeError, match="source identity"):
+        assert_frozen_source_identity(registration, {"files_sha256": "changed"})
