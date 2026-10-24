@@ -142,6 +142,14 @@ Also retained:
   `270ecc8712aef405f94cfdf14c6ad5f7cc1e30f4a7faf9d1d696a0185da45100`.
   Gate `fb768c089f124780eda1a477fbe5db26544d161b7faf9822f06b3032aa854391`.
   Comparison `3864d18c94ad775b18dfd2e5a0093df7ccae1ae7f342be574f6e79ac7612fbb0`.
+  Coverage-writer fix validation, not a rerun:
+  `outputs/exp/20261024_185754_placesphere_coverage_writer_fix/`.
+  It does not replace this experiment or change its bytes. Experiment source
+  `63d17eb3889b92b3638a42ee84ae3ada765b3dcf9b013307f3e4bba0d222d844` stays the
+  preregistration identity. New writer identity
+  `c370f36b3c1bb1d3ceb87fe6db200c754c0cf934d7cbe91fac566c6850c1b655` is not
+  retroactive. Validation
+  `2a59194181b48870889492aae53424523b5eca99958ece386fc3e166d65aec61`.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or

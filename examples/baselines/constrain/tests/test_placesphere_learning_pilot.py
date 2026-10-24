@@ -1,5 +1,6 @@
 """Seams for the PlaceSphere transport-detour learnability pilot."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from examples.baselines.constrain.placesphere_learning_pilot import (
     task_duplicate_report,
     trajectory_has_release_retreat_settle,
     validate_expansion_ids,
+    write_coverage,
     write_preregistration,
     assert_external_independence,
     assert_retained_arrays,
@@ -582,3 +584,171 @@ def test_baseline_counts_must_match_the_frozen_rows():
     assert counts["task"] == 0
     with pytest.raises(ValueError, match="baseline"):
         require_baseline_counts(rows, {"task": 1, "safe": 0, "contact": 1, "xy": 1}, denominator=1)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+EXPANSION_EXP = REPO_ROOT / "outputs/exp/20261024_155244_placesphere_data_expansion"
+
+
+def _file_sha256(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _expansion_registration():
+    registration = json.loads((EXPANSION_EXP / "preregistration.json").read_text())
+    registration["paths"] = dict(registration["paths"])
+    registration["paths"]["demos"] = str((REPO_ROOT / registration["paths"]["demos"]).resolve())
+    return registration
+
+
+def _run_dir_from(source, dest):
+    dest.mkdir()
+    (dest / "run_config.json").write_bytes(Path(source).read_bytes())
+    return dest
+
+
+def _nested_registration(demo_dir, episode_ids, updates=8, batch_size=4):
+    return {
+        "selected_direct_ids": [],
+        "selected_obstacle_ids": list(episode_ids),
+        "obstacle_plan_cap": 100,
+        "training": {"total_iters": updates, "batch_size": batch_size},
+        "paths": {"demos": str(demo_dir)},
+    }
+
+
+def _nested_config(demo_dir, episode_ids, *, episodes=None, windows=None, updates=8, batch_size=4):
+    registration = _nested_registration(demo_dir, episode_ids, updates, batch_size)
+    identity = {
+        "selected_class": "obstacle",
+        "episodes": len(episode_ids) if episodes is None else episodes,
+        "selected_episode_ids": list(episode_ids),
+        "h5_sha256": _file_sha256(Path(demo_dir) / "trajectory.h5"),
+        "manifest_sha256": _file_sha256(Path(demo_dir) / "trajectory.json"),
+    }
+    if windows is not None:
+        identity["windows"] = windows
+    return {
+        "model": {"input_dim": 7},
+        "base_weights": {"updates": updates},
+        "data_identity": identity,
+        "training": {"total_iters": updates, "batch_size": batch_size},
+        "selected_weights": "final EMA fixed before training; no task evaluation",
+    }, registration
+
+
+def _write_nested(tmp_path, config):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(json.dumps(config))
+    return run_dir
+
+
+def test_write_coverage_counts_nested_obstacle_windows_not_episode_ids(tmp_path):
+    demo_dir = tmp_path / "demos"
+    episode_ids = [1000]
+    registration = _nested_registration(demo_dir, episode_ids)
+    package_records([_record("obstacle", 1000, length=20)], demo_dir, registration)
+    config, registration = _nested_config(demo_dir, episode_ids)
+    assert "windows" not in config
+    assert "windows" not in config["data_identity"]
+    coverage = write_coverage(_write_nested(tmp_path, config), registration)
+    assert coverage["windows"] == 19
+    assert coverage["episodes"] == 1
+    assert coverage["epochs"] == (8 * 4) / 19
+    assert coverage["formal_performance_claim"] is False
+    assert coverage["generalization_claim"] is False
+    written = json.loads((tmp_path / "run" / "coverage.json").read_text())
+    assert written["windows"] == 19
+
+
+def test_write_coverage_reports_retained_constrain_windows(tmp_path):
+    source = EXPANSION_EXP / "train_constrain" / "run_config.json"
+    historical = {
+        "config": source.read_bytes(),
+        "coverage": (source.parent / "coverage.json").read_bytes(),
+        "summary": (source.parent / "train_summary.json").read_bytes(),
+    }
+    config = json.loads(historical["config"])
+    assert "windows" not in config
+    assert "windows" not in config["data_identity"]
+    assert config["data_identity"]["episodes"] == 100
+    assert config["data_identity"]["selected_class"] == "obstacle"
+    coverage = write_coverage(_run_dir_from(source, tmp_path / "run"), _expansion_registration())
+    assert coverage["windows"] == 13533
+    assert coverage["episodes"] == 100
+    assert coverage["updates"] == 30000
+    assert coverage["batch_size"] == 1024
+    assert coverage["samples_drawn"] == 30000 * 1024
+    assert coverage["epochs"] == (30000 * 1024) / 13533
+    assert f"{coverage['epochs']:.2f}" == "2270.01"
+    assert coverage["formal_performance_claim"] is False
+    assert source.read_bytes() == historical["config"]
+    assert (source.parent / "coverage.json").read_bytes() == historical["coverage"]
+    assert (source.parent / "train_summary.json").read_bytes() == historical["summary"]
+
+
+def test_write_coverage_keeps_base_top_level_window_count(tmp_path):
+    source = EXPANSION_EXP / "train_base" / "run_config.json"
+    before = source.read_bytes()
+    before_coverage = (source.parent / "coverage.json").read_bytes()
+    coverage = write_coverage(_run_dir_from(source, tmp_path / "run"), _expansion_registration())
+    assert coverage["windows"] == 113188
+    assert coverage["episodes"] == 1000
+    assert coverage["epochs"] == (30000 * 1024) / 113188
+    assert f"{coverage['epochs']:.2f}" == "271.41"
+    assert source.read_bytes() == before
+    assert (source.parent / "coverage.json").read_bytes() == before_coverage
+
+
+def test_write_coverage_rejects_missing_zero_and_nonpositive_counts(tmp_path):
+    demo_dir = tmp_path / "demos"
+    episode_ids = [1000]
+    package_records([_record("obstacle", 1000, length=20)], demo_dir, _nested_registration(demo_dir, episode_ids))
+    config, registration = _nested_config(demo_dir, episode_ids)
+
+    zero_episodes = json.loads(json.dumps(config))
+    zero_episodes["data_identity"]["episodes"] = 0
+    run_dir = _write_nested(tmp_path / "zero-episodes", zero_episodes)
+    with pytest.raises(ValueError, match="episodes"):
+        write_coverage(run_dir, registration)
+    assert not (run_dir / "coverage.json").exists()
+
+    zero_windows = json.loads(json.dumps(config))
+    zero_windows["data_identity"]["windows"] = 0
+    with pytest.raises(ValueError, match="windows"):
+        write_coverage(_write_nested(tmp_path / "zero-windows", zero_windows), registration)
+
+    negative = json.loads(json.dumps(config))
+    negative["data_identity"]["windows"] = -19
+    with pytest.raises(ValueError, match="windows"):
+        write_coverage(_write_nested(tmp_path / "negative-windows", negative), registration)
+
+    fractional = json.loads(json.dumps(config))
+    fractional["data_identity"]["windows"] = 19.5
+    with pytest.raises(ValueError, match="windows"):
+        write_coverage(_write_nested(tmp_path / "fractional-windows", fractional), registration)
+
+    missing_demos = json.loads(json.dumps(config))
+    blind = json.loads(json.dumps(registration))
+    blind["paths"] = {"demos": str(tmp_path / "absent")}
+    with pytest.raises(ValueError, match="windows|demo"):
+        write_coverage(_write_nested(tmp_path / "missing-demos", missing_demos), blind)
+
+    mismatched = json.loads(json.dumps(config))
+    mismatched["data_identity"]["h5_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="hash"):
+        write_coverage(_write_nested(tmp_path / "bad-hash", mismatched), registration)
+
+    budget = json.loads(json.dumps(registration))
+    budget["training"] = {"total_iters": 1, "batch_size": 4}
+    with pytest.raises(ValueError, match="budget"):
+        write_coverage(_write_nested(tmp_path / "bad-budget", config), budget)
+
+    base = {
+        "windows": 0,
+        "episodes": 1,
+        "training": {"total_iters": 8, "batch_size": 4},
+    }
+    with pytest.raises(ValueError, match="windows"):
+        write_coverage(_write_nested(tmp_path / "base-zero", base), registration)

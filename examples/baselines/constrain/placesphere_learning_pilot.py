@@ -2015,11 +2015,81 @@ def stage_spec_from_addendum(registration, stage_name, addendum):
     return override
 
 
+def _positive_count(value, name):
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _agreed_budget(config, registration):
+    recorded = config.get("training")
+    frozen = (registration or {}).get("training")
+    if not isinstance(recorded, dict) or not isinstance(frozen, dict):
+        raise ValueError("run config is missing the training budget")
+    if any(key not in recorded or key not in frozen for key in ("total_iters", "batch_size")):
+        raise ValueError("run config is missing the training budget")
+    updates = _positive_count(frozen["total_iters"], "updates")
+    batch_size = _positive_count(frozen["batch_size"], "batch_size")
+    if (_positive_count(recorded["total_iters"], "updates") != updates
+            or _positive_count(recorded["batch_size"], "batch_size") != batch_size):
+        raise ValueError("run config training budget does not match the registration")
+    return updates, batch_size
+
+
+def _measured_constrain_windows(identity, registration, episodes):
+    if identity.get("selected_class") != "obstacle":
+        raise ValueError("constrain coverage selected_class is not obstacle")
+    ids = identity.get("selected_episode_ids")
+    if not isinstance(ids, list) or len(ids) != episodes or any(type(item) is not int for item in ids):
+        raise ValueError("constrain episodes do not match selected_episode_ids")
+    expected = (registration or {}).get("selected_obstacle_ids")
+    if list(expected or []) != ids:
+        raise ValueError("registration obstacle ids do not match the constrain run config")
+    demo_dir = ((registration or {}).get("paths") or {}).get("demos")
+    if not demo_dir:
+        raise ValueError("registration is missing the demo path needed to count windows")
+    h5_path = Path(demo_dir) / "trajectory.h5"
+    manifest_path = Path(demo_dir) / "trajectory.json"
+    if not h5_path.is_file() or not manifest_path.is_file():
+        raise ValueError("constrain run config is missing windows and the demo files needed to count them")
+    if sha256_file(h5_path) != identity.get("h5_sha256"):
+        raise ValueError("demo h5 hash does not match the constrain run config")
+    if sha256_file(manifest_path) != identity.get("manifest_sha256"):
+        raise ValueError("demo manifest hash does not match the constrain run config")
+    dataset = PilotTrajectoryDataset(h5_path, manifest_path, "obstacle", ids)
+    windows = len(dataset)
+    if windows <= 0:
+        raise ValueError("windows must be a positive integer")
+    if len(dataset.trajectory_ids) != episodes:
+        raise ValueError("measured constrain episodes do not match the run config")
+    return windows
+
+
+def _coverage_counts(config, registration):
+    identity = config.get("data_identity")
+    nested = isinstance(identity, dict)
+    if nested and ("windows" in config or "episodes" in config):
+        raise ValueError("run config mixes top-level and nested coverage fields")
+    if "windows" in config or "episodes" in config:
+        if "windows" not in config or "episodes" not in config:
+            raise ValueError("base run config is missing windows or episodes")
+        return _positive_count(config["windows"], "windows"), _positive_count(config["episodes"], "episodes")
+    if not nested or "episodes" not in identity:
+        raise ValueError("constrain run config is missing windows")
+    episodes = _positive_count(identity["episodes"], "episodes")
+    if "windows" in identity:
+        ids = identity.get("selected_episode_ids")
+        if not isinstance(ids, list) or len(ids) != episodes:
+            raise ValueError("constrain episodes do not match selected_episode_ids")
+        return _positive_count(identity["windows"], "windows"), episodes
+    return _measured_constrain_windows(identity, registration, episodes), episodes
+
+
 def write_coverage(run_dir, registration):
     config = json.loads((Path(run_dir) / "run_config.json").read_text())
-    coverage = dataset_coverage(
-        config["windows"], config["episodes"],
-        registration["training"]["total_iters"], registration["training"]["batch_size"])
+    windows, episodes = _coverage_counts(config, registration)
+    updates, batch_size = _agreed_budget(config, registration)
+    coverage = dataset_coverage(windows, episodes, updates, batch_size)
     coverage["formal_performance_claim"] = False
     coverage["generalization_claim"] = False
     _json_atomic(Path(run_dir) / "coverage.json", coverage)
