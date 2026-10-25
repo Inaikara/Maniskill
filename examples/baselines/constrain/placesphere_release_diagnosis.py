@@ -439,7 +439,23 @@ def _load_expert_actions(scene_set, index):
         return np.asarray(handle[row["scene_id"]]["expert_actions"])
 
 
-def instrument_episode(adapter, scene_set, index, device, max_steps=200):
+def _recorded_window(window, action):
+    from examples.baselines.constrain.placesphere_coverage import decision_window
+
+    record = decision_window(np.asarray(window, dtype=np.float64), np.asarray(action, dtype=np.float64).reshape(1, 7), 0)
+    payload = {}
+    for key, value in record.items():
+        payload[key] = value.tolist() if isinstance(value, np.ndarray) else value
+    payload["decision_window"] = {
+        "frames": payload["frames"],
+        "policy_condition_shape": payload["policy_condition_shape"],
+        "latest_state_index": payload["latest_state_index"],
+        "future_frames_used": payload["future_frames_used"],
+    }
+    return payload
+
+
+def instrument_episode(adapter, scene_set, index, device, max_steps=200, record_windows=False):
     import torch
     from examples.baselines.constrain.diagnose_placesphere_failure import (
         _obstacle_contact_points, _terminal_pose, classify_contact_phase, diagnostic_lifted,
@@ -499,7 +515,9 @@ def instrument_episode(adapter, scene_set, index, device, max_steps=200):
                 "pre_map_pose_outside_cap": bool(np.max(np.abs(raw[:, :6])) > POSE_ACTION_CAP + 1e-6),
                 "semantics": [action_semantics(row) for row in native],
             })
+            policy_window = history.copy()
             for queue_index, action in enumerate(native[:min(8, max_steps - elapsed)]):
+                execution_window = history.copy()
                 _obs, _, step_terminated, step_truncated, info = env.step(action[None])
                 elapsed += 1
                 terminated = bool(terminated or step_terminated)
@@ -535,6 +553,9 @@ def instrument_episode(adapter, scene_set, index, device, max_steps=200):
                         "surface": surface, "entities": [item["entity"] for item in hits],
                         "contact_unreadable": hit is None,
                     }
+                    if record_windows:
+                        first_contact["policy_window"] = _recorded_window(policy_window, action)
+                        first_contact["execution_window"] = _recorded_window(execution_window, action)
                     contact_geometry = {
                         "bodies": _body_records(base, center, radius, top_z),
                         "vertices": _vertex_records(env, center, radius, top_z),
@@ -549,6 +570,9 @@ def instrument_episode(adapter, scene_set, index, device, max_steps=200):
                         "bodies": _body_records(base, center, radius, top_z),
                         "on_bin": _bool_info(info, "is_obj_on_bin"),
                     }
+                    if record_windows:
+                        release_geometry["policy_window"] = _recorded_window(policy_window, action)
+                        release_geometry["execution_window"] = _recorded_window(execution_window, action)
                 obs = np.asarray(_obs.detach().cpu() if torch.is_tensor(_obs) else _obs, dtype=np.float32).reshape(-1)
                 history = np.concatenate((history[1:], obs[None]), axis=0)
                 termination = classify_termination(step_success, step_terminated, step_truncated, elapsed, max_steps)

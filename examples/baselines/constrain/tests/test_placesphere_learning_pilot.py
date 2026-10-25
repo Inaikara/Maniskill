@@ -48,6 +48,9 @@ from examples.baselines.constrain.placesphere_learning_pilot import (
     assert_continuations_packaged_or_journaled,
     assert_external_independence,
     assert_retained_arrays,
+    enforce_runtime_source_identity,
+    evaluation_identity_match,
+    main,
 )
 from examples.baselines.constrain.placesphere_learning_pilot import PilotTrajectoryDataset
 
@@ -977,3 +980,92 @@ def test_write_coverage_records_the_new_demo_hash_and_does_not_write_a_gate(tmp_
     })
     assert decision["decision"] == "pause"
     assert decision["failures"] == ["task_success_rate", "safe_success_rate", "obstacle_contact_rate"]
+
+
+PHASE_PILOT_SHA = "7dc7efd118a371fa4e7234c6ab0040dcda463ce874bf21f9c85657e76f37c1e5"
+PHASE_DIAGNOSIS_SHA = "d254ef22563a54d92f0c243fc2eaa557a3b142b1fed69f45d3bf7fa12c92e22e"
+
+
+def test_phase_balance_match_uses_pilot_list_not_diagnosis_source():
+    registration = {
+        "kind": "authorized_phase_balance",
+        "pilot_identity": {"files_sha256": PHASE_PILOT_SHA, "files": {"pilot.py": "a"}},
+        "source_identity": {"files_sha256": PHASE_DIAGNOSIS_SHA, "files": {"diagnosis.py": "b"}},
+    }
+    before = json.dumps(registration, sort_keys=True)
+    match = evaluation_identity_match(
+        registration,
+        {"files_sha256": PHASE_PILOT_SHA},
+        {"files_sha256": PHASE_DIAGNOSIS_SHA},
+    )
+    assert json.dumps(registration, sort_keys=True) == before
+    assert match["matches"] is True
+    assert match["pilot_compared_to"] == "pilot_identity"
+    assert match["labeler_compared_to"] == "source_identity"
+    assert match["compared_pilot_to_diagnosis_source"] is False
+    assert match["historical_identities_rewritten"] is False
+    mismatch = evaluation_identity_match(
+        registration, {"files_sha256": "changed"}, {"files_sha256": PHASE_DIAGNOSIS_SHA})
+    assert mismatch["matches"] is False
+
+
+def test_phase_balance_runtime_hash_is_enforced_when_tracked_flag_is_false(tmp_path):
+    registration = {
+        "kind": "authorized_phase_balance",
+        "tracked": False,
+        "pilot_identity": {"files_sha256": "pilot", "files": {"pilot.py": "a"}},
+        "source_identity": {"files_sha256": "diagnosis", "files": {"diagnosis.py": "b"}},
+        "paths": {"exp": str(tmp_path)},
+    }
+    matched = enforce_runtime_source_identity(
+        registration, {"files_sha256": "pilot"}, {"files_sha256": "diagnosis"}, "train-constrain")
+    assert matched["skipped"] is False
+    assert matched["matched"] == "pilot_and_labeler"
+    assert matched["command"] == "train-constrain"
+    with pytest.raises(RuntimeError, match="pilot identity"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "changed"}, {"files_sha256": "diagnosis"}, "evaluate")
+    registration["skip_identity"] = True
+    with pytest.raises(RuntimeError, match="skipped"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "pilot"}, {"files_sha256": "diagnosis"}, "evaluate")
+
+
+def test_coverage_registration_checks_both_file_lists_and_cannot_skip(tmp_path):
+    registration = {
+        "kind": "authorized_coverage",
+        "tracked": False,
+        "pilot_identity": {"files_sha256": "pilot", "files": {"a.py": "1"}},
+        "labeler_identity": {"files_sha256": "labeler", "files": {"b.py": "2"}},
+        "paths": {"exp": str(tmp_path)},
+    }
+    matched = enforce_runtime_source_identity(
+        registration, {"files_sha256": "pilot"}, {"files_sha256": "labeler"}, "record-coverage")
+    assert matched["skipped"] is False
+    assert matched["matched"] == "pilot_and_labeler"
+    assert matched["pilot_compared_to"] == "pilot_identity"
+    assert matched["labeler_compared_to"] == "labeler_identity"
+    with pytest.raises(RuntimeError, match="labeler identity"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "pilot"}, {"files_sha256": "other"}, "index-coverage")
+    registration["exempt"] = True
+    with pytest.raises(RuntimeError, match="skipped"):
+        enforce_runtime_source_identity(
+            registration, {"files_sha256": "pilot"}, {"files_sha256": "labeler"}, "train-constrain")
+
+
+def test_train_constrain_refuses_phase_balance_identity_mismatch(tmp_path):
+    payload = build_preregistration(1, "phase", {"exp": str(tmp_path)})
+    payload["kind"] = "authorized_phase_balance"
+    payload["tracked"] = False
+    payload["pilot_identity"] = {"files_sha256": "not-the-running-tree", "files": {"pilot.py": "a"}}
+    payload["source_identity"] = {"files_sha256": "diagnosis", "files": {"diagnosis.py": "b"}}
+    payload["paths"]["exp"] = str(tmp_path)
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    with pytest.raises(RuntimeError, match="pilot identity"):
+        main([
+            "train-constrain", "--registration", str(path),
+            "--demo-dir", str(tmp_path), "--base-checkpoint", str(tmp_path / "missing.pt"),
+            "--run-dir", str(tmp_path / "run"), "--checkpoint-dir", str(tmp_path / "ckpt"),
+        ])

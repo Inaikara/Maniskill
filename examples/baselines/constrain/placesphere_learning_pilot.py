@@ -1158,6 +1158,90 @@ def freeze_pilot_identity(repo_root=None):
     }
 
 
+def evaluation_identity_match(registration, pilot_current, labeler_current=None):
+    pilot_field = "pilot_identity" if registration.get("pilot_identity") else "source_identity"
+    pilot_expected = (registration.get(pilot_field) or {}).get("files_sha256")
+    if registration.get("labeler_identity"):
+        labeler_field = "labeler_identity"
+    elif registration.get("kind") == "authorized_phase_balance" and registration.get("pilot_identity"):
+        labeler_field = "source_identity"
+    else:
+        labeler_field = None
+    labeler_expected = None if labeler_field is None else (registration.get(labeler_field) or {}).get("files_sha256")
+    pilot_ok = pilot_current.get("files_sha256") == pilot_expected
+    labeler_ok = True if labeler_expected is None else (labeler_current or {}).get("files_sha256") == labeler_expected
+    return {
+        "matches": bool(pilot_ok and labeler_ok),
+        "pilot_matches": bool(pilot_ok),
+        "labeler_matches": bool(labeler_ok),
+        "pilot_compared_to": pilot_field,
+        "labeler_compared_to": labeler_field,
+        "compared_pilot_to_diagnosis_source": False,
+        "historical_identities_rewritten": False,
+    }
+
+
+def enforce_runtime_source_identity(registration, current_pilot, current_labeler, command):
+    if registration.get("skip_identity") is True or registration.get("exempt") is True:
+        raise RuntimeError("source identity cannot be skipped")
+    match = evaluation_identity_match(registration, current_pilot, current_labeler)
+    if not match["pilot_matches"]:
+        raise RuntimeError("pilot identity does not match preregistration")
+    if match["labeler_compared_to"] is not None and not match["labeler_matches"]:
+        raise RuntimeError("labeler identity does not match preregistration")
+    split = bool(registration.get("pilot_identity") and (
+        registration.get("labeler_identity") or registration.get("kind") == "authorized_phase_balance"))
+    return {
+        "skipped": False,
+        "matched": "pilot_and_labeler" if split else "preregistration",
+        "command": command,
+        "kind": registration.get("kind"),
+        "pilot_compared_to": match["pilot_compared_to"],
+        "labeler_compared_to": match["labeler_compared_to"],
+        "tracked_flag_skipped": False,
+    }
+
+
+def hash_named_files(files, repo_root=None):
+    repo = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[3]
+    if not files:
+        raise RuntimeError("labeler file list is missing")
+    hashed = {rel: hashlib.sha256((repo / rel).read_bytes()).hexdigest() for rel in files}
+    return {
+        "basis": "named file bytes, historical list unchanged",
+        "git_head_is_code_identity": False,
+        "files": hashed,
+        "files_sha256": hashlib.sha256(
+            json.dumps(hashed, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+    }
+
+
+def current_labeler_identity(registration, repo_root=None):
+    if registration.get("labeler_identity"):
+        from examples.baselines.constrain.placesphere_coverage import freeze_labeler_identity
+        return freeze_labeler_identity(repo_root)
+    if registration.get("kind") == "authorized_phase_balance":
+        return hash_named_files((registration.get("source_identity") or {}).get("files") or {}, repo_root)
+    return {}
+
+
+def runtime_identity_gate(registration, command):
+    if registration.get("skip_identity") is True or registration.get("exempt") is True:
+        raise RuntimeError("source identity cannot be skipped")
+    if registration.get("kind") in ("authorized_data_expansion", "authorized_combined_slice"):
+        resolved = resolve_running_identity(registration, freeze_pilot_identity())
+        resolved["command"] = command
+        resolved["skipped"] = False
+        resolved["tracked_flag_skipped"] = False
+        return resolved
+    pilot = freeze_pilot_identity()
+    expected = (registration.get("pilot_identity") or registration.get("source_identity") or {}).get("files_sha256")
+    if not expected or pilot.get("files_sha256") != expected:
+        raise RuntimeError("pilot identity does not match preregistration")
+    labeler = current_labeler_identity(registration)
+    return enforce_runtime_source_identity(registration, pilot, labeler, command)
+
+
 EXPANSION_DIRECT_COUNT = 1000
 EXPANSION_OBSTACLE_COUNT = 100
 RETAINED_COUNT = 20
@@ -2956,6 +3040,7 @@ def main(argv=None):
         print(args.registration, flush=True)
         return payload
     registration = load_preregistration(args.registration)
+    running_identity = runtime_identity_gate(registration, args.command)
     tracked = registration.get("kind") in ("authorized_data_expansion", "authorized_combined_slice")
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
             "collect-train", "collect-dev", "package"):
@@ -3115,9 +3200,7 @@ def main(argv=None):
         )
         from examples.baselines.constrain.placesphere_transport_detour import TransportDetourSceneSet
         expansion = tracked
-        running_identity = None
         if expansion:
-            running_identity = resolve_running_identity(registration, freeze_pilot_identity())
             if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
                 raise SystemExit("expansion eval must use the frozen dev scenes")
             if not args.exclude_manifest:
@@ -3176,7 +3259,9 @@ def main(argv=None):
             index["source_identity"] = freeze_pilot_identity()
             _json_atomic(policy_dir / "index.json", index)
         evaluation_source = freeze_pilot_identity()
-        registered = registration.get("source_identity") or {}
+        labeler_source = current_labeler_identity(registration)
+        identity_match = evaluation_identity_match(registration, evaluation_source, labeler_source)
+        registered = registration.get("pilot_identity") or registration.get("source_identity") or {}
         paired = {
             "policies": summaries,
             "paired_counts": {
@@ -3193,7 +3278,8 @@ def main(argv=None):
             },
             "evaluation_source": evaluation_source,
             "preregistration_source_files_sha256": registered.get("files_sha256"),
-            "evaluation_source_matches_preregistration": evaluation_source.get("files_sha256") == registered.get("files_sha256"),
+            "evaluation_source_matches_preregistration": identity_match["matches"],
+            "identity_match": identity_match,
             "running_identity": running_identity,
             "formal_performance_claim": False,
             "generalization_claim": False,

@@ -243,6 +243,25 @@ Also retained:
   `9c1a630dd7f4e29c09463fe29e49652f1daf08298aa0eb90fc8542723032432b`.
   Gate `1f0dd11faa7893d7e8b55f388e753da988cffa43902e932cc8d4cbee7f6ca493`.
   Comparison `e2444277f5d755d0b4a230e0631ac31828c25ed4541f8c97d71ba0b518f36b75`.
+- `outputs/exp/20261025_131040_placesphere_coverage/`: Ticket 06 offline
+  coverage of the six frozen `70cf5e6f` contacts against the existing 300
+  obstacle windows only. No new demos, no training, no dev labels in the
+  reference set. Prior diagnosis traces had no full observation window, so
+  the frozen 30 were replayed; contact steps matched 1/90, 3/146, 5/113,
+  9/146, 19/92, 21/162. Train windows 40104 on episodes 1000..1299:
+  approach 16899, transport 17952, held_near_bin 4953, release 300.
+  Execution-state rule would collect; policy-window rule would not
+  (5/6 vs 3/6 outside). Nearest expert actions are still closed-grip
+  negative delta-z. Not a reward or formal result. Preregistration
+  `c4d7df16feae6bc5d9bf208f040769b8a7c2b4df6f99b888a0945e7351335480`.
+  Coverage `566542a0146eda49df58420cf0fec371e5215cb0e57dcdbaaff5d9e78f281089`.
+  Pilot identity `f238ddc29af22eab6daee9adf9e74d3d2132b0d2e2694e23530fc3cfcc2043e3`.
+  Labeler identity `c53a60af0f3f698ffc2e497a6acba202d94e01f3dcbe53866c5612d6e328a6ce`.
+- `outputs/exp/20261025_131730_placesphere_recovery_probe/`: one train-scene
+  feasibility probe, not a packaged demo. A 2 cm lateral offset at the
+  closed-grip container approach still commands a closed descent to the same
+  target. Collection of this expert is not a recovery dataset. Probe
+  `49facecbf0e06a09f75e970830f4401d017cf6a26b39b491232d99410985397e`.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
