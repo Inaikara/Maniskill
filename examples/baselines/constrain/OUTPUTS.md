@@ -164,7 +164,17 @@ Also retained:
     `4e1be76719c9c22388db372c464cb3f222a4d1665343ef15c6c975ecfc3cfeca`.
     Gate `4f93ef34f0e6670246c7b5fd46c90e60fe9f54c31ab54dda9545093e22c42081`.
     Comparison `a8f213c327731fa2688b533c396a96c20f8b41b3932e5985ec6b2f6d67aad0c5`.
- - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
+   - `outputs/exp/20261025_081913_pickcube_closed_loop_diagnosis/`: Ticket 05
+     closed-loop diagnosis of the 15 exposure contact episodes. No collection,
+     no training, and no stride trial. It does not replace the 90k eval or
+     admit Ticket 07. Checkpoint unchanged
+     `8a5de3ac5f8c4caba5617c30605bc17201f6beb4e4ea139fe0b8cfa8bb6ed5db`.
+     Preregistration
+     `68e84320a807face3b1a1f25a3da6246137e656725330627399913eda95679b6`.
+     Index `diagnosis/index.json`
+     `46a00982c870c3af71b897f7dedd20285849088d6cdf2bfc307a4dfc6ccf30ae`.
+     Gate remains pause. Staleness was not isolated (0/15 queued overshoot).
+  - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
   learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
   `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.
   No second round was started. Weights:
