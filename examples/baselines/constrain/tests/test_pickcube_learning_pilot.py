@@ -15,7 +15,18 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     PilotTrajectoryDataset,
     obstacle_proximity_weight,
     weighted_epsilon_mse,
+    build_window_gap_index,
+    build_window_gap_preregistration,
+    classify_window_gap,
+    draw_sha256,
+    fixed_window_draw,
+    longer_budget_start,
+    materialize_window,
+    rotation_gap,
+    assert_exposure_budget,
     assert_frozen_source_identity,
+    build_exposure_preregistration,
+    expected_base_updates,
     assert_obstacle_increment_independence,
     base_replay_reusable,
     build_episode_index,
@@ -28,6 +39,7 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     enforce_runtime_source_identity,
     load_obstacle_increment_addendum,
     expansion_id_plan,
+    freeze_pilot_identity,
     expansion_transitions,
     layouts_conflict,
     layouts_from_episodes,
@@ -646,3 +658,186 @@ def test_retained_expansion_records_copy_arrays_and_do_not_drop_direct_duplicate
     assert quality["direct_unique_claim"] is False
     assert quality["within_direct_task_conflicts"] == 1
     assert np.array_equal(records[0]["obs"], np.full((3, 45), 0, np.float32))
+
+
+def _gap_metrics(train, dev, shared, near, far):
+    return {
+        "train_epsilon": train, "dev_epsilon": dev, "shared_epsilon": shared,
+        "near_rotation_mae": near, "far_rotation_mae": far,
+    }
+
+
+def test_fixed_window_draw_repeats_noise_and_timesteps():
+    left_noise, left_steps = fixed_window_draw(4, 2026102501)
+    right_noise, right_steps = fixed_window_draw(4, 2026102501)
+    other_noise, other_steps = fixed_window_draw(4, 2026102502)
+    assert torch.equal(left_noise, right_noise)
+    assert torch.equal(left_steps, right_steps)
+    assert draw_sha256(left_noise, left_steps) == draw_sha256(right_noise, right_steps)
+    assert not torch.equal(left_noise, other_noise) or not torch.equal(left_steps, other_steps)
+    assert int(left_steps.min()) >= 0 and int(left_steps.max()) <= 99
+    assert tuple(left_noise.shape) == (4, 16, 7)
+
+
+def test_materialize_window_pads_edges_with_the_training_rule():
+    obs = torch.arange(4 * 45, dtype=torch.float32).reshape(4, 45)
+    actions = torch.arange(3 * 7, dtype=torch.float32).reshape(3, 7)
+    obs_seq, act_seq = materialize_window(obs, actions, -1, 15)
+    assert tuple(obs_seq.shape) == (2, 45)
+    assert tuple(act_seq.shape) == (16, 7)
+    assert torch.equal(obs_seq[0], obs[0]) and torch.equal(obs_seq[1], obs[0])
+    assert torch.equal(act_seq[0], actions[0]) and torch.equal(act_seq[1], actions[0])
+    assert torch.equal(act_seq[2], actions[1])
+    assert torch.equal(act_seq[-1, :6], torch.zeros(6))
+    assert act_seq[-1, 6] == actions[-1, 6]
+
+
+def test_rotation_gap_averages_the_executed_slice_inside_12cm():
+    predicted = torch.zeros(2, 8, 7)
+    expert = torch.zeros(2, 8, 7)
+    predicted[0, 0, 3] = 0.08
+    predicted[1, :, 3:6] = 0.02
+    report = rotation_gap(predicted, expert, torch.tensor([0.10, 0.20]), near_m=0.12)
+    assert report["near_count"] == 1 and report["far_count"] == 1
+    assert report["near_rotation_mae"] == pytest.approx(0.08 / 24)
+    assert report["far_rotation_mae"] == pytest.approx(0.02)
+
+
+def test_remaining_gap_is_longer_budget_and_a_closed_gap_is_closed_loop():
+    remaining = classify_window_gap(
+        _gap_metrics(0.0025, 0.0100, 0.0025, 0.090, 0.005),
+        _gap_metrics(0.0024, 0.0090, 0.0024, 0.090, 0.005),
+    )
+    assert remaining["next"] == "longer_budget"
+    assert remaining["underfit"] is True
+    assert remaining["gap_closed"] is False
+    closed = classify_window_gap(
+        _gap_metrics(0.0020, 0.0030, 0.0021, 0.015, 0.005),
+        _gap_metrics(0.0022, 0.0090, 0.0022, 0.090, 0.005),
+    )
+    assert closed["next"] == "closed_loop"
+    assert closed["underfit"] is False
+    worse_fit = classify_window_gap(
+        _gap_metrics(0.0020, 0.0030, 0.0040, 0.010, 0.005),
+        _gap_metrics(0.0020, 0.0080, 0.0020, 0.090, 0.005),
+    )
+    assert worse_fit["underfit"] is True and worse_fit["next"] == "longer_budget"
+    with pytest.raises(ValueError, match="missing"):
+        classify_window_gap(_gap_metrics(0.002, 0.003, 0.002, None, 0.005), _gap_metrics(0.002, 0.003, 0.002, 0.01, 0.005))
+
+
+def test_exhausted_cosine_is_scratch_not_a_zero_lr_resume():
+    exhausted = longer_budget_start({"_last_lr": [0.0], "last_epoch": 30000}, True)
+    assert exhausted["start"] == "scratch"
+    assert exhausted["chosen_updates"] == 90000
+    assert "0" in exhausted["reason"]
+    assert longer_budget_start({"_last_lr": [1e-5]}, True)["start"] == "resume"
+    assert longer_budget_start({"_last_lr": [1e-4]}, False)["start"] == "scratch"
+
+
+def test_window_gap_index_requires_both_checkpoints_and_the_same_draw():
+    protocol = {"sample_seed": 2026102501}
+    identity = {"files_sha256": "abc"}
+    decision = {"rule": "pre-registered window gap", "next": "longer_budget"}
+    entry = {"epsilon": 0.002, "draw_sha256": "draw", "sample_sha256": "sample"}
+    splits = {
+        "shared100": {"draw_sha256": "draw", "sample_sha256": "sample", "obstacle100": dict(entry), "obstacle300": dict(entry)},
+        "dev30": {"draw_sha256": "devdraw", "sample_sha256": "devsample", "obstacle100": dict(entry, draw_sha256="devdraw"), "obstacle300": dict(entry, draw_sha256="devdraw")},
+        "train300": {"draw_sha256": "train", "sample_sha256": "trainsample", "obstacle300": dict(entry)},
+    }
+    index = build_window_gap_index(splits, protocol, identity, decision)
+    assert index["prose_only"] is False
+    assert index["source_identity"]["files_sha256"] == "abc"
+    broken = json.loads(json.dumps(splits))
+    broken["shared100"]["obstacle300"]["draw_sha256"] = "other"
+    with pytest.raises(ValueError, match="timesteps"):
+        build_window_gap_index(broken, protocol, identity, decision)
+    missing = json.loads(json.dumps(splits))
+    del missing["dev30"]["obstacle100"]
+    with pytest.raises(ValueError, match="obstacle100"):
+        build_window_gap_index(missing, protocol, identity, decision)
+
+
+def test_window_gap_preregistration_freezes_both_checkpoints_and_forbids_training():
+    payload = build_window_gap_preregistration("window-gap", {"exp": "outputs/exp/x", "diagnosis": "outputs/exp/x/diagnosis"})
+    assert payload["kind"] == "authorized_window_gap_diagnosis"
+    assert payload["no_collection"] is True and payload["no_training"] is True
+    assert payload["formal_performance_claim"] is False
+    assert payload["checkpoints"]["obstacle100"]["sha256"] == "9ca9022aee201ae7f9ffe702d941863d6ffd4e4c6056f220fcdb2d2fe23c830d"
+    assert payload["checkpoints"]["obstacle300"]["sha256"] == "bd7757122b75ad0bcc9cc5bd88a4b5174d48dfc520d1c8459332eea157732801"
+    assert payload["protocol"]["sample_seed"] == 2026102501
+    assert payload["protocol"]["diffusion_timesteps"] == 100
+    assert payload["base_checkpoint_sha256"] == "dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d"
+
+
+def test_diagnose_window_gap_refuses_identity_mismatch_before_checkpoints(tmp_path):
+    payload = build_window_gap_preregistration("window-gap", {"exp": str(tmp_path), "diagnosis": str(tmp_path / "diagnosis")})
+    payload["source_identity"] = {"files_sha256": "not-the-running-tree"}
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    with pytest.raises(RuntimeError, match="source identity"):
+        main(["diagnose-window-gap", "--registration", str(path), "--device", "cpu"])
+    assert not (tmp_path / "diagnosis").exists()
+
+
+def _diagnosis_index(next_slice="longer_budget", start="scratch", last_lr=0.0):
+    return {
+        "decision": {
+            "rule": "pre-registered window gap",
+            "next": next_slice,
+            "underfit": next_slice == "longer_budget",
+            "gap_closed": False,
+        },
+        "resume_decision": {"start": start, "last_lr": last_lr, "chosen_updates": 90000},
+    }
+
+
+def test_expected_base_updates_stay_30000_when_the_constrain_budget_is_90000():
+    assert expected_base_updates({"training": {"total_iters": 30000}}) == 30000
+    assert expected_base_updates({"training": {"total_iters": 90000, "base_updates": 30000}}) == 30000
+
+
+def test_exposure_preregistration_is_scratch_90000_from_the_underfit_diagnosis():
+    payload = build_exposure_preregistration(
+        "exposure", {"exp": "outputs/exp/x"}, _diagnosis_index(), "outputs/exp/diag/index.json")
+    assert payload["kind"] == "authorized_training_optimization"
+    assert payload["changed_factor"] == "constrain_updates"
+    assert payload["training"]["total_iters"] == 90000
+    assert payload["training"]["base_updates"] == 30000
+    assert payload["training"]["start"] == "scratch"
+    assert payload["training"]["loss_weight"] is None
+    assert payload["training"]["proximity_weight"] == "off"
+    assert payload["training"]["base_retrained"] is False
+    assert payload["no_collection"] is True
+    assert payload["base_checkpoint_sha256"] == "dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d"
+    assert payload["comparison"]["obstacle100"] == {"task": 26, "safe": 13, "contact": 17, "xy": 3}
+    assert payload["comparison"]["obstacle300"] == {"task": 25, "safe": 12, "contact": 18, "xy": 2}
+    assert payload["selected_obstacle_ids"] == list(range(1000, 1300))
+    with pytest.raises(ValueError, match="underfit"):
+        build_exposure_preregistration("x", {"exp": "y"}, _diagnosis_index("closed_loop"), "diag")
+    with pytest.raises(ValueError, match="scratch"):
+        build_exposure_preregistration("x", {"exp": "y"}, _diagnosis_index(start="resume", last_lr=1e-5), "diag")
+
+
+def test_exposure_train_refuses_resume_before_any_update(tmp_path):
+    payload = build_preregistration(1, "exposure", {"exp": str(tmp_path)})
+    payload["kind"] = "authorized_training_optimization"
+    payload["changed_factor"] = "constrain_updates"
+    payload["source_identity"] = freeze_pilot_identity()
+    payload["training"]["total_iters"] = 90000
+    payload["training"]["base_updates"] = 30000
+    payload["training"]["start"] = "resume"
+    payload["training"]["loss_weight"] = None
+    payload["train_direct_count"] = 1000
+    payload["train_obstacle_count"] = 300
+    payload["obstacle_plan_cap"] = 300
+    payload["selected_direct_ids"] = list(range(1000))
+    payload["selected_obstacle_ids"] = list(range(1000, 1300))
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    with pytest.raises(RuntimeError, match="scratch"):
+        main([
+            "train-constrain", "--registration", str(path),
+            "--demo-dir", str(tmp_path), "--base-checkpoint", str(tmp_path / "missing.pt"),
+            "--run-dir", str(tmp_path / "run"), "--checkpoint-dir", str(tmp_path / "ckpt"),
+        ])

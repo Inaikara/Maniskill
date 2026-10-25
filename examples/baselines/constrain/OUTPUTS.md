@@ -142,8 +142,28 @@ Also retained:
    26/13/17/3 is 25/12/18/2 task/safe/contact/XY. Not a formal performance
    result. Preregistration
    `3d37d27ac2145733c091094a5dd5245e9a237294abaebef6c37c1d29e28060a9`.
-   Gate `296088e5e0b7118952d7dc020ca603dcfe98eeda3a1b0dc7cba430c56828e71a`.
-   Comparison `f20d5c182c3d7079ad50e2411857670d96c77e6d7ee3b6b0e6f1474b7ee5d92e`.
+    Gate `296088e5e0b7118952d7dc020ca603dcfe98eeda3a1b0dc7cba430c56828e71a`.
+    Comparison `f20d5c182c3d7079ad50e2411857670d96c77e6d7ee3b6b0e6f1474b7ee5d92e`.
+  - `outputs/exp/20261025_062737_pickcube_window_gap/`: Ticket 05 expert-window
+    diagnosis of the frozen 100 and 300 EMAs. No collection and no training.
+    Same sample seeds and diffusion timesteps. Index
+    `diagnosis/index.json`
+    `35d9525892d3a2fc36dc75b905f0675b09669a82195867a8ff4d7edca44f8ed8`.
+    Preregistration
+    `db3a3479632664205578ab8f6eba00ed4bc0053f751ecb5d96c31661f2019bfb`.
+    It does not replace the 300 trial or admit Ticket 07.
+  - `outputs/exp/20261025_065159_pickcube_exposure90000/`: Ticket 05 authorized
+    scratch 90,000-update trial from the matched expansion Base EMA. The saved
+    30,000-step cosine last learning rate was 0, so resume was not used.
+    Unweighted epsilon; proximity stayed off. No new demos. Gate is **pause**.
+    It does not replace the 100 or 300 runs or admit Ticket 07. Weight:
+    `outputs/ckpt/20261025_065159_pickcube_exposure90000_constrain/final.pt`
+    `8a5de3ac5f8c4caba5617c30605bc17201f6beb4e4ea139fe0b8cfa8bb6ed5db`.
+    Same-scene result versus expansion Constrain 26/13/17/3 is 27/15/15/3
+    task/safe/contact/XY. Not a formal performance result. Preregistration
+    `4e1be76719c9c22388db372c464cb3f222a4d1665343ef15c6c975ecfc3cfeca`.
+    Gate `4f93ef34f0e6670246c7b5fd46c90e60fe9f54c31ab54dda9545093e22c42081`.
+    Comparison `a8f213c327731fa2688b533c396a96c20f8b41b3932e5985ec6b2f6d67aad0c5`.
  - `outputs/exp/20261024_014459_placesphere_learning_pilot/`: Ticket 06
   learnability pilot, round 1 of 2. Gate is **pause**. It does not replace
   `20261022_213500_placesphere_paired_eval/` and does not admit Ticket 08.

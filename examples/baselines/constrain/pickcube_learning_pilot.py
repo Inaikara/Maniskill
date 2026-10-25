@@ -303,6 +303,22 @@ def _window_slices(length, obs_horizon=2, pred_horizon=16):
     return [(start, start + pred_horizon) for start in range(-before, length - pred_horizon + after)]
 
 
+def materialize_window(obs, actions, start, end):
+    """Training window padding: repeat the first step before 0, hold gripper after the end."""
+    obs = torch.as_tensor(obs, dtype=torch.float32)
+    actions = torch.as_tensor(actions, dtype=torch.float32)
+    length = len(actions)
+    obs_seq = obs[max(0, start):start + 2]
+    act_seq = actions[max(0, start):end]
+    if start < 0:
+        obs_seq = torch.cat((obs_seq[:1].repeat(-start, 1), obs_seq))
+        act_seq = torch.cat((act_seq[:1].repeat(-start, 1), act_seq))
+    if end > length:
+        pad = torch.cat((torch.zeros(6), act_seq[-1, 6:7]))
+        act_seq = torch.cat((act_seq, pad.repeat(end - length, 1)))
+    return obs_seq, act_seq
+
+
 class PilotTrajectoryDataset(torch.utils.data.Dataset):
     """Strict windows for one predeclared class. Refuses extra trajectories."""
 
@@ -351,15 +367,7 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         trajectory, start, end = self.slices[index]
         obs, actions = self.observations[trajectory], self.actions[trajectory]
-        length = len(actions)
-        obs_seq = obs[max(0, start):start + 2]
-        act_seq = actions[max(0, start):end]
-        if start < 0:
-            obs_seq = torch.cat((obs_seq[:1].repeat(-start, 1), obs_seq))
-            act_seq = torch.cat((act_seq[:1].repeat(-start, 1), act_seq))
-        if end > length:
-            pad = torch.cat((torch.zeros(6), act_seq[-1, 6:7]))
-            act_seq = torch.cat((act_seq, pad.repeat(end - length, 1)))
+        obs_seq, act_seq = materialize_window(obs, actions, start, end)
         if self.kind == "direct":
             obs_seq = obs_seq[..., :42]
         return {"observations": obs_seq, "actions": act_seq}
@@ -468,11 +476,18 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
     return summary
 
 
+def expected_base_updates(registration):
+    training = registration["training"]
+    if "base_updates" in training:
+        return int(training["base_updates"])
+    return int(training["total_iters"])
+
+
 def _load_base_ema(checkpoint, registration):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     payload = ck.get("payload") or {}
     if (ck.get("format") != BASE_FORMAT or ck.get("selected_weights") != "ema"
-            or int(ck.get("step", -1)) != int(registration["training"]["total_iters"])
+            or int(ck.get("step", -1)) != expected_base_updates(registration)
             or payload.get("selected_class") != "direct"
             or payload.get("selected_episode_ids") != list(registration["selected_direct_ids"])):
         raise ValueError("pilot base checkpoint is not the matched final EMA")
@@ -532,7 +547,7 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "normalization": norm.to_dict(),
         "base_weights": {
             "source": str(base_checkpoint), "sha256": sha256_file(base_checkpoint),
-            "subkey": "weights.ema", "state_sha256": base_sha, "updates": training["total_iters"],
+            "subkey": "weights.ema", "state_sha256": base_sha, "updates": expected_base_updates(registration),
         },
         "data_identity": {
             "selected_class": "obstacle", "episodes": len(dataset.trajectory_ids),
@@ -972,6 +987,33 @@ EXPANSION_CONSTRAIN_CKPT = "outputs/ckpt/20261024_104348_pickcube_expansion_cons
 EXPANSION_CONSTRAIN_SHA = "9ca9022aee201ae7f9ffe702d941863d6ffd4e4c6056f220fcdb2d2fe23c830d"
 EXPANSION_H5_SHA = "2af959e3d3ebeba8bb046db6d9583d300e1533fc638c7d36eb6393dd28024dff"
 PROXIMITY_CKPT_SHA = "22d3624941645ecac5bab4bd8679a2e40f77498b531b40f5e1d3c4be79d2a037"
+OBSTACLE300_EXP = "outputs/exp/20261024_213325_pickcube_obstacle300"
+OBSTACLE300_DATASET = "demos/PickCube-transport-detour/20261024_213325_obstacle300"
+OBSTACLE300_CKPT = "outputs/ckpt/20261024_213325_pickcube_obstacle300_constrain/final.pt"
+OBSTACLE300_CKPT_SHA = "bd7757122b75ad0bcc9cc5bd88a4b5174d48dfc520d1c8459332eea157732801"
+OBSTACLE300_H5_SHA = "3c15f50993b5ab5967b1a40695e53288b0f9464f4b61504a93d9989499ded7e6"
+WINDOW_GAP_PROTOCOL = {
+    "sample_seed": 2026102501,
+    "open_loop_seed": 2026102502,
+    "sampling_std_seed": 2026102503,
+    "sampling_std_windows": 64,
+    "diffusion_timesteps": 100,
+    "num_train_timesteps": 100,
+    "pred_horizon": 16,
+    "act_horizon": 8,
+    "executed_slice": [1, 9],
+    "near_rotation_m": 0.12,
+    "near_epsilon_m": 0.08,
+    "pos_action_scale_m": 0.1,
+    "rot_action_scale_rad": 0.1,
+    "batch_size": 64,
+}
+GAP_EPSILON_RATIO_MAX = 2.0
+GAP_NEAR_ROTATION_MAE_MAX = 0.02
+GAP_SHARED_EPSILON_FACTOR = 1.25
+LONGER_BUDGET_UPDATES = 90000
+SHARED_WINDOW_COUNT = 8965
+TRAIN300_WINDOW_COUNT = 27588
 EXISTING_OBSTACLE_MANIFEST = f"{EXPANSION_EXP}/pair_scenes/merged/manifest.json"
 RETAINED_COUNT = 20
 PAIR_ACCEPTANCE_CHECKS = (
@@ -1364,6 +1406,306 @@ def weighted_epsilon_mse(prediction, noise, weight=None):
     if weight.shape != per_sample.shape or not torch.isfinite(weight).all() or float(weight.sum()) <= 0:
         raise ValueError("epsilon weights must be finite, positive in sum, and one per sample")
     return (weight * per_sample).sum() / weight.sum()
+
+
+def fixed_window_draw(count, seed, pred_horizon=16, act_dim=7, num_timesteps=100):
+    count = int(count)
+    if count < 1:
+        raise ValueError("draw count must be positive")
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    noise = torch.randn(count, int(pred_horizon), int(act_dim), generator=generator)
+    timesteps = torch.randint(0, int(num_timesteps), (count,), generator=generator)
+    return noise, timesteps
+
+
+def draw_sha256(noise, timesteps):
+    digest = hashlib.sha256()
+    digest.update(np.ascontiguousarray(noise.detach().cpu().numpy()).tobytes())
+    digest.update(np.ascontiguousarray(timesteps.detach().cpu().numpy()).tobytes())
+    return digest.hexdigest()
+
+
+def rotation_gap(predicted, expert, distance, near_m=0.12):
+    predicted = torch.as_tensor(predicted, dtype=torch.float32)
+    expert = torch.as_tensor(expert, dtype=torch.float32)
+    distance = torch.as_tensor(distance, dtype=torch.float32).reshape(-1)
+    if predicted.shape != expert.shape or predicted.ndim != 3 or predicted.shape[1:] != (8, 7):
+        raise ValueError("rotation gap expects the 8-step executed slice")
+    if len(distance) != len(predicted):
+        raise ValueError("rotation gap distance does not match the windows")
+    per = (predicted[..., 3:6] - expert[..., 3:6]).abs().reshape(len(predicted), -1).mean(1)
+    near = distance < float(near_m)
+    far = ~near
+
+    def _mean(mask):
+        if not bool(mask.any()):
+            return None
+        return float(per[mask].mean())
+
+    return {
+        "near_m": float(near_m),
+        "near_count": int(near.sum()),
+        "far_count": int(far.sum()),
+        "near_rotation_mae": _mean(near),
+        "far_rotation_mae": _mean(far),
+    }
+
+
+def _gap_fields(metrics, name):
+    required = ("train_epsilon", "dev_epsilon", "shared_epsilon", "near_rotation_mae", "far_rotation_mae")
+    missing = [key for key in required if metrics.get(key) is None]
+    if missing:
+        raise ValueError(f"{name} missing {missing}")
+    if any(float(metrics[key]) < 0 for key in required):
+        raise ValueError(f"{name} metric is negative")
+    values = {key: float(metrics[key]) for key in required}
+    if values["train_epsilon"] <= 0 or values["shared_epsilon"] <= 0:
+        raise ValueError(f"{name} epsilon baseline must be positive")
+    return values
+
+
+def classify_window_gap(metrics_300, metrics_100):
+    """Pre-registered from the published 100-obstacle gaps, not from this run.
+
+    The prior dev/train epsilon ratio was about 4 and the dev near rotation MAE
+    was 0.090 against a far MAE of 0.005. Closed means both are inside the
+    stricter bars below. A worse shared-window fit is underfit even if those
+    ratios look closed.
+    """
+    current = _gap_fields(metrics_300, "obstacle300")
+    baseline = _gap_fields(metrics_100, "obstacle100")
+    epsilon_ratio = current["dev_epsilon"] / current["train_epsilon"]
+    epsilon_gap = epsilon_ratio > GAP_EPSILON_RATIO_MAX
+    rotation_gap_remains = current["near_rotation_mae"] > GAP_NEAR_ROTATION_MAE_MAX
+    shared_worse = current["shared_epsilon"] > GAP_SHARED_EPSILON_FACTOR * baseline["shared_epsilon"]
+    gap_closed = not epsilon_gap and not rotation_gap_remains
+    underfit = (not gap_closed) or shared_worse
+    return {
+        "rule": "pre-registered window gap",
+        "epsilon_ratio": epsilon_ratio,
+        "epsilon_ratio_max": GAP_EPSILON_RATIO_MAX,
+        "near_rotation_mae_max": GAP_NEAR_ROTATION_MAE_MAX,
+        "shared_epsilon_factor": GAP_SHARED_EPSILON_FACTOR,
+        "epsilon_gap": epsilon_gap,
+        "rotation_gap_remains": rotation_gap_remains,
+        "shared_fit_worse": shared_worse,
+        "gap_closed": gap_closed,
+        "underfit": underfit,
+        "next": "longer_budget" if underfit else "closed_loop",
+        "formal_performance_claim": False,
+    }
+
+
+def longer_budget_start(scheduler_state, optimizer_present, chosen_updates=LONGER_BUDGET_UPDATES):
+    last = (scheduler_state or {}).get("_last_lr") or []
+    last_lr = float(last[0]) if last else None
+    if optimizer_present and last_lr is not None and last_lr > 0:
+        return {
+            "start": "resume",
+            "chosen_updates": int(chosen_updates),
+            "last_lr": last_lr,
+            "reason": "optimizer state and a nonzero saved learning rate are both present",
+        }
+    if optimizer_present:
+        reason = (
+            "optimizer state is present but the saved cosine last_lr is 0 at the finished "
+            "30000-step schedule; retaining that scheduler cannot deliver additional exposure. "
+            "Scratch 90000 from the matched Base EMA uses a cosine sized for 90000."
+        )
+    else:
+        reason = (
+            "optimizer state is absent, so exact resume is not supported. "
+            "Scratch 90000 from the matched Base EMA."
+        )
+    return {
+        "start": "scratch",
+        "chosen_updates": int(chosen_updates),
+        "last_lr": last_lr,
+        "reason": reason,
+    }
+
+
+def build_window_gap_preregistration(version, paths):
+    return {
+        "kind": "authorized_window_gap_diagnosis",
+        "version": version,
+        "paths": dict(paths),
+        "no_collection": True,
+        "no_training": True,
+        "formal_performance_claim": False,
+        "changed_factor": "none",
+        "protocol": dict(WINDOW_GAP_PROTOCOL),
+        "decision_rule": {
+            "name": "pre-registered window gap",
+            "epsilon_ratio_max": GAP_EPSILON_RATIO_MAX,
+            "near_rotation_mae_max": GAP_NEAR_ROTATION_MAE_MAX,
+            "shared_epsilon_factor": GAP_SHARED_EPSILON_FACTOR,
+            "longer_budget_updates": LONGER_BUDGET_UPDATES,
+            "source": (
+                "prior 100 measurement: dev/train epsilon about 4x; "
+                "dev near rotation MAE 0.090 versus far 0.005"
+            ),
+        },
+        "checkpoints": {
+            "obstacle100": {"path": EXPANSION_CONSTRAIN_CKPT, "sha256": EXPANSION_CONSTRAIN_SHA, "episode_ids": list(range(1000, 1100))},
+            "obstacle300": {"path": OBSTACLE300_CKPT, "sha256": OBSTACLE300_CKPT_SHA, "episode_ids": list(range(1000, 1300))},
+        },
+        "datasets": {
+            "expansion_h5": {"path": f"{EXPANSION_DATASET}/trajectory.h5", "sha256": EXPANSION_H5_SHA},
+            "obstacle300_h5": {"path": f"{OBSTACLE300_DATASET}/trajectory.h5", "sha256": OBSTACLE300_H5_SHA},
+            "dev_scenes": FROZEN_DEV_SCENES,
+        },
+        "base_checkpoint_sha256": EXPANSION_BASE_SHA,
+        "comparison_counts": {
+            "obstacle100": {"task": 26, "safe": 13, "contact": 17, "xy": 3},
+            "obstacle300": {"task": 25, "safe": 12, "contact": 18, "xy": 2},
+        },
+    }
+
+
+def load_window_gap_preregistration(path):
+    payload = json.loads(Path(path).read_text())
+    expected = build_window_gap_preregistration(payload.get("version"), payload.get("paths") or {})
+    for key in (
+        "kind", "no_collection", "no_training", "formal_performance_claim", "protocol",
+        "decision_rule", "checkpoints", "datasets", "base_checkpoint_sha256",
+    ):
+        if payload.get(key) != expected.get(key):
+            raise ValueError(f"window-gap preregistration field changed: {key}")
+    if not (payload.get("source_identity") or {}).get("files_sha256"):
+        raise ValueError("window-gap preregistration has no source identity")
+    return payload
+
+
+def build_window_gap_index(splits, protocol, source_identity, decision):
+    if not (source_identity or {}).get("files_sha256"):
+        raise ValueError("source identity missing")
+    if (decision or {}).get("rule") != "pre-registered window gap":
+        raise ValueError("decision rule was not the frozen rule")
+    for name in ("shared100", "dev30"):
+        split = splits.get(name) or {}
+        if "obstacle100" not in split or "obstacle300" not in split:
+            raise ValueError(f"{name} is missing obstacle100 or obstacle300")
+        if not split.get("draw_sha256") or not split.get("sample_sha256"):
+            raise ValueError(f"{name} has no reproducible draw")
+        left = split["obstacle100"].get("draw_sha256")
+        right = split["obstacle300"].get("draw_sha256")
+        if left != right or left != split["draw_sha256"]:
+            raise ValueError(f"{name} sample seeds or diffusion timesteps differ")
+    train = splits.get("train300") or {}
+    if "obstacle300" not in train or not train.get("draw_sha256"):
+        raise ValueError("train300 fit missing")
+    return {
+        "protocol": protocol,
+        "source_identity": source_identity,
+        "splits": splits,
+        "decision": decision,
+        "same_sample_seeds": True,
+        "same_diffusion_timesteps": True,
+        "prose_only": False,
+    }
+
+
+def assert_exposure_budget(registration):
+    training = registration["training"]
+    if registration.get("changed_factor") != "constrain_updates":
+        raise RuntimeError("exposure slice changed factor is not the update budget")
+    if training.get("start") != "scratch":
+        raise RuntimeError("this slice is scratch; resume was not selected")
+    if int(training.get("total_iters", -1)) != LONGER_BUDGET_UPDATES:
+        raise RuntimeError("budget is not the preregistered 90000")
+    if expected_base_updates(registration) != 30000:
+        raise RuntimeError("base updates are not the frozen 30000")
+    if training.get("loss_weight") is not None or training.get("proximity_weight") != "off":
+        raise RuntimeError("proximity weight must stay off")
+    if training.get("base_retrained") is not False:
+        raise RuntimeError("this slice does not retrain base")
+    return True
+
+
+def build_exposure_preregistration(version, paths, diagnosis_index, diagnosis_path):
+    decision = (diagnosis_index or {}).get("decision") or {}
+    if decision.get("next") != "longer_budget" or decision.get("underfit") is not True:
+        raise ValueError("exposure trial requires the underfit diagnosis")
+    if decision.get("rule") != "pre-registered window gap":
+        raise ValueError("diagnosis rule mismatch")
+    resume = (diagnosis_index or {}).get("resume_decision") or {}
+    if resume.get("start") != "scratch" or float(resume.get("last_lr", -1)) != 0.0:
+        raise ValueError("exposure trial requires the recorded scratch decision")
+    training = build_preregistration(1, version, paths)["training"]
+    training["total_iters"] = LONGER_BUDGET_UPDATES
+    training["base_updates"] = 30000
+    training["loss_weight"] = None
+    training["proximity_weight"] = "off"
+    training["base_retrained"] = False
+    training["start"] = "scratch"
+    training["differences_from_formal"] = [
+        "only the constrain update budget changes, from 30000 to 90000",
+        "scratch from the matched Base EMA; the saved 30000-step cosine last_lr is 0",
+        "direct arrays stay the copied 1000 and obstacle stays the frozen 300; no new collection",
+        "development scenes are the already-used 30; this is not a formal performance claim",
+    ]
+    plan = obstacle_increment_id_plan()
+    return {
+        "kind": "authorized_training_optimization",
+        "version": version,
+        "paths": dict(paths),
+        "changed_factor": "constrain_updates",
+        "updates_before": 30000,
+        "updates_after": LONGER_BUDGET_UPDATES,
+        "no_collection": True,
+        "formal_performance_claim": False,
+        "round_index": "exposure90000",
+        "train_direct_count": EXPANSION_DIRECT_COUNT,
+        "train_obstacle_count": OBSTACLE_INCREMENT_COUNT,
+        "obstacle_plan_cap": OBSTACLE_INCREMENT_COUNT,
+        "dev_scene_count": DEV_SCENE_COUNT,
+        "selected_direct_ids": plan["direct"],
+        "selected_obstacle_ids": plan["obstacle"],
+        "layout_dedup": {"mode": "task", "cylinder_proximity_is_conflict": False},
+        "training": training,
+        "gate": {
+            "task_success_rate_gte": 0.90,
+            "safe_success_rate_gte": 0.85,
+            "contact_rate_lte": 0.10,
+            "xy_crossing_rate_lte": 0.10,
+            "require_complete": True,
+            "require_zero_runtime_errors": True,
+            "formal_performance_claim": False,
+            "on_fail": "dev-only pause; does not admit Ticket 07; do not start another slice in this run",
+        },
+        "eval": {
+            "max_steps": 500,
+            "episode_wall_seconds": 120,
+            "denominator": DEV_SCENE_COUNT,
+            "noise_seed_rule": "torch.manual_seed(scene seed) before each scene",
+            "scene_source": FROZEN_DEV_SCENES,
+        },
+        "hypothesis": (
+            "300 shared-window epsilon is higher than the 100 checkpoint on the same "
+            "noise and timesteps after 1114 epochs versus 3427. One scratch 90000-update "
+            "cosine from the matched Base EMA tests that exposure gap. Final EMA is "
+            "preselected. Dev success does not select the checkpoint."
+        ),
+        "diagnosis_index": diagnosis_path,
+        "base_checkpoint_sha256": EXPANSION_BASE_SHA,
+        "datasets": {
+            "obstacle300_h5": {"path": f"{OBSTACLE300_DATASET}/trajectory.h5", "sha256": OBSTACLE300_H5_SHA},
+            "expansion_h5": {"path": f"{EXPANSION_DATASET}/trajectory.h5", "sha256": EXPANSION_H5_SHA},
+        },
+        "comparison": {
+            "obstacle100": {"task": 26, "safe": 13, "contact": 17, "xy": 3},
+            "obstacle300": {"task": 25, "safe": 12, "contact": 18, "xy": 2},
+            "obstacle100_paired": f"{EXPANSION_EXP}/paired",
+            "obstacle300_paired": f"{OBSTACLE300_EXP}/paired",
+            "obstacle100_sha256": EXPANSION_CONSTRAIN_SHA,
+            "obstacle300_sha256": OBSTACLE300_CKPT_SHA,
+            "rejected_proximity_is_not_baseline": True,
+            "rejected_proximity_sha256": PROXIMITY_CKPT_SHA,
+        },
+        "wall": {"train_seconds": 5000, "expected_train_seconds": 2500, "eval_seconds": 8000},
+    }
 
 
 def dataset_coverage(windows, episodes, updates, batch_size):
@@ -2008,6 +2350,288 @@ def require_baseline_counts(rows, expected, denominator=30):
     return counts
 
 
+def _stack_windows(rows):
+    if not rows:
+        raise ValueError("no expert windows")
+    return {
+        "episode_id": [row["episode_id"] for row in rows],
+        "start": [int(row["start"]) for row in rows],
+        "observations": torch.stack([row["observations"] for row in rows]),
+        "actions": torch.stack([row["actions"] for row in rows]),
+    }
+
+
+def _append_windows(rows, episode_id, observations, actions):
+    observations = torch.as_tensor(observations, dtype=torch.float32)
+    actions = torch.as_tensor(actions, dtype=torch.float32)
+    if observations.ndim != 2 or observations.shape[1] != 45 or actions.shape[1] != 7 or len(observations) != len(actions) + 1:
+        raise ValueError(f"{episode_id} expert schema mismatch")
+    for start, end in _window_slices(len(actions)):
+        obs_seq, act_seq = materialize_window(observations, actions, start, end)
+        rows.append({"episode_id": episode_id, "start": int(start), "observations": obs_seq, "actions": act_seq})
+
+
+def windows_from_h5(path, episode_ids):
+    rows = []
+    with h5py.File(path, "r") as handle:
+        for episode_id in episode_ids:
+            group = handle[f"traj_{int(episode_id)}"]
+            _append_windows(rows, int(episode_id), group["obs"][:], group["actions"][:])
+    return _stack_windows(rows)
+
+
+def windows_from_dev_scenes(scene_dir):
+    rows = []
+    with h5py.File(Path(scene_dir) / "scenes.h5", "r") as handle:
+        scene_ids = sorted(handle.keys())
+        if len(scene_ids) != DEV_SCENE_COUNT:
+            raise ValueError("dev scene count is not 30")
+        for scene_id in scene_ids:
+            group = handle[scene_id]
+            _append_windows(rows, scene_id, group["observations"][:], group["expert_actions"][:])
+    return _stack_windows(rows)
+
+
+def tcp_obstacle_distance(observations):
+    from examples.baselines.constrain.pickcube_constrain import OBSTACLE_XY, TCP_XY
+
+    latest = observations[..., -1, :]
+    return torch.linalg.norm(latest[..., list(OBSTACLE_XY)] - latest[..., list(TCP_XY)], dim=-1)
+
+
+def load_gap_checkpoint(path, expected_sha, expected_ids, device):
+    if sha256_file(path) != expected_sha:
+        raise ValueError(f"checkpoint sha mismatch for {path}")
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    config = ck.get("config") or {}
+    data = config.get("data_identity") or {}
+    if (ck.get("format") != CONSTRAIN_FORMAT or int(ck.get("step", -1)) != 30000
+            or config.get("selected_weights") != SELECTED_WEIGHTS
+            or list(data.get("selected_episode_ids") or []) != list(expected_ids)
+            or (config.get("base_weights") or {}).get("sha256") != EXPANSION_BASE_SHA
+            or config.get("loss_weight") is not None):
+        raise ValueError(f"gap checkpoint failed strict identity: {path}")
+    from diffusers.training_utils import EMAModel
+    from examples.baselines.constrain.constrain_denoiser import build_constrain_denoiser
+    from examples.baselines.constrain.pickcube_constrain import MODEL_CONFIG, PickCubeConditionNorm
+
+    denoiser = build_constrain_denoiser(MODEL_CONFIG, device=device)
+    denoiser.load_state_dict(ck["model"], strict=True)
+    ema = EMAModel(parameters=denoiser.trainable_parameters(), power=0.75)
+    ema.load_state_dict(ck["ema"])
+    ema.copy_to(denoiser.trainable_parameters())
+    denoiser.eval()
+    return denoiser, PickCubeConditionNorm.from_dict(config["normalization"]), ck
+
+
+def _diffusion_scheduler():
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+
+    return DDPMScheduler(
+        num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
+        clip_sample=True, prediction_type="epsilon")
+
+
+def score_epsilon_draw(denoiser, norm, observations, actions, noise, timesteps, device, batch_size):
+    from examples.baselines.constrain.pickcube_constrain import pickcube_relative_condition
+
+    scheduler = _diffusion_scheduler()
+    parts = []
+    with torch.inference_mode():
+        for start in range(0, len(observations), batch_size):
+            stop = start + batch_size
+            obs = observations[start:stop].to(device)
+            act = actions[start:stop].to(device)
+            drawn_noise = noise[start:stop].to(device)
+            drawn_steps = timesteps[start:stop].to(device)
+            hint = pickcube_relative_condition(obs, norm)[:, None, :].expand(-1, act.shape[1], -1)
+            noisy = scheduler.add_noise(act, drawn_noise, drawn_steps)
+            prediction = denoiser(
+                noisy, drawn_steps, global_cond=obs[..., :42].flatten(1), hint=hint, enabled=True)
+            parts.append((prediction - drawn_noise).pow(2).flatten(1).mean(1).detach().cpu())
+    return torch.cat(parts)
+
+
+def sample_executed_slice(denoiser, norm, observations, init_noise, device, batch_size, label):
+    from examples.baselines.constrain.pickcube_constrain import pickcube_relative_condition
+
+    scheduler = _diffusion_scheduler()
+    scheduler.set_timesteps(100)
+    parts = []
+    with torch.inference_mode():
+        for start in range(0, len(observations), batch_size):
+            stop = min(start + batch_size, len(observations))
+            obs = observations[start:stop].to(device)
+            sample = init_noise[start:stop].to(device)
+            hint = pickcube_relative_condition(obs, norm)[:, None, :].expand(-1, 16, -1)
+            cond = obs[..., :42].flatten(1)
+            for timestep in scheduler.timesteps:
+                prediction = denoiser(sample, timestep, global_cond=cond, hint=hint, enabled=True)
+                sample = scheduler.step(prediction, timestep, sample).prev_sample
+            executed = sample[:, 1:9]
+            if bool((executed.abs() > 1.000001).any()):
+                raise ValueError("sampled action left [-1, 1]")
+            parts.append(executed.detach().cpu())
+            print(f"{label} sampled {stop}/{len(observations)}", flush=True)
+    return torch.cat(parts)
+
+
+def _split_score(epsilon, distance, executed, actions, protocol):
+    near = distance < float(protocol["near_epsilon_m"])
+    report = rotation_gap(executed, actions[:, 1:9], distance, near_m=protocol["near_rotation_m"])
+    report.update({
+        "epsilon": float(epsilon.mean()),
+        "count": int(epsilon.shape[0]),
+        "near_epsilon_m": float(protocol["near_epsilon_m"]),
+        "near_epsilon_count": int(near.sum()),
+        "near_epsilon": float(epsilon[near].mean()) if bool(near.any()) else None,
+    })
+    return report
+
+
+def _score_model(name, denoiser, norm, splits, draws, device, protocol):
+    batch = int(protocol["batch_size"])
+    scored = {}
+    for split_name, windows in splits.items():
+        noise, timesteps = draws[split_name]["epsilon"]
+        init_noise = draws[split_name]["sample"]
+        epsilon = score_epsilon_draw(
+            denoiser, norm, windows["observations"], windows["actions"], noise, timesteps, device, batch)
+        executed = sample_executed_slice(
+            denoiser, norm, windows["observations"], init_noise, device, batch, f"{name}:{split_name}")
+        distance = tcp_obstacle_distance(windows["observations"])
+        metrics = _split_score(epsilon, distance, executed, windows["actions"], protocol)
+        metrics["draw_sha256"] = draws[split_name]["draw_sha256"]
+        metrics["sample_sha256"] = draws[split_name]["sample_sha256"]
+        scored[split_name] = metrics
+        print(f"{name} {split_name} epsilon={metrics['epsilon']:.6f} near_rot={metrics['near_rotation_mae']}", flush=True)
+    return scored
+
+
+def _sampling_std(first, second, protocol, count):
+    delta = (first[:count] - second[:count]).abs()
+    return {
+        "windows": int(count),
+        "xyz_mm": float(delta[..., :3].mean() * float(protocol["pos_action_scale_m"]) * 1000),
+        "rotation_rad": float(delta[..., 3:6].mean() * float(protocol["rot_action_scale_rad"])),
+    }
+
+
+def run_window_gap_diagnosis(registration, device="cuda"):
+    try:
+        return _run_window_gap_diagnosis(registration, device)
+    finally:
+        _kill_descendants()
+
+
+def _run_window_gap_diagnosis(registration, device):
+    protocol = registration["protocol"]
+    datasets = registration["datasets"]
+    checkpoints = registration["checkpoints"]
+    expansion_h5 = datasets["expansion_h5"]["path"]
+    obstacle_h5 = datasets["obstacle300_h5"]["path"]
+    if sha256_file(expansion_h5) != EXPANSION_H5_SHA or sha256_file(obstacle_h5) != OBSTACLE300_H5_SHA:
+        raise RuntimeError("frozen dataset hash changed")
+    if sha256_file(EXPANSION_BASE_CKPT) != EXPANSION_BASE_SHA:
+        raise RuntimeError("matched Base EMA hash changed")
+    copied_ids = list(range(1000)) + list(range(1000, 1100))
+    assert_packaged_matches_source(expansion_h5, obstacle_h5, copied_ids)
+    shared = windows_from_h5(expansion_h5, checkpoints["obstacle100"]["episode_ids"])
+    train300 = windows_from_h5(obstacle_h5, checkpoints["obstacle300"]["episode_ids"])
+    dev = windows_from_dev_scenes(datasets["dev_scenes"])
+    if len(shared["observations"]) != SHARED_WINDOW_COUNT or len(train300["observations"]) != TRAIN300_WINDOW_COUNT:
+        raise RuntimeError("expert window count does not match the frozen training summaries")
+    draws = {}
+    for name, windows, seed_offset in (
+        ("shared100", shared, 0), ("dev30", dev, 1), ("train300", train300, 2),
+    ):
+        noise, timesteps = fixed_window_draw(len(windows["observations"]), protocol["sample_seed"] + seed_offset)
+        sample_noise, _ = fixed_window_draw(len(windows["observations"]), protocol["open_loop_seed"] + seed_offset)
+        draws[name] = {
+            "epsilon": (noise, timesteps),
+            "sample": sample_noise,
+            "draw_sha256": draw_sha256(noise, timesteps),
+            "sample_sha256": draw_sha256(sample_noise, timesteps),
+        }
+    output = Path(registration["paths"]["diagnosis"])
+    output.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    denoiser, norm, ck100 = load_gap_checkpoint(
+        checkpoints["obstacle100"]["path"], checkpoints["obstacle100"]["sha256"],
+        checkpoints["obstacle100"]["episode_ids"], device)
+    scored100 = _score_model("obstacle100", denoiser, norm, {"shared100": shared, "dev30": dev}, draws, device, protocol)
+    del denoiser, ck100
+    if str(device).startswith("cuda"):
+        torch.cuda.empty_cache()
+    denoiser, norm, ck300 = load_gap_checkpoint(
+        checkpoints["obstacle300"]["path"], checkpoints["obstacle300"]["sha256"],
+        checkpoints["obstacle300"]["episode_ids"], device)
+    scored300 = _score_model(
+        "obstacle300", denoiser, norm,
+        {"shared100": shared, "dev30": dev, "train300": train300}, draws, device, protocol)
+    std_count = min(int(protocol["sampling_std_windows"]), len(dev["observations"]))
+    std_noise, _ = fixed_window_draw(len(dev["observations"]), protocol["sampling_std_seed"])
+    std_executed = sample_executed_slice(
+        denoiser, norm, dev["observations"][:std_count], std_noise[:std_count], device, protocol["batch_size"],
+        "obstacle300:std")
+    first_dev = sample_executed_slice(
+        denoiser, norm, dev["observations"][:std_count], draws["dev30"]["sample"][:std_count], device,
+        protocol["batch_size"], "obstacle300:std-base")
+    sampling = _sampling_std(first_dev, std_executed, protocol, std_count)
+    scheduler_decision = longer_budget_start(ck300.get("lr_scheduler"), ck300.get("optimizer") is not None)
+    del denoiser, ck300
+    metrics100 = {
+        "train_epsilon": scored100["shared100"]["epsilon"],
+        "dev_epsilon": scored100["dev30"]["epsilon"],
+        "shared_epsilon": scored100["shared100"]["epsilon"],
+        "near_rotation_mae": scored100["dev30"]["near_rotation_mae"],
+        "far_rotation_mae": scored100["dev30"]["far_rotation_mae"],
+    }
+    metrics300 = {
+        "train_epsilon": scored300["train300"]["epsilon"],
+        "dev_epsilon": scored300["dev30"]["epsilon"],
+        "shared_epsilon": scored300["shared100"]["epsilon"],
+        "near_rotation_mae": scored300["dev30"]["near_rotation_mae"],
+        "far_rotation_mae": scored300["dev30"]["far_rotation_mae"],
+    }
+    decision = classify_window_gap(metrics300, metrics100)
+    decision["metrics_obstacle100"] = metrics100
+    decision["metrics_obstacle300"] = metrics300
+    splits = {}
+    for name in ("shared100", "dev30"):
+        splits[name] = {
+            "draw_sha256": draws[name]["draw_sha256"],
+            "sample_sha256": draws[name]["sample_sha256"],
+            "window_count": int(len(shared["observations"] if name == "shared100" else dev["observations"])),
+            "obstacle100": scored100[name],
+            "obstacle300": scored300[name],
+        }
+    splits["train300"] = {
+        "draw_sha256": draws["train300"]["draw_sha256"],
+        "sample_sha256": draws["train300"]["sample_sha256"],
+        "window_count": int(len(train300["observations"])),
+        "obstacle300": scored300["train300"],
+    }
+    if sha256_file(expansion_h5) != EXPANSION_H5_SHA or sha256_file(obstacle_h5) != OBSTACLE300_H5_SHA:
+        raise RuntimeError("frozen dataset hash changed during diagnosis")
+    index = build_window_gap_index(splits, protocol, freeze_pilot_identity(), decision)
+    index["sampling_std_obstacle300_dev"] = sampling
+    index["resume_decision"] = scheduler_decision
+    index["copied_100_matches_expansion"] = True
+    index["elapsed_seconds"] = time.monotonic() - started
+    index["formal_performance_claim"] = False
+    _json_atomic(output / "index.json", index)
+    _json_atomic(output / "obstacle100.json", {"checkpoint_sha256": EXPANSION_CONSTRAIN_SHA, "splits": scored100})
+    _json_atomic(output / "obstacle300.json", {
+        "checkpoint_sha256": OBSTACLE300_CKPT_SHA,
+        "splits": scored300,
+        "resume_decision": scheduler_decision,
+        "sampling_std": sampling,
+    })
+    print(json.dumps({"decision": decision["next"], "underfit": decision["underfit"], "gap_closed": decision["gap_closed"]}), flush=True)
+    return index
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
@@ -2016,7 +2640,8 @@ def main(argv=None):
         "include-original", "collect-pairs", "collect-direct", "package-expansion",
         "collect-obstacle-increment", "package-obstacle-increment",
         "train-base", "train-constrain", "evaluate", "gate", "compare-baseline",
-        "compare-increment",
+        "compare-increment", "preregister-window-gap", "diagnose-window-gap",
+        "preregister-exposure", "compare-exposure",
     ))
     parser.add_argument("--registration", type=Path, required=True)
     parser.add_argument("--version", default="r1")
@@ -2130,6 +2755,46 @@ def main(argv=None):
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
+    if args.command == "preregister-window-gap":
+        exp = args.registration.parent
+        payload = build_window_gap_preregistration(args.version, {
+            "exp": str(exp),
+            "diagnosis": str(exp / "diagnosis"),
+        })
+        payload["source_identity"] = freeze_pilot_identity()
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
+    if args.command == "preregister-exposure":
+        diagnosis_path = Path(args.prior_version)
+        diagnosis = json.loads(diagnosis_path.read_text())
+        exp = args.registration.parent
+        stamp = exp.name.split("_pickcube")[0]
+        payload = build_exposure_preregistration(args.version, {
+            "exp": str(exp),
+            "demos": OBSTACLE300_DATASET,
+            "ckpt_base": EXPANSION_BASE_CKPT,
+            "ckpt_constrain": f"outputs/ckpt/{stamp}_pickcube_exposure90000_constrain",
+            "train_constrain": str(exp / "train_constrain"),
+            "paired": str(exp / "paired"),
+            "dev_scenes": FROZEN_DEV_SCENES,
+        }, diagnosis, str(diagnosis_path))
+        for key, spec in payload["datasets"].items():
+            if sha256_file(spec["path"]) != spec["sha256"]:
+                raise RuntimeError(f"{key} hash does not match the frozen identity")
+        if sha256_file(EXPANSION_BASE_CKPT) != EXPANSION_BASE_SHA:
+            raise RuntimeError("matched Base EMA hash changed")
+        payload["source_identity"] = freeze_pilot_identity()
+        payload["diagnosis_index_sha256"] = sha256_file(diagnosis_path)
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
+    if args.command == "diagnose-window-gap":
+        registration = load_window_gap_preregistration(args.registration)
+        enforce_runtime_source_identity(registration, freeze_pilot_identity(), args.command)
+        if str(args.device).startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but unavailable")
+        return run_window_gap_diagnosis(registration, args.device)
     registration = load_preregistration(args.registration)
     enforce_runtime_source_identity(registration, freeze_pilot_identity(), args.command)
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
@@ -2336,6 +3001,8 @@ def main(argv=None):
         print(dest, flush=True)
         return dest
     if args.command == "train-base":
+        if registration.get("changed_factor") == "constrain_updates":
+            raise SystemExit("this slice does not retrain base")
         if registration.get("kind") == "authorized_obstacle_increment":
             raise SystemExit("this slice does not retrain base")
         if registration.get("kind") == "authorized_data_expansion":
@@ -2350,6 +3017,15 @@ def main(argv=None):
             assert_unweighted_increment(registration)
             if sha256_file(args.base_checkpoint) != registration["frozen_identities"]["base_checkpoint_sha256"]:
                 raise SystemExit("base checkpoint is not the matched expansion EMA")
+        if registration.get("changed_factor") == "constrain_updates":
+            assert_exposure_budget(registration)
+            if sha256_file(args.base_checkpoint) != registration["base_checkpoint_sha256"]:
+                raise RuntimeError("base checkpoint is not the matched expansion EMA")
+            datasets = registration["datasets"]
+            if sha256_file(datasets["obstacle300_h5"]["path"]) != datasets["obstacle300_h5"]["sha256"]:
+                raise RuntimeError("frozen 300 dataset hash changed")
+            if sha256_file(datasets["expansion_h5"]["path"]) != datasets["expansion_h5"]["sha256"]:
+                raise RuntimeError("frozen 100 dataset hash changed")
         return train_constrain(
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.base_checkpoint, args.run_dir, args.checkpoint_dir, registration, args.device)
@@ -2359,6 +3035,10 @@ def main(argv=None):
             resolve_running_identity(registration, freeze_pilot_identity())
             if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
                 raise SystemExit("expansion eval must use the frozen dev scenes")
+        if registration.get("changed_factor") == "constrain_updates":
+            if Path(args.scene_dir).resolve() != Path(FROZEN_DEV_SCENES).resolve():
+                raise SystemExit("exposure eval must use the frozen dev scenes")
+            assert_exposure_budget(registration)
         if registration.get("kind") == "authorized_obstacle_increment":
             if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
                 raise SystemExit("increment eval must use the frozen dev scenes")
@@ -2527,6 +3207,15 @@ def main(argv=None):
             "formal_performance_claim": False,
         }, indent=2), flush=True)
         return report
+    if args.command == "compare-exposure":
+        report = compare_exposure_eval(registration, args.output_dir)
+        _json_atomic(args.output_dir / "exposure_comparison.json", report)
+        print(json.dumps({
+            "exposure_counts": report["exposure_counts"],
+            "transitions": report["transitions"],
+            "formal_performance_claim": False,
+        }, indent=2), flush=True)
+        return report
     raise ValueError(args.command)
 
 
@@ -2664,6 +3353,41 @@ def failure_mechanisms(rows):
         "first_contact_phase": phases,
         "first_contact_link": links,
         "unsafe_or_failed_phase": outcomes,
+    }
+
+
+def compare_exposure_eval(registration, output_dir):
+    comparison = registration["comparison"]
+    if comparison.get("rejected_proximity_is_not_baseline") is not True:
+        raise ValueError("proximity result is not the baseline")
+    fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
+    baselines = {}
+    for name in ("obstacle100", "obstacle300"):
+        rows = load_episode_directory(Path(comparison[f"{name}_paired"]) / "constrain_dp")
+        require_baseline_counts(rows, comparison[name])
+        if any(row.get("checkpoint_sha256") != comparison[f"{name}_sha256"] for row in rows):
+            raise ValueError(f"{name} constrain checkpoint is not the frozen EMA")
+        if any(row.get("checkpoint_sha256") == comparison["rejected_proximity_sha256"] for row in rows):
+            raise ValueError("proximity checkpoint is not the baseline")
+        baselines[name] = rows
+    current = load_episode_directory(Path(output_dir) / "constrain_dp")
+    errors = [row.get("scene_id") for row in current if row.get("status") != "evaluated"]
+    transitions = None if errors else {
+        name: expansion_transitions(rows, current, fields) for name, rows in baselines.items()
+    }
+    return {
+        "denominator": 30,
+        "formal_performance_claim": False,
+        "rejected_proximity_is_not_baseline": True,
+        "baseline_counts": {name: metric_counts(rows) for name, rows in baselines.items()},
+        "exposure_counts": metric_counts(current),
+        "transitions": transitions,
+        "runtime_error_scene_ids": errors,
+        "mechanisms": {
+            "obstacle100": failure_mechanisms(baselines["obstacle100"]),
+            "obstacle300": failure_mechanisms(baselines["obstacle300"]),
+            "exposure": failure_mechanisms(current),
+        },
     }
 
 
