@@ -608,7 +608,7 @@ def _load_base_ema(checkpoint, registration):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     payload = ck.get("payload") or {}
     if (ck.get("format") != BASE_FORMAT or ck.get("selected_weights") != "ema"
-            or int(ck.get("step", -1)) != int(registration["training"]["total_iters"])
+            or int(ck.get("step", -1)) != expected_base_updates(registration)
             or payload.get("selected_class") != "direct"
             or payload.get("selected_episode_ids") != list(registration["selected_direct_ids"])):
         raise ValueError("pilot base checkpoint is not the matched final EMA")
@@ -663,7 +663,7 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "model": dict(MODEL),
         "base_weights": {
             "source": str(base_checkpoint), "sha256": sha256_file(base_checkpoint),
-            "subkey": "weights.ema", "state_sha256": base_sha, "updates": training["total_iters"],
+            "subkey": "weights.ema", "state_sha256": base_sha, "updates": expected_base_updates(registration),
         },
         "data_identity": {
             "selected_class": "obstacle", "episodes": len(dataset.trajectory_ids),
@@ -2092,6 +2092,9 @@ def write_coverage(run_dir, registration):
     coverage = dataset_coverage(windows, episodes, updates, batch_size)
     coverage["formal_performance_claim"] = False
     coverage["generalization_claim"] = False
+    identity = config.get("data_identity") if isinstance(config.get("data_identity"), dict) else {}
+    if identity.get("h5_sha256"):
+        coverage["h5_sha256"] = identity["h5_sha256"]
     _json_atomic(Path(run_dir) / "coverage.json", coverage)
     return coverage
 
@@ -2174,12 +2177,619 @@ def _smoke_action(adapter):
     return {"action_shape": list(native.shape), "finite": bool(torch.isfinite(native).all())}
 
 
+COMBINED_UPDATES = 90000
+OBSTACLE_SLICE_COUNT = 300
+OBSTACLE_SLICE_NEW = 200
+AUTHORIZED_OBSTACLE_CAP = 1000
+EXPANSION_EXP = "outputs/exp/20261024_155244_placesphere_data_expansion"
+EXPANSION_DATASET = "demos/PlaceSphere-transport-detour/20261024_155244_expansion"
+EXPANSION_H5_SHA = "df01aec45a5fcf6f04b0f0e2cb91d4bdf58d238ce41163b40cf15d1388d253ed"
+EXPANSION_BASE_CKPT = "outputs/ckpt/20261024_155244_placesphere_expansion_base/final.pt"
+EXPANSION_BASE_SHA = "2bbb7f5e1c1f4f93d177cf12b63d182a2d4cc1a239387f51d03de6afe01c8640"
+EXPANSION_CONSTRAIN_SHA = "36518c84c0aacaadaf33eb7e35161b0e869c0d18d62e9425337021a763bfa43c"
+COMBINED_DIAGNOSIS = {
+    "loss_first": 0.032303668558597565,
+    "loss_last": 0.001833076006732881,
+    "loss_still_oscillating_at_30000": True,
+    "obstacle_windows": 13533,
+    "obstacle_epochs_at_30000": 2270.0066504101087,
+    "sample_size": 256,
+    "sample_seed": 2026102503,
+    "noise_seed": 2026102504,
+    "train_epsilon": 0.0014930865727365017,
+    "dev_epsilon": 0.003608236787840724,
+    "train_release_epsilon": 0.001858048141002655,
+    "dev_release_epsilon": 0.004544632043689489,
+    "dev_train_epsilon_ratio": 2.4166293144226074,
+    "release_is_the_remaining_contact": True,
+    "not_a_collision_shield": True,
+    "not_a_separate_trial": True,
+    "note": (
+        "Bounded same-seed epsilon sample on the frozen 100-obstacle EMA, not a second trial. "
+        "Dev release windows are the worse slice. Closed loop: 6/7 contacts are release-phase "
+        "gripper, 5 top cap; failed releases leave the ball moving. Loss is still noisy at 30000. "
+        "300 layouts at the same mean length need about 90000 updates to match 2270 epochs. "
+        "Both factors change together and cannot be separated."
+    ),
+}
+COMBINED_ADDENDUM_DOES_NOT_CHANGE = [
+    "counts", "task_identity_definition", "gate", "training", "geometry",
+    "expert", "external_excludes", "within_run_dedup", "acceptance_predicate",
+]
+
+
+def expected_base_updates(registration):
+    training = registration["training"]
+    if "base_updates" in training:
+        return int(training["base_updates"])
+    return int(training["total_iters"])
+
+
+def scratch_from_zero_lr(scheduler_state, optimizer_present, chosen_updates=90000):
+    last = (scheduler_state or {}).get("_last_lr") or []
+    last_lr = float(last[0]) if last else None
+    if optimizer_present and last_lr is not None and last_lr > 0:
+        return {
+            "start": "resume", "last_lr": last_lr, "chosen_updates": int(chosen_updates),
+            "reason": "optimizer state and a nonzero saved learning rate are both present",
+        }
+    return {
+        "start": "scratch",
+        "chosen_updates": int(chosen_updates),
+        "last_lr": last_lr,
+        "reason": "saved cosine last_lr is 0; scratch 90000 from the matched Base EMA",
+    }
+
+
+def assert_combined_budget(registration):
+    training = registration["training"]
+    if registration.get("cannot_separate_factors") is not True:
+        raise RuntimeError("factors must stay combined")
+    if training.get("start") != "scratch":
+        raise RuntimeError("this slice is scratch; resume was not selected")
+    if int(training.get("total_iters", -1)) != COMBINED_UPDATES:
+        raise RuntimeError("budget is not the preregistered 90000")
+    if expected_base_updates(registration) != 30000:
+        raise RuntimeError("base updates are not the frozen 30000")
+    if training.get("loss_weight") is not None or training.get("proximity_weight") != "off":
+        raise RuntimeError("epsilon must stay unweighted")
+    if training.get("base_retrained") is not False:
+        raise RuntimeError("this slice does not retrain base")
+    return True
+
+
+def _combined_obstacle_collection():
+    obstacle = {
+        "workers": 2,
+        "target": OBSTACLE_SLICE_NEW,
+        "max_attempts": 2400,
+        "wall_seconds": 32000,
+        "per_attempt_deadline": 160,
+        "within_run_mutual_exclusion": True,
+        "drop_conflicts": True,
+        "acceptance_predicate": "full_run_attempt",
+        "blocks": [
+            {"name": "block_a", "seed": 2026140001, "target": 50, "max_attempts": 400, "wall_seconds": 8000},
+            {"name": "block_b", "seed": 2026140501, "target": 50, "max_attempts": 400, "wall_seconds": 8000},
+            {"name": "block_c", "seed": 2026141001, "target": 50, "max_attempts": 400, "wall_seconds": 8000},
+            {"name": "block_d", "seed": 2026141501, "target": 50, "max_attempts": 400, "wall_seconds": 8000},
+        ],
+        "continuation": {"name": "continuation", "seed": 2026142001, "max_attempts": 800, "wall_seconds": 14000},
+    }
+    spans = sorted(_seed_span(obstacle))
+    if any(left[1] >= right[0] for left, right in zip(spans, spans[1:])):
+        raise ValueError("collection seed ranges overlap")
+    if sum(block["max_attempts"] for block in obstacle["blocks"]) + obstacle["continuation"]["max_attempts"] != obstacle["max_attempts"]:
+        raise ValueError("attempt budget does not add up")
+    if sum(block["target"] for block in obstacle["blocks"]) != obstacle["target"]:
+        raise ValueError("block targets do not add up")
+    return obstacle
+
+
+def build_combined_slice_preregistration(version, paths, *, reason, prior_version, baseline_files=None):
+    if not reason or not prior_version:
+        raise ValueError("combined slice requires the recorded authorization and the prior version")
+    if OBSTACLE_SLICE_COUNT != 300 or OBSTACLE_SLICE_COUNT > AUTHORIZED_OBSTACLE_CAP:
+        raise ValueError("this slice is not the authorized 300")
+    training = build_preregistration(1, version, paths)["training"]
+    training["total_iters"] = COMBINED_UPDATES
+    training["base_updates"] = 30000
+    training["start"] = "scratch"
+    training["loss_weight"] = None
+    training["proximity_weight"] = "off"
+    training["base_retrained"] = False
+    training["differences_from_formal"] = [
+        "direct arrays are the existing 1000, copied and not retrained; they are not claimed unique",
+        "obstacle count is the authorized 300 slice, not the 100-plan and not the 1000 cap",
+        "control branch is trained from scratch from the matched expansion Base EMA",
+        "the saved 30000-step cosine last_lr is 0, so resume is not used",
+        "obstacle coverage and update exposure change together and cannot be separated",
+        "development scenes are the already-used 30; this is not a formal performance claim",
+    ]
+    return {
+        "kind": "authorized_combined_slice",
+        "round_index": "obstacle300_90k",
+        "version": version,
+        "reason": reason,
+        "prior_version": prior_version,
+        "prior_manifest": PRIOR_MANIFEST,
+        "paths": dict(paths),
+        "obstacle_plan_cap": OBSTACLE_SLICE_COUNT,
+        "authorized_obstacle_cap": AUTHORIZED_OBSTACLE_CAP,
+        "slice_is_not_the_authorized_cap": True,
+        "cannot_separate_factors": True,
+        "changed_factors": ["obstacle_count", "constrain_updates"],
+        "train_obstacle_count": OBSTACLE_SLICE_COUNT,
+        "train_direct_count": EXPANSION_DIRECT_COUNT,
+        "selected_direct_ids": list(range(EXPANSION_DIRECT_COUNT)),
+        "selected_obstacle_ids": list(range(1000, 1000 + OBSTACLE_SLICE_COUNT)),
+        "dev_scene_count": DEV_SCENE_COUNT,
+        "dev_reused": True,
+        "direct_unique_claim": False,
+        "native_success": NATIVE_SUCCESS,
+        "base_checkpoint": EXPANSION_BASE_CKPT,
+        "base_checkpoint_sha256": EXPANSION_BASE_SHA,
+        "expansion_h5_sha256": EXPANSION_H5_SHA,
+        "expansion_constrain_sha256": EXPANSION_CONSTRAIN_SHA,
+        "layout_dedup": {
+            "tolerance_m": LAYOUT_TOLERANCE_M,
+            "metric": "chebyshev",
+            "mode": "task",
+            "cylinder_proximity_is_conflict": False,
+            "within_new_enforced": True,
+            "external_excludes": ["original100", "dev30", "ticket04"],
+            "conflict_if": "same seed, or start and container both within tolerance",
+            "exclude_prior_source": PRIOR_MANIFEST,
+            "exclude_dev": FROZEN_DEV_SCENES,
+            "exclude_existing_obstacle": f"{EXPANSION_DATASET}/trajectory.json",
+        },
+        "collection": {
+            "dev_collected": False,
+            "dev_scenes": FROZEN_DEV_SCENES,
+            "direct_recollected": False,
+            "policy_scene_filter": False,
+            "easier_obstacle": False,
+            "radius_m": 0.03,
+            "acceptance_predicate": "full_run_attempt",
+            "obstacle": _combined_obstacle_collection(),
+        },
+        "training": training,
+        "eval": {
+            "max_steps": MAX_STEPS,
+            "episode_wall_seconds": 120,
+            "denominator": DEV_SCENE_COUNT,
+            "noise_seed_rule": "torch.manual_seed and cuda.manual_seed_all(scene seed) before each scene, independently per policy",
+            "scene_source": FROZEN_DEV_SCENES,
+            "base_reuse": "only if checkpoint sha, restored state, scene seed, and source identity match; otherwise reevaluate",
+            "native_success": NATIVE_SUCCESS,
+        },
+        "gate": {
+            "task_success_rate_gte": 0.90,
+            "safe_success_rate_gte": 0.85,
+            "contact_rate_lte": 0.10,
+            "xy_crossing_rate_lte": 0.10,
+            "require_complete": True,
+            "require_zero_runtime_errors": True,
+            "formal_performance_claim": False,
+            "generalization_claim": False,
+            "base_failure_threshold": None,
+            "benefit_threshold": None,
+            "on_fail": "dev-only pause; does not admit Ticket 08; latest authorization continues for parent review; no automatic 300 to 1000",
+        },
+        "comparison": {
+            "name": "expansion_100_obstacle",
+            "expansion_paired": f"{EXPANSION_EXP}/paired",
+            "constrain_counts": {"task": 25, "safe": 21, "contact": 7, "xy": 0},
+            "base_counts": {"task": 5, "safe": 0, "contact": 30, "xy": 24},
+            "expansion_constrain_sha256": EXPANSION_CONSTRAIN_SHA,
+            "expansion_base_sha256": EXPANSION_BASE_SHA,
+            "files": dict(baseline_files or {}),
+        },
+        "diagnosis": dict(COMBINED_DIAGNOSIS),
+        "timeouts_s": {"collect": 36000, "train": 6000, "paired": 8000, "grace_kill": 90},
+        "attribution": "combined obstacle coverage and update exposure; factors cannot be separated",
+    }
+
+
+def prior_block_sources(output_root):
+    blocks = Path(output_root) / "blocks"
+    if not blocks.is_dir():
+        return []
+    return [path for path in sorted(blocks.iterdir()) if (path / "manifest.json").is_file()]
+
+
+def scenes_missing_from_catalog(catalog, sources):
+    catalog = Path(catalog)
+    present = layouts_from_manifest(catalog / "manifest.json") if (catalog / "manifest.json").is_file() else []
+    missing = []
+    for source in sources:
+        payload = json.loads((Path(source) / "manifest.json").read_text())
+        for row in payload["scenes"]:
+            if any(layouts_conflict(row, other, cylinder=False) for other in present):
+                continue
+            missing.append(row)
+    return missing
+
+
+def write_rejection_manifest(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"count": len(rows), "scenes": list(rows)}
+    path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def assert_continuations_packaged_or_journaled(block_rows, packaged_rows, journal):
+    journaled = (journal or {}).get("scenes") or []
+    missing = []
+    for row in block_rows:
+        if any(layouts_conflict(row, other, cylinder=False) for other in packaged_rows):
+            continue
+        if any(layouts_conflict(row, other, cylinder=False) for other in journaled):
+            continue
+        missing.append(row)
+    if missing:
+        raise RuntimeError(
+            f"accepted continuation scenes were dropped without a journal: {len(missing)}")
+    return True
+
+
+def recover_interrupted_block(dest):
+    dest = Path(dest)
+    if (dest / "report.json").exists() or not dest.exists():
+        return None
+    journal = dest / "attempts.jsonl"
+    scenes = dest / "scenes.h5"
+    if not journal.is_file() or not scenes.is_file():
+        return None
+    rows = []
+    with h5py.File(scenes, "r") as handle:
+        for scene_id in sorted(handle.keys()):
+            metadata = json.loads(handle[scene_id].attrs["metadata_json"])
+            metadata["scene_id"] = scene_id
+            rows.append(metadata)
+    attempts = 0
+    accepted = 0
+    for line in journal.read_text().splitlines():
+        if not line.strip():
+            continue
+        attempts += 1
+        if json.loads(line).get("accepted"):
+            accepted += 1
+    if accepted != len(rows):
+        raise RuntimeError("journal accepts do not match ingested scenes; refusing to drop either")
+    from examples.baselines.constrain.placesphere_transport_detour import _write_manifest
+    seed = 0
+    if (dest / "config.json").is_file():
+        seed = int(json.loads((dest / "config.json").read_text()).get("generation_seed", 0))
+    _write_manifest(dest, rows, seed)
+    report = {
+        "target": None, "accepted": len(rows), "attempts": attempts, "complete": False,
+        "recovered": True, "restore_audit_ok": False, "output_dir": str(dest), "resumed": True,
+    }
+    (dest / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
+
+
+def compare_combined_eval(registration, output_dir):
+    comparison = registration["comparison"]
+    if registration.get("cannot_separate_factors") is not True:
+        raise ValueError("combined comparison requires the cannot-separate record")
+    root = Path(comparison["expansion_paired"])
+    files = comparison.get("files") or {}
+    for key, dirname in (("baseline_base_episodes", "base_dp"), ("baseline_constrain_episodes", "constrain_dp")):
+        recorded = (files.get(key) or {}).get("sha256")
+        if recorded and episode_dir_sha(root / dirname) != recorded:
+            raise RuntimeError(f"{key} bytes do not match preregistration")
+    constrain = load_episode_directory(root / "constrain_dp")
+    base = load_episode_directory(root / "base_dp")
+    require_baseline_counts(constrain, comparison["constrain_counts"], denominator=len(constrain))
+    require_baseline_counts(base, comparison["base_counts"], denominator=len(base))
+    expected_sha = comparison.get("expansion_constrain_sha256")
+    if expected_sha and any(row.get("checkpoint_sha256") != expected_sha for row in constrain):
+        raise ValueError("baseline constrain checkpoint is not the expansion EMA")
+    output_dir = Path(output_dir)
+    current = {
+        "base_dp": load_episode_directory(output_dir / "base_dp"),
+        "constrain_dp": load_episode_directory(output_dir / "constrain_dp"),
+    }
+    fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
+    authoritative = {"base_dp": base, "constrain_dp": constrain}
+    transitions = {}
+    for name, rows in current.items():
+        errors = [row.get("scene_id") for row in rows if row.get("status") != "evaluated"]
+        transitions[name] = {
+            "runtime_error_scene_ids": errors,
+            "transitions": None if errors else expansion_transitions(authoritative[name], rows, fields),
+        }
+    return {
+        "authoritative": "episode_files",
+        "denominator": len(constrain),
+        "formal_performance_claim": False,
+        "cannot_separate_factors": True,
+        "attribution": "combined obstacle coverage and update exposure; factors cannot be separated",
+        "baseline_counts": {"base_dp": metric_counts(base), "constrain_dp": metric_counts(constrain)},
+        "combined_counts": {name: metric_counts(rows) for name, rows in current.items()},
+        "transitions": transitions,
+        "mechanisms": {
+            "baseline_constrain": compare_ticket02(constrain),
+            "combined_constrain": compare_ticket02(current["constrain_dp"]),
+            "combined_base": compare_ticket02(current["base_dp"]),
+        },
+    }
+
+
+def layouts_from_episodes(path, kind):
+    payload = json.loads(Path(path).read_text())
+    return [layout_view(episode["layout"]) for episode in payload["episodes"] if episode["kind"] == kind]
+
+
+def combined_external_layouts():
+    rows = layouts_from_manifest(PRIOR_MANIFEST)
+    rows.extend(layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json"))
+    rows.extend(layouts_from_episodes(f"{EXPANSION_DATASET}/trajectory.json", "obstacle"))
+    return rows
+
+
+def publish_obstacle_catalog(output_root, seed):
+    output_root = Path(output_root)
+    sources = prior_block_sources(output_root)
+    catalog = output_root / "catalog"
+    if catalog.exists():
+        missing = scenes_missing_from_catalog(catalog, sources)
+        if not missing:
+            return catalog, {
+                "kept": len(layouts_from_manifest(catalog / "manifest.json")),
+                "resumed": True,
+            }
+        catalog = output_root / "catalog_full"
+        if catalog.exists():
+            missing = scenes_missing_from_catalog(catalog, sources)
+            if missing:
+                raise RuntimeError("catalog_full is still missing accepted continuation scenes")
+            return catalog, {
+                "kept": len(layouts_from_manifest(catalog / "manifest.json")),
+                "resumed": True,
+            }
+    if not sources:
+        return catalog, {"kept": 0, "rejected": 0}
+    report = assemble_catalogs(sources, catalog, seed=seed, provenance={}, drop_conflicts=True)
+    rejected = json.loads((catalog / "rejected_layouts.json").read_text())["scenes"]
+    write_rejection_manifest(output_root / "rejection_manifest.json", [
+        {**row, "reason": row.get("reason", "layout_duplicate")} for row in rejected
+    ])
+    return catalog, report
+
+
+def load_combined_addendum(path, registration):
+    payload = json.loads(Path(path).read_text())
+    if payload.get("reason") != "measured_yield_below_preregistered_attempt_budget":
+        raise ValueError("unrecognized combined addendum")
+    if payload.get("does_not_change") != COMBINED_ADDENDUM_DOES_NOT_CHANGE:
+        raise ValueError("combined addendum changes a frozen rule")
+    if payload.get("within_run_mutual_exclusion") is not True:
+        raise ValueError("addendum relaxes within-run identity")
+    extra = payload["continuation"]
+    if int(extra["per_attempt_deadline"]) != 160:
+        raise ValueError("addendum changes the attempt deadline")
+    if int(extra.get("max_attempts", 0)) < 1 or float(extra.get("wall_seconds", 0)) <= 0:
+        raise ValueError("addendum budget is not finite")
+    extra_span = (int(extra["seed"]) + 1, int(extra["seed"]) + int(extra["max_attempts"]))
+    for span in _seed_span(registration["collection"]["obstacle"]):
+        if not (extra_span[1] < span[0] or span[1] < extra_span[0]):
+            raise ValueError("addendum seed range overlaps the preregistered seeds")
+    return payload
+
+
+def collect_combined_obstacle(registration, addendum=None):
+    spec = registration["collection"]["obstacle"]
+    output_root = Path(registration["paths"]["obstacle_scenes"])
+    output_root.mkdir(parents=True, exist_ok=True)
+    exclude = combined_external_layouts()
+    for source in prior_block_sources(output_root):
+        exclude.extend(layouts_from_manifest(source / "manifest.json"))
+    started = time.monotonic()
+    reports = []
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    stop = threading.Event()
+
+    def _progress():
+        while not stop.wait(60):
+            for journal in output_root.rglob("attempts.jsonl"):
+                text = journal.read_text(errors="replace")
+                print(
+                    f"progress {journal.parent.name} attempts={text.count(chr(10))} "
+                    f"accepted={text.count(chr(34) + 'accepted' + chr(34) + ': true')}",
+                    flush=True)
+
+    def _one(block, exclude_layouts):
+        dest = output_root / "blocks" / block["name"]
+        recover_interrupted_block(dest)
+        return _run_collection_block(
+            block, output_root / "blocks", exclude_layouts, spec["per_attempt_deadline"], True)
+
+    progress = threading.Thread(target=_progress, daemon=True)
+    progress.start()
+    try:
+        with ThreadPoolExecutor(max_workers=int(spec["workers"])) as pool:
+            futures = [pool.submit(_one, block, list(exclude)) for block in spec["blocks"]]
+            for future in futures:
+                reports.append(future.result())
+        catalog, assemble_report = publish_obstacle_catalog(output_root, spec["blocks"][0]["seed"])
+        kept = int(assemble_report["kept"]) if (catalog / "manifest.json").exists() else 0
+        attempts_used = sum(int(report.get("attempts") or 0) for report in reports)
+        deficit = int(spec["target"]) - kept
+        continuation_report = None
+        remaining = int(spec["max_attempts"]) - attempts_used
+        elapsed = time.monotonic() - started
+        continuation = dict(spec["continuation"])
+        if addendum is not None:
+            continuation = dict(addendum["continuation"])
+            remaining = int(continuation["max_attempts"])
+        if deficit > 0 and remaining > 0 and (addendum is not None or elapsed < float(spec["wall_seconds"])):
+            continuation["target"] = deficit
+            if addendum is None:
+                continuation["max_attempts"] = min(int(continuation["max_attempts"]), remaining)
+                continuation["wall_seconds"] = min(
+                    float(continuation["wall_seconds"]), float(spec["wall_seconds"]) - elapsed)
+            if int(continuation["max_attempts"]) >= 1 and float(continuation["wall_seconds"]) > 0:
+                more_exclude = list(exclude)
+                if (catalog / "manifest.json").exists():
+                    more_exclude.extend(layouts_from_manifest(catalog / "manifest.json"))
+                continuation_report = _one(continuation, more_exclude)
+                catalog, assemble_report = publish_obstacle_catalog(output_root, continuation["seed"])
+                kept = int(assemble_report["kept"]) if (catalog / "manifest.json").exists() else kept
+        packaged = layouts_from_manifest(catalog / "manifest.json") if (catalog / "manifest.json").exists() else []
+        block_rows = []
+        for source in prior_block_sources(output_root):
+            block_rows.extend(json.loads((source / "manifest.json").read_text())["scenes"])
+        journal_path = output_root / "discarded_continuations.json"
+        journal = json.loads(journal_path.read_text()) if journal_path.exists() else {"count": 0, "scenes": []}
+        if not journal_path.exists():
+            write_rejection_manifest(journal_path, [])
+            journal = {"count": 0, "scenes": []}
+        assert_continuations_packaged_or_journaled(block_rows, packaged, journal)
+        audit_ok = all(report.get("restore_audit_ok", False) for report in reports if report.get("accepted"))
+        if continuation_report and continuation_report.get("accepted") and not continuation_report.get("recovered"):
+            audit_ok = audit_ok and bool(continuation_report.get("restore_audit_ok"))
+        report = {
+            "stage": "obstacle300",
+            "target": spec["target"],
+            "kept": len(packaged),
+            "complete": len(packaged) == int(spec["target"]) and audit_ok,
+            "restore_audit_ok": audit_ok,
+            "blocks": reports,
+            "continuation": continuation_report,
+            "assemble": assemble_report,
+            "catalog": str(catalog),
+            "elapsed_seconds": time.monotonic() - started,
+            "discarded_continuations": journal,
+            "within_run_mutual_exclusion": True,
+        }
+        _json_atomic(output_root / "stage_report.json", report)
+        return report
+    finally:
+        stop.set()
+        _kill_descendants()
+
+
+def copied_expansion_records(source_h5, manifest_path, expected_sha):
+    source_h5 = Path(source_h5)
+    before = sha256_file(source_h5)
+    if expected_sha and before != expected_sha:
+        raise ValueError("expansion source hash changed")
+    manifest = json.loads(Path(manifest_path).read_text())
+    records = []
+    with h5py.File(source_h5, "r") as handle:
+        for episode in manifest["episodes"]:
+            episode_id = int(episode["episode_id"])
+            group = handle[f"traj_{episode_id}"]
+            if group.attrs.get("kind") != episode["kind"]:
+                raise ValueError(f"traj_{episode_id} kind does not match the expansion manifest")
+            records.append({
+                "kind": episode["kind"],
+                "episode_id": episode_id,
+                "scene_id": episode["scene_id"],
+                "obs": np.asarray(group["obs"]),
+                "actions": np.asarray(group["actions"]),
+                "terminated": np.asarray(group["terminated"]),
+                "truncated": np.asarray(group["truncated"]),
+                "native_success": True,
+                "on_bin": True,
+                "static": True,
+                "ungrasped": True,
+                "retreat_reached": True,
+                "release_reached": True,
+                "settle_reached": True,
+                "obstacle_collision": bool(episode.get("obstacle_collision", False)),
+                "obstacle_crossing": bool(episode.get("obstacle_crossing", False)),
+                "layout": layout_view(episode["layout"]),
+                "provenance": {"source": "copied_expansion", "episode_id": episode_id},
+            })
+    if sha256_file(source_h5) != before:
+        raise RuntimeError("expansion source mutated")
+    return records, before
+
+
+def new_obstacle_records(catalog, start_id=1100):
+    paired = _records_from_catalog(catalog, lambda index, _scene: (index, start_id + index))
+    records = [row for row in paired if row["kind"] == "obstacle"]
+    expected = list(range(start_id, start_id + len(records)))
+    if [int(row["episode_id"]) for row in records] != expected:
+        raise ValueError("new obstacle ids are not contiguous")
+    for row in records:
+        row["provenance"]["source"] = "new_obstacle"
+        if row["obstacle_collision"] or row["obstacle_crossing"] or not row["native_success"]:
+            raise ValueError("new obstacle trajectory is not expert-safe")
+    return records
+
+
+def assert_new_obstacle_independence(new_layouts, existing, dev, prior):
+    if task_duplicate_report(new_layouts)["conflicts"] != 0:
+        raise ValueError("new obstacle layouts are not unique")
+    if any(layouts_conflict(left, right, cylinder=False) for left in new_layouts for right in existing):
+        raise ValueError("new obstacle conflicts with the original 100")
+    assert_external_independence(new_layouts, dev, prior)
+    return True
+
+
+def package_combined_dataset(registration):
+    catalog = Path(json.loads((Path(registration["paths"]["obstacle_scenes"]) / "stage_report.json").read_text())["catalog"])
+    source_h5 = f"{EXPANSION_DATASET}/trajectory.h5"
+    copied, source_sha = copied_expansion_records(
+        source_h5, f"{EXPANSION_DATASET}/trajectory.json", registration["expansion_h5_sha256"])
+    new_records = new_obstacle_records(catalog, 1100)
+    if len(new_records) != OBSTACLE_SLICE_NEW:
+        raise ValueError("new obstacle count is not 200")
+    new_layouts = [row["layout"] for row in new_records]
+    existing = layouts_from_episodes(f"{EXPANSION_DATASET}/trajectory.json", "obstacle")
+    dev = layouts_from_manifest(Path(FROZEN_DEV_SCENES) / "manifest.json")
+    prior = layouts_from_manifest(PRIOR_MANIFEST)
+    assert_new_obstacle_independence(new_layouts, existing, dev, prior)
+    records = copied + new_records
+    before = sha256_file(source_h5)
+    dest = package_records(records, registration["paths"]["demos"], registration)
+    if sha256_file(source_h5) != before:
+        raise RuntimeError("expansion source mutated during packaging")
+    assert_packaged_matches_source(source_h5, dest / "trajectory.h5", list(range(1100)))
+    journal_path = Path(registration["paths"]["obstacle_scenes"]) / "discarded_continuations.json"
+    journal = json.loads(journal_path.read_text()) if journal_path.exists() else {"count": 0, "scenes": []}
+    quality = {
+        "direct_copied": 1000,
+        "obstacle_copied": 100,
+        "obstacle_new": len(new_records),
+        "source_h5_sha256": source_sha,
+        "source_mutated": False,
+        "copied_arrays_equal": True,
+        "new_unique": True,
+        "discarded_continuations": journal.get("count", 0),
+        "formal_performance_claim": False,
+    }
+    _json_atomic(Path(registration["paths"]["exp"]) / "data_quality.json", quality)
+    return dest
+
+
+def assert_packaged_matches_source(source_h5, packaged_h5, episode_ids):
+    with h5py.File(source_h5, "r") as source, h5py.File(packaged_h5, "r") as packaged:
+        for episode_id in episode_ids:
+            left = source[f"traj_{int(episode_id)}"]
+            right = packaged[f"traj_{int(episode_id)}"]
+            for name in ("obs", "actions"):
+                if not np.array_equal(left[name], right[name]):
+                    raise ValueError(f"traj_{episode_id} {name} is not the source array")
+    return True
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "preregister", "preregister-expansion", "collect-train", "collect-dev", "package",
+        "preregister", "preregister-expansion", "preregister-combined",
+        "collect-train", "collect-dev", "package",
         "include-original", "collect-pairs", "collect-direct", "package-expansion",
+        "collect-obstacle300", "package-obstacle300",
         "train-base", "train-constrain", "evaluate", "gate", "compare-baseline",
+        "compare-combined",
     ))
     parser.add_argument("--registration", type=Path, required=True)
     parser.add_argument("--version", default="r1")
@@ -2260,7 +2870,52 @@ def main(argv=None):
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
+    if args.command == "preregister-combined":
+        from examples.baselines.constrain.placesphere_transport_detour import freeze_source_identity
+        exp = args.registration.parent
+        stamp = exp.name.split("_placesphere")[0]
+        files = {
+            "expansion_h5": f"{EXPANSION_DATASET}/trajectory.h5",
+            "expansion_json": f"{EXPANSION_DATASET}/trajectory.json",
+            "base_checkpoint": EXPANSION_BASE_CKPT,
+            "dev_scenes_h5": f"{FROZEN_DEV_SCENES}/scenes.h5",
+            "dev_manifest": f"{FROZEN_DEV_SCENES}/manifest.json",
+        }
+        hashed = {key: {"path": path, "sha256": sha256_file(path)} for key, path in files.items()}
+        if hashed["expansion_h5"]["sha256"] != EXPANSION_H5_SHA:
+            raise SystemExit("expansion demo hash does not match the frozen source")
+        if hashed["base_checkpoint"]["sha256"] != EXPANSION_BASE_SHA:
+            raise SystemExit("base checkpoint hash does not match the frozen EMA")
+        hashed["baseline_base_episodes"] = {
+            "path": f"{EXPANSION_EXP}/paired/base_dp",
+            "sha256": episode_dir_sha(f"{EXPANSION_EXP}/paired/base_dp"),
+        }
+        hashed["baseline_constrain_episodes"] = {
+            "path": f"{EXPANSION_EXP}/paired/constrain_dp",
+            "sha256": episode_dir_sha(f"{EXPANSION_EXP}/paired/constrain_dp"),
+        }
+        payload = build_combined_slice_preregistration(
+            args.version, {
+                "exp": str(exp),
+                "obstacle_scenes": str(exp / "obstacle_scenes"),
+                "demos": f"demos/PlaceSphere-transport-detour/{stamp}_obstacle300",
+                "ckpt_base": str(Path(EXPANSION_BASE_CKPT).parent),
+                "ckpt_constrain": f"outputs/ckpt/{stamp}_placesphere_obstacle300_90k_constrain",
+                "train_constrain": str(exp / "train_constrain"),
+                "paired": str(exp / "paired"),
+                "dev_scenes": FROZEN_DEV_SCENES,
+            }, reason=args.reason, prior_version=args.prior_version or EXPANSION_EXP, baseline_files=hashed)
+        decision = scratch_from_zero_lr({"_last_lr": [0.0]}, optimizer_present=True)
+        if decision["start"] != "scratch":
+            raise SystemExit("cosine last_lr is not 0")
+        payload["resume_decision"] = decision
+        payload["source_identity"] = freeze_pilot_identity()
+        payload["generator_identity"] = freeze_source_identity()
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
     registration = load_preregistration(args.registration)
+    tracked = registration.get("kind") in ("authorized_data_expansion", "authorized_combined_slice")
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
             "collect-train", "collect-dev", "package"):
         raise SystemExit("expansion registration does not use the small-pilot collector")
@@ -2371,7 +3026,26 @@ def main(argv=None):
         dest = package_records(records, args.demo_dir, registration)
         print(dest, flush=True)
         return dest
+    if args.command == "collect-obstacle300":
+        resolve_running_identity(registration, freeze_pilot_identity())
+        addendum_path = args.registration.parent / "collection_budget_addendum.json"
+        addendum = load_combined_addendum(addendum_path, registration) if addendum_path.exists() else None
+        report = collect_combined_obstacle(registration, addendum)
+        _require_new_generator(registration, report)
+        print(json.dumps({
+            key: report.get(key) for key in ("stage", "target", "kept", "complete", "catalog")
+        }), flush=True)
+        if not report["complete"]:
+            raise SystemExit("obstacle collection incomplete")
+        return report
+    if args.command == "package-obstacle300":
+        resolve_running_identity(registration, freeze_pilot_identity())
+        dest = package_combined_dataset(registration)
+        print(dest, flush=True)
+        return dest
     if args.command == "train-base":
+        if registration.get("kind") == "authorized_combined_slice":
+            raise SystemExit("combined slice does not retrain base")
         if registration.get("kind") == "authorized_data_expansion":
             resolve_running_identity(registration, freeze_pilot_identity())
         summary = train_base(
@@ -2381,12 +3055,16 @@ def main(argv=None):
             summary["coverage"] = write_coverage(args.run_dir, registration)
         return summary
     if args.command == "train-constrain":
-        if registration.get("kind") == "authorized_data_expansion":
+        if tracked:
             resolve_running_identity(registration, freeze_pilot_identity())
+        if registration.get("kind") == "authorized_combined_slice":
+            assert_combined_budget(registration)
+            if sha256_file(args.base_checkpoint) != registration["base_checkpoint_sha256"]:
+                raise SystemExit("base checkpoint is not the frozen EMA")
         summary = train_constrain(
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.base_checkpoint, args.run_dir, args.checkpoint_dir, registration, args.device)
-        if registration.get("kind") == "authorized_data_expansion":
+        if tracked:
             summary["coverage"] = write_coverage(args.run_dir, registration)
         return summary
     if args.command == "evaluate":
@@ -2395,7 +3073,7 @@ def main(argv=None):
             _child_pids, _terminate_new_children,
         )
         from examples.baselines.constrain.placesphere_transport_detour import TransportDetourSceneSet
-        expansion = registration.get("kind") == "authorized_data_expansion"
+        expansion = tracked
         running_identity = None
         if expansion:
             running_identity = resolve_running_identity(registration, freeze_pilot_identity())
@@ -2489,11 +3167,12 @@ def main(argv=None):
         decision["paired_counts"] = paired.get("paired_counts")
         decision["evaluation_source_matches_preregistration"] = paired.get("evaluation_source_matches_preregistration")
         decision["checkpoint_sha256"] = paired.get("checkpoint_sha256")
-        if registration.get("kind") == "authorized_data_expansion":
+        if tracked:
             decision["on_fail"] = registration["gate"]["on_fail"]
             decision["attribution"] = registration.get("attribution")
             decision["formal_performance_claim"] = False
             decision["generalization_claim"] = False
+            decision["cannot_separate_factors"] = registration.get("cannot_separate_factors")
         _json_atomic(args.output_dir / "gate.json", decision)
         print(json.dumps(decision, indent=2), flush=True)
         return decision
@@ -2503,6 +3182,16 @@ def main(argv=None):
         _json_atomic(args.output_dir / "expansion_comparison.json", report)
         print(json.dumps({
             "expansion_counts": report["expansion_counts"],
+            "transitions": report["transitions"],
+            "formal_performance_claim": False,
+        }, indent=2), flush=True)
+        return report
+    if args.command == "compare-combined":
+        resolve_running_identity(registration, freeze_pilot_identity())
+        report = compare_combined_eval(registration, args.output_dir)
+        _json_atomic(args.output_dir / "combined_comparison.json", report)
+        print(json.dumps({
+            "combined_counts": report["combined_counts"],
             "transitions": report["transitions"],
             "formal_performance_claim": False,
         }, indent=2), flush=True)

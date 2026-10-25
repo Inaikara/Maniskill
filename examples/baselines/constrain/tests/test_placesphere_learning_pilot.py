@@ -14,29 +14,38 @@ from examples.baselines.constrain.placesphere_learning_pilot import (
     NATIVE_SUCCESS,
     PAIR_ACCEPTANCE_CHECKS,
     batched_observation,
+    build_combined_slice_preregistration,
     build_expansion_preregistration,
     build_episode_index,
     build_preregistration,
     coerce_action_sequence,
+    compare_combined_eval,
     compare_ticket02,
     dataset_coverage,
     decide_gate,
     dev_premises_hold,
     direct_candidate_accepted,
+    expected_base_updates,
     expansion_id_plan,
     expansion_transitions,
     layouts_conflict,
     load_expansion_addendum,
     load_preregistration,
     package_records,
+    prior_block_sources,
     require_baseline_counts,
     resolve_running_identity,
+    scenes_missing_from_catalog,
+    scratch_from_zero_lr,
     split_is_independent,
     task_duplicate_report,
     trajectory_has_release_retreat_settle,
     validate_expansion_ids,
     write_coverage,
     write_preregistration,
+    write_rejection_manifest,
+    assert_combined_budget,
+    assert_continuations_packaged_or_journaled,
     assert_external_independence,
     assert_retained_arrays,
 )
@@ -752,3 +761,199 @@ def test_write_coverage_rejects_missing_zero_and_nonpositive_counts(tmp_path):
     }
     with pytest.raises(ValueError, match="windows"):
         write_coverage(_write_nested(tmp_path / "base-zero", base), registration)
+
+
+def _scene_row(scene_id, seed, start):
+    return {
+        "scene_id": scene_id,
+        "seed": seed,
+        "start_xy": list(start),
+        "container_xy": [0.1, 0.0],
+        "cylinder": {"center_xy": [0.0, 0.0], "radius": 0.03},
+    }
+
+
+def _write_manifest(directory, scenes):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "manifest.json").write_text(json.dumps({"scenes": scenes}))
+    return directory
+
+
+def test_combined_slice_freezes_300_data_90000_scratch_and_cannot_separate_factors(tmp_path):
+    payload = build_combined_slice_preregistration(
+        "obstacle300_90k", {"exp": "outputs/exp/x"},
+        reason="authorized continued optimization", prior_version="outputs/exp/20261024_155244_placesphere_data_expansion")
+    assert payload["kind"] == "authorized_combined_slice"
+    assert payload["train_obstacle_count"] == 300
+    assert payload["train_direct_count"] == 1000
+    assert payload["obstacle_plan_cap"] == 300
+    assert payload["authorized_obstacle_cap"] == 1000
+    assert payload["slice_is_not_the_authorized_cap"] is True
+    assert payload["cannot_separate_factors"] is True
+    assert payload["changed_factors"] == ["obstacle_count", "constrain_updates"]
+    assert payload["training"]["total_iters"] == 90000
+    assert payload["training"]["base_updates"] == 30000
+    assert payload["training"]["start"] == "scratch"
+    assert payload["training"]["batch_size"] == 1024
+    assert payload["training"]["lr"] == 1e-4
+    assert payload["training"]["seed"] == 1
+    assert payload["training"]["proximity_weight"] == "off"
+    assert payload["training"]["loss_weight"] is None
+    assert payload["training"]["base_retrained"] is False
+    assert payload["base_checkpoint_sha256"] == "2bbb7f5e1c1f4f93d177cf12b63d182a2d4cc1a239387f51d03de6afe01c8640"
+    assert payload["layout_dedup"]["external_excludes"] == ["original100", "dev30", "ticket04"]
+    assert payload["layout_dedup"]["within_new_enforced"] is True
+    assert payload["layout_dedup"]["cylinder_proximity_is_conflict"] is False
+    assert payload["collection"]["policy_scene_filter"] is False
+    assert payload["collection"]["easier_obstacle"] is False
+    assert payload["collection"]["radius_m"] == 0.03
+    assert payload["collection"]["direct_recollected"] is False
+    assert payload["collection"]["obstacle"]["per_attempt_deadline"] == 160
+    assert payload["collection"]["obstacle"]["target"] == 200
+    assert payload["eval"]["max_steps"] == 200
+    assert payload["eval"]["episode_wall_seconds"] == 120
+    assert payload["gate"]["task_success_rate_gte"] == 0.90
+    assert payload["gate"]["safe_success_rate_gte"] == 0.85
+    assert payload["gate"]["contact_rate_lte"] == 0.10
+    assert payload["gate"]["xy_crossing_rate_lte"] == 0.10
+    assert payload["gate"]["formal_performance_claim"] is False
+    assert payload["comparison"]["constrain_counts"] == {"task": 25, "safe": 21, "contact": 7, "xy": 0}
+    assert payload["comparison"]["base_counts"] == {"task": 5, "safe": 0, "contact": 30, "xy": 24}
+    assert payload["diagnosis"]["dev_train_epsilon_ratio"] > 2.0
+    assert payload["diagnosis"]["release_is_the_remaining_contact"] is True
+    assert payload["diagnosis"]["not_a_collision_shield"] is True
+    assert payload["selected_obstacle_ids"] == list(range(1000, 1300))
+    assert payload["selected_direct_ids"] == list(range(1000))
+    path = tmp_path / "preregistration.json"
+    write_preregistration(path, payload)
+    loaded = load_preregistration(path)
+    assert loaded["train_obstacle_count"] == 300
+    assert loaded["native_success"] == NATIVE_SUCCESS
+
+
+def test_base_updates_stay_30000_when_the_constrain_budget_is_90000():
+    registration = {"training": {"total_iters": 90000, "base_updates": 30000, "start": "scratch"},
+                    "cannot_separate_factors": True}
+    assert expected_base_updates(registration) == 30000
+    assert expected_base_updates({"training": {"total_iters": 30000}}) == 30000
+    with pytest.raises(RuntimeError, match="30000"):
+        assert_combined_budget({"training": {"total_iters": 90000, "start": "scratch"}, "cannot_separate_factors": True})
+
+
+def test_zero_cosine_last_lr_selects_scratch_not_resume():
+    decision = scratch_from_zero_lr({"_last_lr": [0.0]}, optimizer_present=True)
+    assert decision["start"] == "scratch"
+    assert decision["last_lr"] == 0.0
+    assert decision["chosen_updates"] == 90000
+    assert "0" in decision["reason"]
+
+
+def test_prior_catalog_keeps_continuation_scenes_the_earlier_assemble_dropped(tmp_path):
+    kept = _scene_row("placesphere-000", 1, [-0.1, 0.0])
+    extra = _scene_row("placesphere-001", 2, [-0.12, 0.04])
+    _write_manifest(tmp_path / "assembled", [kept])
+    _write_manifest(tmp_path / "blocks" / "continuation", [kept, extra])
+    sources = prior_block_sources(tmp_path)
+    assert [path.name for path in sources] == ["continuation"]
+    missing = scenes_missing_from_catalog(tmp_path / "assembled", sources)
+    assert [row["scene_id"] for row in missing] == ["placesphere-001"]
+    with pytest.raises(RuntimeError, match="continuation"):
+        assert_continuations_packaged_or_journaled([kept, extra], [kept], {"count": 0, "scenes": []})
+    path = write_rejection_manifest(tmp_path / "rejection_manifest.json", [{
+        "scene_id": "placesphere-009", "reason": "layout_duplicate",
+    }])
+    payload = json.loads(Path(path).read_text())
+    assert payload["count"] == 1
+    assert payload["scenes"][0]["reason"] == "layout_duplicate"
+
+
+def test_interrupted_block_recovers_ingested_scenes_instead_of_dropping_them(tmp_path):
+    from examples.baselines.constrain.placesphere_learning_pilot import recover_interrupted_block
+    dest = tmp_path / "blocks" / "block_a"
+    dest.mkdir(parents=True)
+    (dest / "source_identity.json").write_text(json.dumps({"files_sha256": "abc"}))
+    (dest / "config.json").write_text(json.dumps({"generation_seed": 7}))
+    metadata = {
+        "scene_id": "placesphere-000", "seed": 11,
+        "start_xy": [-0.1, 0.0], "container_xy": [0.1, 0.0],
+        "cylinder": {"center_xy": [0.0, 0.0], "radius": 0.03},
+    }
+    with h5py.File(dest / "scenes.h5", "w") as handle:
+        group = handle.create_group("placesphere-000")
+        group.attrs["metadata_json"] = json.dumps(metadata)
+    (dest / "attempts.jsonl").write_text(json.dumps({"accepted": True, "attempt": 1}) + "\n")
+    report = recover_interrupted_block(dest)
+    assert report["accepted"] == 1
+    assert report["recovered"] is True
+    assert json.loads((dest / "manifest.json").read_text())["scenes"][0]["seed"] == 11
+    assert prior_block_sources(tmp_path)[0].name == "block_a"
+    (dest / "attempts.jsonl").write_text("")
+    dest.joinpath("report.json").unlink()
+    with pytest.raises(RuntimeError, match="journal"):
+        recover_interrupted_block(dest)
+
+
+def test_compare_combined_reads_episode_files_not_handwritten_counts(tmp_path):
+    def row(scene_id, native, safe, contact, xy, sha="old"):
+        return {
+            "scene_id": scene_id, "status": "evaluated", "checkpoint_sha256": sha,
+            "result": {
+                "native_success": native, "safe_success": safe,
+                "obstacle_contact": contact, "xy_forbidden_crossing": xy,
+            },
+            "first_contact": {"phase": "release_or_stabilization", "link_group": "gripper", "location": "top_cap"} if contact else {},
+            "terminal_mechanism": {"mechanism": "incorrect_release" if not native else None, "native_success": native},
+            "result_phase": "release_or_stability_failed" if not native else "task_success",
+        }
+
+    baseline = tmp_path / "baseline"
+    current = tmp_path / "current"
+    for name, directory, native in (("constrain_dp", baseline, False), ("base_dp", baseline, False)):
+        directory.joinpath(name).mkdir(parents=True)
+        (directory / name / "episode_000.json").write_text(json.dumps(row("placesphere-000", native, False, True, native is False)))
+    (current / "constrain_dp").mkdir(parents=True)
+    (current / "base_dp").mkdir()
+    (current / "constrain_dp" / "episode_000.json").write_text(json.dumps(
+        row("placesphere-000", True, True, False, False, sha="new")))
+    (current / "base_dp" / "episode_000.json").write_text(json.dumps(
+        row("placesphere-000", False, False, True, True, sha="base")))
+    registration = {
+        "comparison": {
+            "expansion_paired": str(baseline),
+            "constrain_counts": {"task": 0, "safe": 0, "contact": 1, "xy": 1},
+            "base_counts": {"task": 0, "safe": 0, "contact": 1, "xy": 1},
+            "expansion_constrain_sha256": "old",
+        },
+        "cannot_separate_factors": True,
+    }
+    report = compare_combined_eval(registration, current)
+    assert report["authoritative"] == "episode_files"
+    assert report["combined_counts"]["constrain_dp"]["task"] == 1
+    assert report["transitions"]["constrain_dp"]["transitions"]["native_success"]["improved"] == 1
+    assert report["transitions"]["constrain_dp"]["transitions"]["obstacle_contact"]["cleared"] == 1
+    assert report["formal_performance_claim"] is False
+    registration["comparison"]["constrain_counts"] = {"task": 25, "safe": 21, "contact": 7, "xy": 0}
+    with pytest.raises(ValueError, match="baseline"):
+        compare_combined_eval(registration, current)
+
+
+def test_write_coverage_records_the_new_demo_hash_and_does_not_write_a_gate(tmp_path):
+    demo_dir = tmp_path / "demos"
+    episode_ids = [1000]
+    package_records([_record("obstacle", 1000, length=20)], demo_dir, _nested_registration(demo_dir, episode_ids, updates=90000, batch_size=4))
+    config, registration = _nested_config(demo_dir, episode_ids, updates=90000, batch_size=4)
+    assert "windows" not in config
+    run_dir = _write_nested(tmp_path, config)
+    coverage = write_coverage(run_dir, registration)
+    assert coverage["updates"] == 90000
+    assert coverage["windows"] == 19
+    assert coverage["h5_sha256"] == _file_sha256(demo_dir / "trajectory.h5")
+    assert coverage["epochs"] == (90000 * 4) / 19
+    assert not (run_dir / "gate.json").exists()
+    decision = decide_gate({
+        "task_success_rate": 25 / 30, "safe_success_rate": 21 / 30,
+        "obstacle_contact_rate": 7 / 30, "xy_crossing_rate": 0.0,
+        "complete": True, "runtime_errors": 0,
+    })
+    assert decision["decision"] == "pause"
+    assert decision["failures"] == ["task_success_rate", "safe_success_rate", "obstacle_contact_rate"]

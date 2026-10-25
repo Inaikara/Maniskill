@@ -206,6 +206,24 @@ Also retained:
   `c370f36b3c1bb1d3ceb87fe6db200c754c0cf934d7cbe91fac566c6850c1b655` is not
   retroactive. Validation
   `2a59194181b48870889492aae53424523b5eca99958ece386fc3e166d65aec61`.
+- `outputs/exp/20261025_085101_placesphere_obstacle300_90k/`: Ticket 06
+  authorized combined 100→300 obstacle and 90,000-update slice on the same
+  frozen 30 dev scenes. Factors cannot be separated. Gate is **pause**. It
+  does not replace the expansion run or admit Ticket 08. No automatic
+  300→1000. Base was not retrained. Weight:
+  `outputs/ckpt/20261025_085101_placesphere_obstacle300_90k_constrain/final.pt`
+  `70cf5e6f00bfec8b7d0945f65805fba06bbddd95356778d73009bdc5fed2326b`.
+  Training demos:
+  `demos/PlaceSphere-transport-detour/20261025_085101_obstacle300/`
+  `f9dd209868d800fbce41eae276112a23dffc9aec02e91196ca900d46fc42aa02`
+  (1,000 copied direct + 100 copied obstacle, arrays equal to
+  `df01aec45a5fcf6f04b0f0e2cb91d4bdf58d238ce41163b40cf15d1388d253ed`;
+  200 new unique obstacle). Same-scene Constrain versus expansion 25/21/7/0
+  is 27/21/6/1 task/safe/contact/XY. Not a formal performance result.
+  Preregistration
+  `a2708b53736ad21d4242d94afa371cab37ab8456d454f6aea525d04e12779382`.
+  Gate `b640d91352b28dc503303c35c3a96085835a4c761e75727700d0cd51d839c9e1`.
+  Comparison `e0bd371ae6c32dfe7331f1d44a918bebe8b3fc2fa9f4d3640271f8e26597bb3f`.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
