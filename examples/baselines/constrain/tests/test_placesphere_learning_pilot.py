@@ -180,6 +180,26 @@ def test_dataset_uses_39d_direct_and_42d_obstacle_and_refuses_extras(tmp_path):
         PilotTrajectoryDataset(dest / "trajectory.h5", dest / "trajectory.json", "direct", [0])
 
 
+def test_phase_balance_applies_recorded_weights_and_refuses_an_unknown_phase():
+    from examples.baselines.constrain.placesphere_learning_pilot import (
+        constrain_phase_weight, phase_balanced_epsilon,
+    )
+
+    table = {
+        "approach": 0.7895109851169383, "release": 1.1524137931034484,
+        "transport": 0.5584893048128342, "held_near_bin": 13.314741035856574,
+    }
+    weight = constrain_phase_weight(["release", "held_near_bin"], table)
+    assert weight == [table["release"], table["held_near_bin"]]
+    with pytest.raises(ValueError, match="unknown phase"):
+        constrain_phase_weight(["release", "mystery"], table)
+    prediction = torch.zeros(2, 16, 7)
+    noise = torch.zeros(2, 16, 7)
+    noise[0] = 1
+    loss = phase_balanced_epsilon(prediction, noise, weight)
+    assert float(loss) == pytest.approx(table["release"] / sum(weight))
+
+
 def test_action_coercion_accepts_unbatched_horizon_and_rejects_wrong_width():
     horizon = torch.zeros(8, 7)
     batched = coerce_action_sequence(horizon)

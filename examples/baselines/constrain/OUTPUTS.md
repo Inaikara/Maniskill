@@ -223,7 +223,26 @@ Also retained:
   Preregistration
   `a2708b53736ad21d4242d94afa371cab37ab8456d454f6aea525d04e12779382`.
   Gate `b640d91352b28dc503303c35c3a96085835a4c761e75727700d0cd51d839c9e1`.
-  Comparison `e0bd371ae6c32dfe7331f1d44a918bebe8b3fc2fa9f4d3640271f8e26597bb3f`.
+   Comparison `e0bd371ae6c32dfe7331f1d44a918bebe8b3fc2fa9f4d3640271f8e26597bb3f`.
+- `outputs/exp/20261025_114030_placesphere_release_diagnosis/`: Ticket 06
+  indexed diagnosis of the frozen `70cf5e6f` EMA. No training and no new data.
+  It does not replace the 300/90k eval. Index
+  `10a2ec98844bf9afaa7ea28f1ccf48c8049d017d28b8ed6d90d54e17f55cab38`.
+  Evidence `8e93d6c9886e7e69e86accfc12622cc3b20f7205d4ccc28d06d6c947fa1a6bec`.
+  Window index is `window_index.jsonl`, 40104 entries.
+- `outputs/exp/20261025_114648_placesphere_phase_balance/`: Ticket 06
+  one phase-inverse-frequency trial on the unchanged 300 demos, from Base EMA
+  `2bbb7f5e1c1f4f93d177cf12b63d182a2d4cc1a239387f51d03de6afe01c8640`, 90000
+  updates, final EMA. Gate is **pause**. It does not replace the 300/90k run
+  or admit Ticket 08. Weight:
+  `outputs/ckpt/20261025_114648_placesphere_phase_balance_constrain/final.pt`
+  `3385414d139d587252dfca36fdd6dd4501d7f1ac7fdfcd220e95fa08ed3a58bf`.
+  Same-scene Constrain versus `70cf5e6f` 27/21/6/1 is 27/21/7/0
+  task/safe/contact/XY. Contact cleared/introduced/both/neither = 2/3/4/21.
+  Not a formal performance result. Preregistration
+  `9c1a630dd7f4e29c09463fe29e49652f1daf08298aa0eb90fc8542723032432b`.
+  Gate `1f0dd11faa7893d7e8b55f388e753da988cffa43902e932cc8d4cbee7f6ca493`.
+  Comparison `e2444277f5d755d0b4a230e0631ac31828c25ed4541f8c97d71ba0b518f36b75`.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or

@@ -433,6 +433,27 @@ def package_records(records, dest, registration):
     return dest
 
 
+def constrain_phase_weight(phases, table):
+    if not isinstance(table, dict) or not table:
+        raise ValueError("phase weight table is empty")
+    weights = []
+    for phase in phases:
+        if phase not in table:
+            raise ValueError(f"unknown phase: {phase}")
+        weights.append(float(table[phase]))
+    if any(value <= 0 or not np.isfinite(value) for value in weights):
+        raise ValueError("phase weights must be finite and positive")
+    return weights
+
+
+def phase_balanced_epsilon(prediction, noise, weight):
+    per_sample = (prediction - noise).pow(2).flatten(1).mean(1)
+    scale = torch.as_tensor(weight, dtype=per_sample.dtype, device=per_sample.device)
+    if tuple(scale.shape) != tuple(per_sample.shape) or float(scale.sum()) <= 0:
+        raise ValueError("phase weights must match the batch")
+    return (scale * per_sample).sum() / scale.sum()
+
+
 def _window_slices(length, obs_horizon=2, pred_horizon=16):
     before, after = obs_horizon - 1, pred_horizon - obs_horizon
     return [(start, start + pred_horizon) for start in range(-before, length - pred_horizon + after)]
@@ -477,6 +498,13 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
                 for start, end in _window_slices(len(actions)):
                     self.slices.append((len(self.actions) - 1, start, end))
         self.trajectory_ids = list(self.expected_ids)
+        self.phases = []
+        if self.width == RAW_OBS_DIM:
+            from examples.baselines.constrain.placesphere_release_diagnosis import label_training_window
+            for trajectory, start, _end in self.slices:
+                self.phases.append(label_training_window(
+                    self.observations[trajectory].numpy(), self.actions[trajectory].numpy(),
+                    start=start, episode_id=self.trajectory_ids[trajectory])["phase"])
 
     def __len__(self):
         return len(self.slices)
@@ -493,7 +521,10 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
         if end > length:
             pad = torch.tensor([0, 0, 0, 0, 0, 0, 1], dtype=act_seq.dtype)
             act_seq = torch.cat((act_seq, pad.repeat(end - length, 1)))
-        return {"observations": obs_seq, "actions": act_seq}
+        item = {"observations": obs_seq, "actions": act_seq}
+        if self.phases:
+            item["phase"] = self.phases[index]
+        return item
 
 
 def _state_sha(state):
@@ -691,8 +722,18 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         noise = torch.randn_like(actions)
         timesteps = torch.randint(0, 100, (len(actions),), device=device)
         noisy = scheduler.add_noise(actions, noise, timesteps)
-        loss = torch.nn.functional.mse_loss(
-            denoiser(noisy, timesteps, global_cond=obs[..., :POLICY_OBS_DIM].flatten(1), hint=hint), noise)
+        prediction = denoiser(
+            noisy, timesteps, global_cond=obs[..., :POLICY_OBS_DIM].flatten(1), hint=hint)
+        spec = training.get("loss_weight")
+        if spec is None:
+            loss = torch.nn.functional.mse_loss(prediction, noise)
+        else:
+            if spec.get("name") != "phase_inverse_frequency" or spec.get("action_shield") or spec.get("architecture_change"):
+                raise RuntimeError("phase balance is the only authorized loss change")
+            if "phase" not in batch:
+                raise RuntimeError("phase balance requires recorded window phases")
+            loss = phase_balanced_epsilon(
+                prediction, noise, constrain_phase_weight(list(batch["phase"]), spec["weights"]))
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at update {step}")
         optimizer.zero_grad(set_to_none=True)
