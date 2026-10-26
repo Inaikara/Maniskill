@@ -507,7 +507,7 @@ def _attempt_body(seed, result_dir, envs):
 def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps, waypoint=None,
                          obstacle_enabled=False, obstacle_center=None, initial_snapshot=None,
                          lift_height=0.10, record_body_sweep=True, stop_on_contact=False,
-                         shared_targets=None):
+                         shared_targets=None, terminal_mode="legacy", release_margin_m=None):
     """Execute grasp, lift, optional side join, then release, retreat, and settle."""
     import sapien
     import torch
@@ -716,29 +716,45 @@ def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps
         reached = status is None
         trace["phase_status"].append(("transport", "reached" if reached else (status or "timeout")))
         ok = reached
-    if ok:
-        trace["container_approach_action_index"] = len(actions)
-        trace["container_approach_snapshot"] = snapshot_execution_state(env)
-        current_phase = "container_approach"
-        ok = mark("container_approach", move(shared_targets["container_approach_xyz"], grasp_quat, grip=-1.0))
-    if ok and not done:
-        current_phase = "retreat"
-        retreat_reached = move(shared_targets["retreat_xyz"], grasp_quat, grip=-1.0, budget=30)
-        trace["phase_status"].append(("retreat", "episode_ended" if done else ("reached" if retreat_reached else "timeout")))
-        ok = retreat_reached and not done
-    if ok and not done:
-        current_phase = "release"
-        release_begin = len(actions)
-        if step([0, 0, 0, 0, 0, 0, 1]):
-            pass
-        trace["phase_status"].append(("release", "episode_ended" if done else "reached"))
-        ok = not done
-    if ok and not done:
-        current_phase = "settle"
-        for _ in range(36):
+    if terminal_mode not in ("legacy", "above_release"):
+        raise ValueError(f"unknown terminal_mode {terminal_mode}")
+    if terminal_mode == "legacy":
+        if ok:
+            trace["container_approach_action_index"] = len(actions)
+            trace["container_approach_snapshot"] = snapshot_execution_state(env)
+            current_phase = "container_approach"
+            ok = mark("container_approach", move(shared_targets["container_approach_xyz"], grasp_quat, grip=-1.0))
+        if ok and not done:
+            current_phase = "retreat"
+            retreat_reached = move(shared_targets["retreat_xyz"], grasp_quat, grip=-1.0, budget=30)
+            trace["phase_status"].append(("retreat", "episode_ended" if done else ("reached" if retreat_reached else "timeout")))
+            ok = retreat_reached and not done
+        if ok and not done:
+            current_phase = "release"
+            release_begin = len(actions)
             if step([0, 0, 0, 0, 0, 0, 1]):
-                break
-        trace["phase_status"].append(("settle", "episode_ended" if done else "reached"))
+                pass
+            trace["phase_status"].append(("release", "episode_ended" if done else "reached"))
+            ok = not done
+        if ok and not done:
+            current_phase = "settle"
+            for _ in range(36):
+                if step([0, 0, 0, 0, 0, 0, 1]):
+                    break
+            trace["phase_status"].append(("settle", "episode_ended" if done else "reached"))
+    elif ok:
+        from examples.baselines.constrain.placesphere_matched_terminal import execute_above_release
+
+        if release_margin_m is None:
+            raise ValueError("above_release requires a predeclared margin")
+        trace["container_approach_snapshot"] = snapshot_execution_state(env)
+        status = execute_above_release(
+            step=step, move=move, base=base, grasp_quat=grasp_quat, shared_targets=shared_targets,
+            trace=trace, cylinder_top_z=float(base.obstacle_collision_height), margin_m=release_margin_m,
+            is_done=lambda: done, action_count=lambda: len(actions), bodies_fn=lambda: _collision_bodies(base))
+        release_begin = status.get("release_begin")
+        ok = bool(status.get("ok"))
+        trace["matched_terminal"] = status
     if release_begin is not None:
         trace["release_control_step"] = next(
             (index for index in range(release_begin, len(infos)) if not _flag(infos[index], "is_obj_grasped")),

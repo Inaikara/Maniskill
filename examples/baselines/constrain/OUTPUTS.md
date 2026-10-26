@@ -261,7 +261,35 @@ Also retained:
   feasibility probe, not a packaged demo. A 2 cm lateral offset at the
   closed-grip container approach still commands a closed descent to the same
   target. Collection of this expert is not a recovery dataset. Probe
-  `49facecbf0e06a09f75e970830f4401d017cf6a26b39b491232d99410985397e`.
+   `49facecbf0e06a09f75e970830f4401d017cf6a26b39b491232d99410985397e`.
+- `outputs/exp/20261025_134916_placesphere_matched_terminal/`: Ticket 06
+  opt-in above-release feasibility. Not a training set and not collection-ready.
+  Legacy `terminal_mode` default remains `legacy`. Selected margin 0.015 m on
+  8/8 calibration obstacle runs after 0.005 m failed the vertex filter on 2/8.
+  Confirmation obstacle 16/16 native-safe, 0 contact. Dev30 after the freeze,
+  not used for selection or training: 30/30 native-safe, 0 contact.
+  Perturbation denominator 64 compared on 8 calibration layouts: legacy
+  contact 32, new contact 10, introduced 0, cleared 22. Pre-terminal ±1/±2 cm
+  contact was 0/32 for both. The contact drop is only at nearest-approach
+  midstates, where new still contacts 10/32. Direct suffix accepted 0/8 and
+  0/16. `confirmation.json` `collection_ready: true` is obstacle-only and is
+  overruled by `collection_decision.json`. No demos written. Old 300 and
+  direct h5 files were not overwritten. Run identity
+  `aa7d2821ce537475051e30895e04a9acbdeaecae2dd8dc1da04ee4da5fa80eed`.
+   The later flag fix is not that identity. Radius, native thresholds, and
+   cylinder geometry were not changed. No training. That run's
+   `confirmation.json` `collection_ready: true` is obstacle-only and is not
+   rewritten. It is not this round's identity.
+- `outputs/exp/20261026_100200_placesphere_matched_terminal_r19/`: Ticket 06
+   round 19 role split. Not a training set. Collection is **not ready**.
+   Source identity `75e474697e1960c655d548945d7423ad28c6087ee65281f20ad5620ab7e33bf3`.
+   Previous runtime `aa7d2821ce537475051e30895e04a9acbdeaecae2dd8dc1da04ee4da5fa80eed`
+   was not rewritten. Margin 0.015 m selected on obstacle positives only
+   (0.005 failed 2/8 `hand_below_cylinder_top`). Calibration role bundle 8/8.
+   Confirmation admission 13/16, `collection_ready` false in both
+   `confirmation.json` and `collection_decision.json`. Held-out dev30 26/30,
+   not used for selection or training. Negative direct 16/16 confirmation
+   transport-blocked and admits no demos. No full collection and no training.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or
