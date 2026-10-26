@@ -24,13 +24,17 @@ ABOVE_RELEASE_MARGINS_M = (0.005, 0.015, 0.030)
 SIDE_OFFSET_HEADINGS_RAD = (0.0, 0.6, -0.6)
 SIDE_OFFSET_M = 0.05
 PERTURB_DISTANCES_M = (0.01, 0.02)
+RELEASE_HOLD_STEPS_CANDIDATES = (0, 8, 16)
 ACTION_CAP = 0.35
 POS_SCALE_M = 0.1
 MAX_COMMAND_M = ACTION_CAP * POS_SCALE_M
 PRE_RELEASE_XY_M = 0.003
 RETREAT_DZ_M = 0.08
 STABILIZE_BUDGET = 16
-SETTLE_BUDGET = 48
+SETTLE_BUDGET = 800
+EXPERT_MAX_STEPS = 1000
+TERMINAL_FEEDBACK_SETTLE_BUDGET = 800
+MAIN_POLICY_EVAL_BUDGET = 200
 HEIGHT_HIGH_M = 0.15
 HAND_LINK_NAMES = ("panda_hand", "panda_leftfinger", "panda_rightfinger")
 PAIR_CATALOG = "outputs/exp/20261024_155244_placesphere_data_expansion/pair_scenes/merged"
@@ -42,7 +46,11 @@ IDENTITY_FILES = (
     "examples/baselines/constrain/placesphere_pilot.py",
     "examples/baselines/constrain/placesphere_obstacle.py",
     "examples/baselines/constrain/pickcube_expert.py",
+    "examples/baselines/constrain/placesphere_terminal_diagnosis.py",
+    "examples/baselines/constrain/placesphere_round20_feedback_probe.py",
+    "examples/baselines/constrain/placesphere_round20_long_settle_probe.py",
     "examples/baselines/constrain/tests/test_placesphere_matched_terminal.py",
+    "examples/baselines/constrain/tests/test_placesphere_terminal_diagnosis.py",
 )
 ROLE_POSITIVE_DIRECT = "positive_direct"
 ROLE_POSITIVE_OBSTACLE = "positive_obstacle"
@@ -52,9 +60,9 @@ PREVIOUS_RUNTIME_IDENTITY = "aa7d2821ce537475051e30895e04a9acbdeaecae2dd8dc1da04
 COLLECTION_READY_IFF = (
     "every confirmation layout admits only when positive_direct is parked, native, "
     "and contact-free from execution start, positive_obstacle keeps the actual cylinder "
-    "and is native-safe from execution start, both share the planned-geometry terminal "
-    "targets, and the direct terminal replay at that actual cylinder is native and "
-    "contact-free without treating a cleared prefix latch as full-prefix safety; "
+    "and is native-safe from execution start, both share a target at or above the "
+    "measured direct and obstacle clearance, and the direct terminal replay runs the "
+    "same feedback completion to first native success with suffix-only contact proof; "
     "negative_direct never admits"
 )
 TARGET_KEYS = ("lift_xyz", "transport_exit_xyz", "clearance_xyz", "release_tcp_z", "retreat_xyz")
@@ -73,6 +81,11 @@ def terminal_phase_plan(mode):
 def clearance_tcp_z(cylinder_top_z, *, tcp_z, lowest_hand_vertex_z, margin_m):
     hand_below = max(0.0, float(tcp_z) - float(lowest_hand_vertex_z))
     return float(cylinder_top_z) + hand_below + float(margin_m)
+
+
+def shared_release_tcp_z(*, direct_required_z_m, obstacle_required_z_m, transport_exit_z_m):
+    """Select the measured common endpoint requirement, with no arbitrary raise."""
+    return max(float(direct_required_z_m), float(obstacle_required_z_m), float(transport_exit_z_m))
 
 
 def above_release_candidates(cylinder_top_z, *, tcp_z, lowest_hand_vertex_z, transport_exit_z,
@@ -294,6 +307,10 @@ def terminal_replay_accepted(record):
         and record.get("prefix_latches_labeled") is True
         and record.get("prefix_latch_cleared_as_proof") is not True
         and record.get("full_prefix_safe") is False
+        and record.get("terminal_feedback_completed") is True
+        and record.get("suffix_contact_free") is True
+        and 0 <= int(record.get("feedback_settle_steps", TERMINAL_FEEDBACK_SETTLE_BUDGET + 1))
+        <= TERMINAL_FEEDBACK_SETTLE_BUDGET
         and record.get("native_success") and record.get("on_bin") and record.get("static") and record.get("ungrasped")
         and not record.get("terminal_contact") and not record.get("terminal_crossing")
         and record.get("radius_m") == RADIUS_M and record.get("native_xy_m") == NATIVE_XY_M
@@ -318,8 +335,21 @@ def collection_admission(direct, obstacle, replay, negative=None):
         values = [direct.get("release_tcp_z"), obstacle.get("release_tcp_z"), replay.get("release_tcp_z")]
         if any(value is None for value in values) or max(values) - min(values) > 1e-5:
             reasons.append("release_tcp_z_mismatch")
+        required = [direct.get("measured_geometric_release_tcp_z_m"),
+                    obstacle.get("measured_geometric_release_tcp_z_m")]
+        if any(value is None for value in required):
+            reasons.append("shared_release_measurement_missing")
+        elif values[0] is not None and any(float(values[0]) + 1e-6 < float(value) for value in required):
+            reasons.append("shared_release_below_measured_clearance")
     if not isinstance(replay, dict) or not terminal_replay_accepted(replay):
         reasons.append("terminal_replay_rejected")
+    if (not isinstance(negative, dict)
+            or negative.get("role") != ROLE_NEGATIVE_DIRECT
+            or negative.get("actual_cylinder") is not True
+            or negative.get("blocked_in_transport") is not True
+            or negative.get("native_success") is True
+            or negative.get("admits_demos") is not False):
+        reasons.append("negative_transport_block_not_proven")
     if negative_direct_admits(negative):
         reasons.append("negative_admitted")
     return {
@@ -473,11 +503,18 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
         shared_targets["geometric_is_surface_clearance"] = False
         shared_targets["radius_m"] = RADIUS_M
         shared_targets["native_xy_m"] = NATIVE_XY_M
+    trace["measured_geometric_release_tcp_z_m"] = float(max(geometric, exit_z))
+    trace["measured_hand_below_tcp_m"] = float(hand_below)
+    trace["measured_cylinder_top_z_m"] = float(cylinder_top_z)
+    trace["shared_release_tcp_z_m"] = float(release_z)
     clearance = np.array([float(approach[0]), float(approach[1]), float(release_z)], dtype=np.float64)
-    if float(clearance[2]) + 1e-4 < geometric:
+    if float(clearance[2]) + 1e-6 < geometric:
         _mark(trace, "clearance_approach", "below_measured_clearance")
         return {"ok": False, "reason": "shared_release_below_measured_clearance", "release_begin": None,
-                "release_tcp_z": float(release_z), "geometric_tcp_z": float(geometric)}
+                "release_tcp_z": float(release_z), "geometric_tcp_z": float(geometric),
+                "measured_geometric_release_tcp_z_m": float(max(geometric, exit_z)),
+                "measured_hand_below_tcp_m": float(hand_below),
+                "measured_cylinder_top_z_m": float(cylinder_top_z)}
     trace["container_approach_action_index"] = action_count()
     trace["release_tcp_z"] = float(release_z)
     trace["geometric_tcp_z"] = float(geometric)
@@ -525,6 +562,16 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
     release_begin = action_count()
     step([0, 0, 0, 0, 0, 0, 1])
     _mark(trace, "release", "episode_ended" if is_done() and not _native(base) else "reached")
+    hold_steps = int(shared_targets.get("release_hold_steps", 0))
+    if hold_steps not in (0, 8, 16):
+        raise ValueError("release_hold_steps must use a preregistered value (0, 8, or 16)")
+    held = 0
+    for _ in range(hold_steps):
+        if is_done() or step([0, 0, 0, 0, 0, 0, 1]):
+            break
+        held += 1
+    trace["release_hold_steps_executed"] = held
+    _mark(trace, "release_hold", "native_success" if _native(base) else ("reached" if held == hold_steps else "episode_ended"))
     retreat_target = clearance.copy()
     retreat_target[2] += RETREAT_DZ_M
     planned = 20
@@ -592,26 +639,28 @@ def write_registration(path, *, count=24, calibration_count=8, seed=2026102518):
     identity = freeze_identity()
     payload = {
         "kind": "matched_terminal_feasibility",
-        "version": "r19_role_split",
+        "version": "r20_measured_shared_terminal",
         "previous_runtime_identity": PREVIOUS_RUNTIME_IDENTITY,
         "previous_identity_rewritten": False,
         "roles": {
-            ROLE_POSITIVE_DIRECT: "cylinder parked/absent; same initial task state; terminal height from planned cylinder geometry; full prefix native and contact-free; does not admit alone",
+            ROLE_POSITIVE_DIRECT: "cylinder parked; shared measured endpoint; native and contact-free from execution start; does not admit alone",
             ROLE_POSITIVE_OBSTACLE: "catalog cylinder not relocated; full prefix safe from execution start; does not admit alone",
             ROLE_NEGATIVE_DIRECT: "straight path into the blocking cylinder; expected transport block; never admits demos and is not a data-feasibility failure",
-            ROLE_TERMINAL_REPLAY: "direct terminal actions replayed with the actual cylinder; prefix latches labeled; not a full-prefix proof",
+            ROLE_TERMINAL_REPLAY: "direct terminal suffix with actual cylinder; same feedback terminal completion through its own first native success; suffix-only safety proof, never full-prefix proof",
         },
         "hypothesis": (
-            "Closed-grip negative-Z near the bin is the copied top-cap mechanism. "
-            "An opt-in shared terminal that holds bin XY at a TCP Z where measured hand "
-            "collision vertices clear the recorded cylinder top, stabilizes, opens, and "
-            "retreats only after release will keep native on-bin/static/ungrasped success "
-            "without a closed descent through the cap. Vertex clearance is approximate. "
-            "PhysX contact and native outcome are the proof. Direct positive runs with the "
-            "cylinder parked. A straight path into the blocking cylinder is a negative probe."
+            "Phase A measured angular spin rather than linear speed in full positive "
+            "failures, an approximately 0.103 mm direct-versus-obstacle shared-height "
+            "shortfall on dev-000, and first-native-success truncation risk in short replay "
+            "suffixes. Select the common endpoint as the maximum of both role-specific "
+            "measured geometric requirements and transport-exit z. Compare only the "
+            "predeclared 0/8/16 open-neutral holds after release; they keep the TCP fixed "
+            "and gripper semantics unchanged while the sphere falls clear before retreat. "
+            "Native physics and full-prefix contact/crossing latches remain authoritative."
         ),
         "candidates": {
             "above_release_margins_m": list(ABOVE_RELEASE_MARGINS_M),
+            "release_hold_steps": list(RELEASE_HOLD_STEPS_CANDIDATES),
             "side_offset_headings_rad": list(SIDE_OFFSET_HEADINGS_RAD),
             "side_offset_m": SIDE_OFFSET_M,
             "side_offset_only_if_all_above_release_fail": True,
@@ -635,6 +684,8 @@ def write_registration(path, *, count=24, calibration_count=8, seed=2026102518):
             "perturbations_m": list(PERTURB_DISTANCES_M),
             "perturbation_axes": ["toward_cylinder", "away_from_cylinder"],
             "perturbation_is_finite_actions": True,
+            "release_hold_step_candidates": list(RELEASE_HOLD_STEPS_CANDIDATES),
+            "release_hold_selection": "highest calibration-eight full-positive and suffix-feedback admission count; ties choose fewer hold steps",
             "state_teleport_forbidden": True,
             "smoke_not_in_denominator": True,
         },
@@ -647,10 +698,17 @@ def write_registration(path, *, count=24, calibration_count=8, seed=2026102518):
         "training": False,
         "budgets": {
             "episode_wall_s": 160,
-            "calibration_phase_wall_s": 2600,
-            "confirmation_phase_wall_s": 2400,
-            "heldout_phase_wall_s": 2200,
-            "max_steps": 360,
+            "calibration_phase_wall_s": 12000,
+            "confirmation_phase_wall_s": 6500,
+            "heldout_phase_wall_s": 7500,
+            "max_steps": EXPERT_MAX_STEPS,
+            "neutral_settle_steps": SETTLE_BUDGET,
+            "terminal_replay_feedback_settle_steps": TERMINAL_FEEDBACK_SETTLE_BUDGET,
+            "main_policy_evaluation_steps": MAIN_POLICY_EVAL_BUDGET,
+            "extended_expert_budget_reason": (
+                "Phase-A dev-003 and dev-019 full-trace neutral continuations required 361 and 785 steps "
+                "to native static success; main policy evaluation budget remains 200."
+            ),
             "action_width": 7,
         },
         "prior_runs_not_in_denominator": [
@@ -678,6 +736,8 @@ def assert_registration(path):
         raise RuntimeError("source identity does not match preregistration")
     if registration.get("selection", {}).get("collection_ready_iff") != COLLECTION_READY_IFF:
         raise RuntimeError("collection_ready_iff does not match the runtime predicate")
+    if tuple(registration.get("selection", {}).get("release_hold_step_candidates", ())) != RELEASE_HOLD_STEPS_CANDIDATES:
+        raise RuntimeError("release-hold candidates differ from the preregistered finite set")
     if registration.get("native_thresholds", {}).get("changed") or registration.get("radius_m") != RADIUS_M:
         raise RuntimeError("registration loosens a fixed contract")
     rows, excluded = load_catalog_rows()
@@ -732,7 +792,7 @@ def _scene_row(layout):
     return scene
 
 
-def _open_scene(layout):
+def _open_scene(layout, *, max_steps=400):
     from examples.baselines.constrain.placesphere_pilot import PlaceSpherePilotConfig, make_env
     from examples.baselines.constrain.placesphere_transport_detour import TransportDetourSceneSet
     from examples.baselines.constrain.pickcube_expert import snapshot_execution_state
@@ -740,7 +800,7 @@ def _open_scene(layout):
     scene = _scene_row(layout)
     catalog = TransportDetourSceneSet(layout["catalog"])
     env = make_env(config=PlaceSpherePilotConfig(
-        max_steps=400, obstacle_radius=float(scene["cylinder"]["radius"]),
+        max_steps=int(max_steps), obstacle_radius=float(scene["cylinder"]["radius"]),
         obstacle_height=float(scene["cylinder"]["height"])))
     try:
         env, restored = catalog.restore(int(layout["index"]), env)
@@ -830,7 +890,7 @@ def _summary(result, *, role, planned, parked, relocated, contact_checks_ran, la
     retreat = trace.get("retreat_contract") or {}
     contact = trace.get("first_obstacle_contact") or {}
     terminal_phases = {
-        "clearance_approach", "stabilize", "release", "settle", "retreat", "container_approach"}
+        "clearance_approach", "stabilize", "release", "release_hold", "settle", "retreat", "container_approach"}
     actions = None if result.get("actions") is None else np.asarray(result["actions"])
     digest = _action_digest(actions)
     shared = trace.get("shared_targets") or {}
@@ -865,21 +925,30 @@ def _summary(result, *, role, planned, parked, relocated, contact_checks_ran, la
         "from_execution_start_safe": bool(not run_contact and not run_crossing and not initial_latch),
         "prefix_latch_cleared_as_proof": False,
         "cylinder_parked": bool(parked),
-        "actual_cylinder": bool(role == ROLE_POSITIVE_OBSTACLE and not parked and not relocated),
+        "actual_cylinder": bool(role in (ROLE_POSITIVE_OBSTACLE, ROLE_NEGATIVE_DIRECT) and not parked and not relocated),
         "obstacle_relocated": bool(relocated),
         "planned_cylinder_recorded": planned is not None,
         "planned_cylinder": planned,
         "release_height_from_planned_geometry": bool(release_height_from_planned_geometry),
-        "planned_cylinder_contact_proof": bool(role == ROLE_POSITIVE_OBSTACLE and contact_checks_ran and not parked),
+        "planned_cylinder_contact_proof": bool(role in (ROLE_POSITIVE_OBSTACLE, ROLE_NEGATIVE_DIRECT) and contact_checks_ran and not parked),
         "contact_checks_ran": bool(contact_checks_ran),
         "path_uses_waypoint": path_uses_waypoint,
         "execution_center_xy": None if execution_center is None else [float(execution_center[0]), float(execution_center[1])],
         "release_tcp_z": trace.get("release_tcp_z"),
         "geometric_tcp_z": trace.get("geometric_tcp_z"),
+        "measured_geometric_release_tcp_z_m": trace.get("measured_geometric_release_tcp_z_m"),
+        "release_hold_steps_executed": int(trace.get("release_hold_steps_executed", 0)),
         "geometric_is_surface_clearance": False,
         "hand_vertex_above_top_m": trace.get("hand_vertex_above_top_m"),
         "matched_reason": (trace.get("matched_terminal") or {}).get("reason"),
         "steps": digest["action_count"],
+        "terminated": bool(np.asarray(result.get("terminated", [False]))[-1]),
+        "truncated": bool(np.asarray(result.get("truncated", [False]))[-1]),
+        "expert_action_budget_steps": EXPERT_MAX_STEPS,
+        "main_policy_evaluation_budget_steps": MAIN_POLICY_EVAL_BUDGET,
+        "long_episode_reason": (
+            "bounded neutral settling to first native success; measured traces needed 361/785 additional steps"
+            if digest["action_count"] > MAIN_POLICY_EVAL_BUDGET else None),
         "phase_status": [list(item) for item in (trace.get("phase_status") or [])],
         "first_contact": _first_contact(contact, actions),
         "retreat": retreat,
@@ -929,7 +998,7 @@ def run_layout_expert(layout, *, margin_m, role, shared_targets=None, episode_wa
     previous = signal.signal(signal.SIGALRM, _alarm)
     signal.setitimer(signal.ITIMER_REAL, float(episode_wall_s))
     try:
-        env, scene, snapshot = _open_scene(layout)
+        env, scene, snapshot = _open_scene(layout, max_steps=EXPERT_MAX_STEPS)
         planned = _planned_cylinder(scene)
         if abs(planned["radius_m"] - RADIUS_M) > 1e-6:
             return _rejected(layout, "radius_changed", role=role)
@@ -943,7 +1012,7 @@ def run_layout_expert(layout, *, margin_m, role, shared_targets=None, episode_wa
         center = np.asarray(PARKED_CENTER if parked else planned["center_xy"], dtype=np.float64)
         result = run_transport_expert(
             env, np.asarray(scene["start_xy"]), np.asarray(scene["container_xy"]),
-            detour=detour, waypoint=waypoint, seed=int(scene["seed"]), max_steps=360,
+            detour=detour, waypoint=waypoint, seed=int(scene["seed"]), max_steps=EXPERT_MAX_STEPS,
             obstacle_enabled=not parked, obstacle_center=center,
             initial_snapshot=snapshot, shared_targets=targets, terminal_mode="above_release",
             release_margin_m=float(margin_m), record_body_sweep=False,
@@ -1011,7 +1080,7 @@ def replay_direct_terminal(layout, direct_result, *, episode_wall_s=160):
     previous = signal.signal(signal.SIGALRM, _alarm)
     signal.setitimer(signal.ITIMER_REAL, float(episode_wall_s))
     try:
-        env, scene, _snapshot = _open_scene(layout)
+        env, scene, _snapshot = _open_scene(layout, max_steps=EXPERT_MAX_STEPS)
         planned = _planned_cylinder(scene)
         restore_execution_state(env, snapshot)
         base = env.unwrapped
@@ -1025,6 +1094,10 @@ def replay_direct_terminal(layout, direct_result, *, episode_wall_s=160):
         base._first_obstacle_contact = None
         contact = False
         crossing = False
+        executed_actions = []
+        first_native_step = None
+        terminated = False
+        truncated = False
         suffix = np.asarray(actions[int(index):], dtype=np.float32)
         if suffix.ndim != 2 or suffix.shape[1] != 7:
             return {
@@ -1034,15 +1107,35 @@ def replay_direct_terminal(layout, direct_result, *, episode_wall_s=160):
                 "scene_id": scene["scene_id"],
             }
         for action in suffix:
-            env.step(torch.as_tensor(action, device=base.device))
+            _, _, terminated, truncated, _ = env.step(torch.as_tensor(action, device=base.device))
+            executed_actions.append(action.copy())
             contact = contact or bool(base._obstacle_collision[0].item())
             crossing = crossing or bool(base._forbidden_crossing[0].item())
+            if _native(base):
+                first_native_step = len(executed_actions)
+                break
+            if terminated or truncated:
+                break
+        fixed_suffix_complete = len(executed_actions) == len(suffix)
+        settle_steps = 0
+        while (not _native(base) and not terminated and not truncated
+               and settle_steps < TERMINAL_FEEDBACK_SETTLE_BUDGET):
+            neutral = np.asarray([0, 0, 0, 0, 0, 0, 1], dtype=np.float32)
+            _, _, terminated, truncated, _ = env.step(torch.as_tensor(neutral, device=base.device))
+            executed_actions.append(neutral)
+            settle_steps += 1
+            contact = contact or bool(base._obstacle_collision[0].item())
+            crossing = crossing or bool(base._forbidden_crossing[0].item())
+            if _native(base):
+                first_native_step = len(executed_actions)
+                break
         terminal = _terminal(base.evaluate())
         executed = base._obstacle_center[0].detach().cpu().numpy()
         same = bool(
             np.allclose(executed, center, atol=1e-4)
             and abs(float(base.obstacle_collision_height) - planned["height_m"]) < 1e-5)
-        digest = _action_digest(suffix)
+        executed_array = np.asarray(executed_actions, dtype=np.float32)
+        digest = _action_digest(executed_array)
         return {
             "role": ROLE_TERMINAL_REPLAY,
             "scene_id": scene["scene_id"],
@@ -1067,6 +1160,20 @@ def replay_direct_terminal(layout, direct_result, *, episode_wall_s=160):
             "radius_m": RADIUS_M,
             "native_xy_m": NATIVE_XY_M,
             "native_thresholds_changed": False,
+            "terminal_feedback_completed": bool(terminal["native_success"]),
+            "first_native_success_step": first_native_step,
+            "fixed_suffix_complete": bool(fixed_suffix_complete),
+            "fixed_suffix_action_count": int(len(suffix)),
+            "fixed_suffix_actions": suffix.tolist(),
+            "suffix_start_action_index": int(index),
+            "feedback_settle_steps": int(settle_steps),
+            "feedback_settle_action": [0, 0, 0, 0, 0, 0, 1],
+            "feedback_settle_budget_steps": TERMINAL_FEEDBACK_SETTLE_BUDGET,
+            "terminated": bool(terminated), "truncated": bool(truncated),
+            "suffix_contact_free": bool(not contact and not crossing),
+            "suffix_contact": bool(contact),
+            "suffix_crossing": bool(crossing),
+            "claim_scope": "suffix_only",
             "action_width": digest["action_width"],
             "actions_sha256": digest["actions_sha256"],
             "actions": digest["actions"],
@@ -1099,11 +1206,48 @@ def _public_record(record):
     return {key: value for key, value in record.items() if key not in {"_raw", "shared_targets"}}
 
 
-def run_role_bundle(layout, *, margin_m, episode_wall_s=160):
+def _common_release_targets(targets, direct, obstacle):
+    direct_z = direct.get("measured_geometric_release_tcp_z_m")
+    obstacle_z = obstacle.get("measured_geometric_release_tcp_z_m")
+    if direct_z is None or obstacle_z is None:
+        return None
+    exit_z = float(np.asarray(targets["transport_exit_xyz"], dtype=np.float64)[2])
+    common_z = shared_release_tcp_z(
+        direct_required_z_m=direct_z, obstacle_required_z_m=obstacle_z, transport_exit_z_m=exit_z)
+    updated = dict(targets)
+    updated["release_tcp_z"] = common_z
+    clearance = list(updated["clearance_xyz"])
+    clearance[2] = common_z
+    updated["clearance_xyz"] = clearance
+    retreat_key = "matched_retreat_xyz" if "matched_retreat_xyz" in updated else "retreat_xyz"
+    retreat = list(updated[retreat_key])
+    retreat[2] = common_z + RETREAT_DZ_M
+    updated[retreat_key] = retreat
+    updated["release_target_measurements"] = {
+        "direct_required_z_m": float(direct_z), "obstacle_required_z_m": float(obstacle_z),
+        "transport_exit_z_m": exit_z, "selected_common_z_m": common_z,
+        "selection_rule": "max(measured direct, measured obstacle, transport exit); no fixed raise",
+    }
+    return updated
+
+
+def run_role_bundle(layout, *, margin_m, episode_wall_s=160, release_hold_steps=0):
     obstacle = run_layout_expert(layout, margin_m=margin_m, role=ROLE_POSITIVE_OBSTACLE, episode_wall_s=episode_wall_s)
     direct = run_layout_expert(
         layout, margin_m=margin_m, role=ROLE_POSITIVE_DIRECT,
         shared_targets=obstacle.get("shared_targets"), episode_wall_s=episode_wall_s)
+    targets = _common_release_targets(obstacle.get("shared_targets") or {}, direct, obstacle)
+    if targets is not None:
+        targets["release_hold_steps"] = int(release_hold_steps)
+        old_z = obstacle.get("release_tcp_z")
+        new_z = float(targets["release_tcp_z"])
+        if release_hold_steps != 0 or old_z is None or abs(float(old_z) - new_z) > 1e-6:
+            obstacle = run_layout_expert(
+                layout, margin_m=margin_m, role=ROLE_POSITIVE_OBSTACLE,
+                shared_targets=targets, episode_wall_s=episode_wall_s)
+            direct = run_layout_expert(
+                layout, margin_m=margin_m, role=ROLE_POSITIVE_DIRECT,
+                shared_targets=targets, episode_wall_s=episode_wall_s)
     replay = replay_direct_terminal(layout, direct, episode_wall_s=episode_wall_s)
     negative = run_layout_expert(layout, margin_m=margin_m, role=ROLE_NEGATIVE_DIRECT, episode_wall_s=episode_wall_s)
     decision = collection_admission(direct, obstacle, replay, negative)
@@ -1113,6 +1257,8 @@ def run_role_bundle(layout, *, margin_m, episode_wall_s=160):
         "positive_direct": _public_record(direct),
         "terminal_replay": replay,
         "negative_direct": _public_record(negative),
+        "release_hold_steps_candidate": int(release_hold_steps),
+        "shared_release_target_measurements": None if targets is None else targets.get("release_target_measurements"),
         "admission": decision,
         "rejected": not decision["collection_ready"],
     }
@@ -1165,7 +1311,7 @@ def _layout_key(layout):
     return f"{layout['source']}-{int(layout['index']):03d}"
 
 
-def run_calibration(registration_path, output_dir, *, episode_wall_s=160, phase_wall_s=2600):
+def run_calibration(registration_path, output_dir, *, episode_wall_s=160, phase_wall_s=12000):
     registration, identity = assert_registration(registration_path)
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -1218,29 +1364,43 @@ def run_calibration(registration_path, output_dir, *, episode_wall_s=160, phase_
             })
         if all(_passes(item) for item in decision_rows):
             chosen = select_terminal_candidate(decision_rows)
-            bundles = []
-            for layout in layouts:
-                if time.monotonic() > deadline:
-                    payload = {
-                        "complete": False, "reason": "phase_wall_during_role_bundle",
-                        "rows": rows, "role_bundles": bundles, "selected_margin_m": margin,
-                        "decision": chosen, "identity": identity["files_sha256"],
-                        "collection_ready": False,
-                    }
-                    _write_json(output / "calibration.json", payload)
-                    return payload
-                bundles.append(run_role_bundle(layout, margin_m=margin, episode_wall_s=episode_wall_s))
-                _write_json(output / "calibration_partial.json", {
-                    "rows": rows, "role_bundles": bundles, "identity": identity["files_sha256"],
-                })
+            candidate_bundles = {}
+            for hold_steps in RELEASE_HOLD_STEPS_CANDIDATES:
+                bundles = []
+                for layout in layouts:
+                    if time.monotonic() > deadline:
+                        payload = {
+                            "complete": False, "reason": "phase_wall_during_role_bundle",
+                            "rows": rows, "candidate_role_bundles": candidate_bundles,
+                            "current_candidate": hold_steps, "selected_margin_m": margin,
+                            "decision": chosen, "identity": identity["files_sha256"],
+                            "collection_ready": False,
+                        }
+                        _write_json(output / "calibration.json", payload)
+                        return payload
+                    bundles.append(run_role_bundle(
+                        layout, margin_m=margin, episode_wall_s=episode_wall_s,
+                        release_hold_steps=hold_steps))
+                    candidate_bundles[hold_steps] = bundles
+                    _write_json(output / "calibration_partial.json", {
+                        "rows": rows, "candidate_role_bundles": candidate_bundles,
+                        "identity": identity["files_sha256"],
+                    })
+            selected_hold = max(
+                candidate_bundles,
+                key=lambda value: (sum(not row["rejected"] for row in candidate_bundles[value]), -int(value)))
+            bundles = candidate_bundles[selected_hold]
             payload = {
-                "complete": True, "rows": rows, "role_bundles": bundles, "selected_margin_m": margin,
+                "complete": True, "rows": rows, "role_bundles": bundles,
+                "candidate_role_bundles": candidate_bundles,
+                "selected_release_hold_steps": int(selected_hold), "selected_margin_m": margin,
                 "decision": chosen, "identity": identity["files_sha256"],
                 "denominator": len(margin_rows), "native_thresholds_changed": False,
                 "collection_ready": False,
                 "role_bundle_ready": int(sum(not row["rejected"] for row in bundles)),
                 "negative_admits_demos": False,
-                "selection_uses_obstacle_only": True,
+                "selection_uses_obstacle_only_for_margin": True,
+                "hold_selection_uses_calibration_eight_only": True,
             }
             _write_json(output / "calibration.json", payload)
             return payload
@@ -1468,10 +1628,14 @@ def _frozen_margin(output_dir, margin_m):
     return float(selected)
 
 
-def run_confirmation(registration_path, output_dir, margin_m, *, episode_wall_s=160, phase_wall_s=2400):
+def run_confirmation(registration_path, output_dir, margin_m, *, episode_wall_s=160, phase_wall_s=6500):
     registration, identity = assert_registration(registration_path)
     output = Path(output_dir)
     frozen = _frozen_margin(output, margin_m)
+    calibration = json.loads((output / "calibration.json").read_text())
+    release_hold_steps = calibration.get("selected_release_hold_steps")
+    if release_hold_steps not in RELEASE_HOLD_STEPS_CANDIDATES:
+        raise RuntimeError("confirmation requires a frozen calibration release-hold candidate")
     count = int(registration["selection"]["calibration_count"])
     layouts = registration["layouts"][count:]
     deadline = time.monotonic() + float(phase_wall_s)
@@ -1487,7 +1651,8 @@ def run_confirmation(registration_path, output_dir, margin_m, *, episode_wall_s=
             _write_json(output / "confirmation.json", payload)
             _write_json(output / "collection_decision.json", payload)
             return payload
-        rows.append(run_role_bundle(layout, margin_m=frozen, episode_wall_s=episode_wall_s))
+        rows.append(run_role_bundle(layout, margin_m=frozen, episode_wall_s=episode_wall_s,
+                                    release_hold_steps=release_hold_steps))
         _write_json(output / "confirmation_partial.json", {"rows": rows})
     decision = confirmation_decision(rows)
     ready = bool(decision["collection_ready"] and len(rows) == len(layouts))
@@ -1498,6 +1663,7 @@ def run_confirmation(registration_path, output_dir, margin_m, *, episode_wall_s=
         "decision": decision,
         "rows": rows,
         "margin_m": frozen,
+        "release_hold_steps": int(release_hold_steps),
         "identity": identity["files_sha256"],
         "dev_scenes_used": False,
         "native_thresholds_changed": False,
@@ -1531,10 +1697,14 @@ def dev_layouts():
     return rows
 
 
-def run_heldout(registration_path, output_dir, margin_m, *, episode_wall_s=160, phase_wall_s=2200):
+def run_heldout(registration_path, output_dir, margin_m, *, episode_wall_s=160, phase_wall_s=7500):
     _registration, identity = assert_registration(registration_path)
     output = Path(output_dir)
     frozen = _frozen_margin(output, margin_m)
+    calibration = json.loads((output / "calibration.json").read_text())
+    release_hold_steps = calibration.get("selected_release_hold_steps")
+    if release_hold_steps not in RELEASE_HOLD_STEPS_CANDIDATES:
+        raise RuntimeError("held-out validation requires a frozen calibration release-hold candidate")
     layouts = dev_layouts()
     deadline = time.monotonic() + float(phase_wall_s)
     rows = []
@@ -1551,13 +1721,26 @@ def run_heldout(registration_path, output_dir, margin_m, *, episode_wall_s=160, 
         direct = run_layout_expert(
             layout, margin_m=frozen, role=ROLE_POSITIVE_DIRECT,
             shared_targets=obstacle.get("shared_targets"), episode_wall_s=episode_wall_s)
+        targets = _common_release_targets(obstacle.get("shared_targets") or {}, direct, obstacle)
+        if targets is not None:
+            targets["release_hold_steps"] = int(release_hold_steps)
+            if (obstacle.get("release_tcp_z") is None
+                    or abs(float(targets["release_tcp_z"]) - float(obstacle["release_tcp_z"])) > 1e-6
+                    or release_hold_steps != 0):
+                obstacle = run_layout_expert(layout, margin_m=frozen, role=ROLE_POSITIVE_OBSTACLE,
+                                             shared_targets=targets, episode_wall_s=episode_wall_s)
+                direct = run_layout_expert(layout, margin_m=frozen, role=ROLE_POSITIVE_DIRECT,
+                                           shared_targets=targets, episode_wall_s=episode_wall_s)
         replay = replay_direct_terminal(layout, direct, episode_wall_s=episode_wall_s)
+        negative = run_layout_expert(layout, margin_m=frozen, role=ROLE_NEGATIVE_DIRECT,
+                                     episode_wall_s=episode_wall_s)
         rows.append({
             "layout": layout,
             "positive_obstacle": _public_record(obstacle),
             "positive_direct": _public_record(direct),
             "terminal_replay": replay,
-            "admission": collection_admission(direct, obstacle, replay, None),
+            "negative_direct": _public_record(negative),
+            "admission": collection_admission(direct, obstacle, replay, negative),
         })
         _write_json(output / "dev30_partial.json", {"rows": rows, "used_for_selection": False})
     decision = confirmation_decision(rows)
@@ -1570,6 +1753,7 @@ def run_heldout(registration_path, output_dir, margin_m, *, episode_wall_s=160, 
         "used_for_selection": False,
         "used_for_training": False,
         "margin_m": frozen,
+        "release_hold_steps": int(release_hold_steps),
         "identity": identity["files_sha256"],
         "rows": rows,
     }
@@ -1595,8 +1779,11 @@ def main(argv=None):
         payload = run_calibration(args.registration, args.output)
         print(json.dumps({
             "complete": payload.get("complete"), "selected_margin_m": payload.get("selected_margin_m"),
+            "selected_release_hold_steps": payload.get("selected_release_hold_steps"),
             "reason": payload.get("reason"),
         }, sort_keys=True))
+        if not payload.get("complete"):
+            raise SystemExit(2)
         return
     if args.command == "perturb":
         if args.margin is None:
@@ -1607,6 +1794,8 @@ def main(argv=None):
             "new_contact": payload["new_contact"], "legacy_native": payload["legacy_native"],
             "new_native": payload["new_native"],
         }, sort_keys=True))
+        if not payload.get("complete"):
+            raise SystemExit(2)
         return
     if args.command == "confirm":
         if args.margin is None:
@@ -1618,6 +1807,8 @@ def main(argv=None):
             "collection_ready": payload.get("collection_ready"),
             "ready_count": (payload.get("decision") or {}).get("ready_count"),
         }, sort_keys=True))
+        if not payload.get("complete"):
+            raise SystemExit(2)
         return
     if args.command == "heldout":
         if args.margin is None:

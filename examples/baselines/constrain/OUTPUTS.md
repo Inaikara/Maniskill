@@ -287,9 +287,59 @@ Also retained:
    was not rewritten. Margin 0.015 m selected on obstacle positives only
    (0.005 failed 2/8 `hand_below_cylinder_top`). Calibration role bundle 8/8.
    Confirmation admission 13/16, `collection_ready` false in both
-   `confirmation.json` and `collection_decision.json`. Held-out dev30 26/30,
-   not used for selection or training. Negative direct 16/16 confirmation
-   transport-blocked and admits no demos. No full collection and no training.
+    `confirmation.json` and `collection_decision.json`. Held-out dev30 26/30,
+    not used for selection or training. Negative direct 16/16 confirmation
+    transport-blocked and admits no demos. No full collection and no training.
+- `outputs/exp/20261026_103421_placesphere_terminal_round20_phase_a/`: Ticket 06
+  Round-20 Phase A measurement before the motion correction. Final trace
+  identity `4cc1780646a8ffe6514fd911a393279f4e4d466808591ac10598d45d519692b2`;
+  diagnosis SHA `4977e33094005879408f17d1890dcf0d0c49dfbbf2979afd48c35d2948eb80a4`.
+  R19 full failures are angular: 085 was 0.001252 m/s linear and 1.87655 rad/s
+  angular; dev 003 was 0.000353 m/s and 4.54203 rad/s; dev 019 was 0.000361
+  m/s and 7.39852 rad/s. After 200 neutral steps, 003 remained at 2.16161
+  rad/s and 019 at 4.48883 rad/s. 085 reached native at +69 steps. Actual-
+  cylinder suffixes 046/123 reached their own first native endpoints; dev-006
+  did so after five neutral steps. Dev-000 measured shared z 0.151770565 m
+  against direct requirement 0.151873754 m, a 0.103189 mm shortfall (vertex
+  gap is approximate, not a surface proof).
+- `outputs/exp/20261026_110038_placesphere_round20_long_settle_probe/`: focused
+  continuation from retained full R19 actions, diagnostic only. Dev-003 reached
+  native after 361 additional neutral steps; dev-019 after 785. No thresholds or
+  geometry changed.
+- `outputs/exp/20261026_104648_placesphere_matched_terminal_r20/`: preserved
+  earlier complete Round-20 validation, identity
+  `b437c3f2d2bb426936459921de248c5e0bb32a459e4dcfaa03865e560135993b`.
+  Calibration 8/8 and confirmation 16/16 passed, but dev30 was 27/30. This is
+  a historical recovery point and was not rewritten.
+- `outputs/exp/20261026_105656_placesphere_round20_dev_engineering_feedback/`:
+  non-selecting repeated-dev feedback for predeclared 8/16-step holds on
+  dev-000/003/019. It did not repair those cases and is not independent
+  validation. Recovery files are in
+  `outputs/exp/20261026_110010_placesphere_matched_terminal_r20_recovery/`.
+- `outputs/exp/20261026_110408_placesphere_matched_terminal_r20b/`: final
+  Round-20 validation identity
+  `3edc929330f644c407b94f6a23244520ae96b639706b954258336f82c3441958`.
+  Margin 0.015 m; selected 0-step open hold on calibration 8 after all 0/8/16
+  candidates tied 8/8. Confirmation 16/16 matched positives and 16/16 blocked
+  negatives. Frozen dev30 admitted 30/30 without selection/training use and
+  had 30/30 blocked negatives. Direct/obstacle release z matched exactly.
+  Expert neutral settle is capped at 800 steps (1,000 total expert actions) for
+  the measured spin cases; policy evaluation remains 200. Perturbation scope:
+  64/64 finite comparisons on calibration 8; new contact 10/64, native 32/64,
+  crossing 0/64 versus legacy contact 32/64, native 30/64; cleared/introduced/
+  both/neither contact transitions 22/0/10/32. Preterminal native 30/32→32/32;
+  nearest-approach native 0/32 for both. This is a bounded
+  calibration-layout scope, not a broad rate. No full collection or training.
+- `demos/PlaceSphere-transport-detour/20261026_111952_round20_matched_tplus1/`
+  and `outputs/exp/20261026_111952_placesphere_round20_tplus1/`: one matched
+  direct/obstacle T+1 state/controller/action artifact after the gates. Both
+  roles exactly restored initial state/controller and first-action state,
+  controller, policy observation, terminated, and truncated values. HDF5 SHA
+  `51cb2f0109898c7477d6d522251ea58086559e3dd11c921aedc40e332544dacc`; runner
+  SHA `f3001d7fa8032d526453c1bf41ccefcb33d9fa39b57c551d7c28e673d162ed39`.
+  This is a T+1 proof artifact, not the 1,000+300 collection and not used for
+  training. The existing formal generator still uses the legacy terminal path;
+  generator integration is the next parent-review slice before full collection.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or

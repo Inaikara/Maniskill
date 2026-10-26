@@ -29,6 +29,7 @@ from examples.baselines.constrain.placesphere_matched_terminal import (
     select_terminal_candidate,
     select_representative,
     shared_matched_terminal,
+    shared_release_tcp_z,
     side_offset_candidates,
     terminal_phase_plan,
 )
@@ -63,6 +64,14 @@ def test_above_release_does_not_descend_when_transport_exit_already_clears():
     assert rows[0]["geometric_tcp_z"] == pytest.approx(0.125)
     assert rows[0]["release_tcp_z"] == pytest.approx(0.16)
     assert rows[0]["descends_below_transport_exit"] is False
+
+
+def test_common_release_uses_both_measured_role_requirements_without_a_fixed_raise():
+    assert shared_release_tcp_z(
+        direct_required_z_m=0.1518737539972212,
+        obstacle_required_z_m=0.15177056475995387,
+        transport_exit_z_m=0.12,
+    ) == pytest.approx(0.1518737539972212)
 
 
 def test_retreat_stops_at_the_first_native_success_and_logs_the_plan():
@@ -156,6 +165,7 @@ def _positive_obstacle(**overrides):
         "prefix_latch_cleared_as_proof": False, "cylinder_parked": False, "actual_cylinder": True,
         "obstacle_relocated": False, "contact_checks_ran": True, "path_uses_waypoint": True,
         "action_width": 7, "native_thresholds_changed": False,
+        "measured_geometric_release_tcp_z_m": 0.152,
     }
     record.update(overrides)
     return record
@@ -165,6 +175,15 @@ def test_acceptance_allows_logged_retreat_truncation_and_rejects_a_missing_relea
     assert matched_terminal_accepted(_positive_obstacle())
     blocked = _positive_obstacle(release_reached=False)
     assert matched_terminal_accepted(blocked) is False
+
+
+def test_terminal_suffix_must_complete_its_own_feedback_to_first_native_success():
+    assert terminal_replay_accepted(_replay(
+        fixed_suffix_complete=False, fixed_suffix_action_count=11,
+        feedback_settle_steps=5, first_native_success_step=16,
+        terminal_feedback_completed=True, claim_scope="suffix_only"))
+    assert terminal_replay_accepted(_replay(terminal_feedback_completed=False)) is False
+    assert terminal_replay_accepted(_replay(feedback_settle_steps=801)) is False
 
 
 def test_transport_contact_suffix_is_not_admitted():
@@ -193,6 +212,7 @@ def _positive_direct(**overrides):
         "release_height_from_planned_geometry": True, "planned_cylinder_contact_proof": False,
         "path_uses_waypoint": False, "action_width": 7, "native_thresholds_changed": False,
         "release_tcp_z": 0.152, "waypoint_xyz": None,
+        "measured_geometric_release_tcp_z_m": 0.152,
         "targets": {
             "lift_xyz": [0.0, 0.0, 0.12], "transport_exit_xyz": [0.1, 0.0, 0.12],
             "clearance_xyz": [0.1, 0.0, 0.152], "release_tcp_z": 0.152, "retreat_xyz": [0.1, 0.0, 0.232],
@@ -207,9 +227,20 @@ def _replay(**overrides):
         "role": ROLE_TERMINAL_REPLAY, "actual_cylinder": True, "cylinder_parked": False,
         "prefix_latches_labeled": True, "prefix_latch_cleared_as_proof": False,
         "full_prefix_safe": False, "native_success": True, "on_bin": True, "static": True,
+        "terminal_feedback_completed": True, "suffix_contact_free": True,
+        "feedback_settle_steps": 0,
         "ungrasped": True, "terminal_contact": False, "terminal_crossing": False,
         "radius_m": 0.03, "native_xy_m": 0.005, "native_thresholds_changed": False,
         "action_width": 7, "same_planned_geometry": True, "release_tcp_z": 0.152,
+    }
+    record.update(overrides)
+    return record
+
+
+def _negative_transport_block(**overrides):
+    record = {
+        "role": ROLE_NEGATIVE_DIRECT, "actual_cylinder": True,
+        "blocked_in_transport": True, "native_success": False, "admits_demos": False,
     }
     record.update(overrides)
     return record
@@ -235,12 +266,14 @@ def test_collection_admits_only_the_paired_safe_roles():
     obstacle = _positive_obstacle(
         release_tcp_z=0.152, waypoint_xyz=[0.0, 0.2, 0.12], targets=dict(direct["targets"]))
     replay = _replay()
-    decision = collection_admission(direct, obstacle, replay, {"role": ROLE_NEGATIVE_DIRECT})
+    decision = collection_admission(direct, obstacle, replay, _negative_transport_block())
     assert decision["collection_ready"] is True
     assert decision["negative_admits_demos"] is False
     mismatch = collection_admission(direct, obstacle, _replay(release_tcp_z=0.2), None)
     assert mismatch["collection_ready"] is False
     assert "release_tcp_z_mismatch" in mismatch["reasons"]
+    no_negative = collection_admission(direct, obstacle, replay, None)
+    assert "negative_transport_block_not_proven" in no_negative["reasons"]
     obstacle_only = confirmation_decision([
         {"obstacle_accepted": True, "positive_obstacle": _positive_obstacle(release_tcp_z=0.152,
          waypoint_xyz=[0.0, 0.2, 0.12], targets=dict(direct["targets"]))}
@@ -248,6 +281,28 @@ def test_collection_admits_only_the_paired_safe_roles():
     ])
     assert obstacle_only["collection_ready"] is False
     assert COLLECTION_READY_IFF.startswith("every confirmation layout admits only when positive_direct")
+
+
+def test_collection_rejects_a_shared_release_below_either_measured_role_clearance():
+    shared_z = 0.15177056475995387
+    direct = _positive_direct(
+        release_tcp_z=shared_z,
+        measured_geometric_release_tcp_z_m=0.1518737539972212,
+        targets={
+            "lift_xyz": [0.0, 0.0, 0.12], "transport_exit_xyz": [0.1, 0.0, 0.12],
+            "clearance_xyz": [0.1, 0.0, shared_z], "release_tcp_z": shared_z,
+            "retreat_xyz": [0.1, 0.0, shared_z + 0.08],
+        })
+    obstacle = _positive_obstacle(
+        release_tcp_z=shared_z,
+        measured_geometric_release_tcp_z_m=shared_z,
+        waypoint_xyz=[0.0, 0.2, 0.12], targets=dict(direct["targets"]))
+    replay = _replay(release_tcp_z=shared_z)
+
+    decision = collection_admission(direct, obstacle, replay)
+
+    assert decision["collection_ready"] is False
+    assert "shared_release_below_measured_clearance" in decision["reasons"]
 
 
 def test_representative_subset_is_deterministic_and_excludes_dev_seeds():
