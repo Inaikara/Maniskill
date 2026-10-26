@@ -588,6 +588,7 @@ def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps
     current_phase = "grasp_approach"
     trace = {"phase_status": [], "tcp_xyz": [base.agent.tcp.pose.p[0].detach().cpu().numpy().copy()],
              "step_phase": [], "body_sweep": [], "sphere_xy": [],
+             "sphere_linear_speed_m_s": [], "sphere_angular_speed_rad_s": [],
              "waypoint_xy": None if waypoint is None else np.asarray(waypoint, dtype=np.float64).reshape(2).tolist()}
     done = False
     release_begin = None
@@ -613,6 +614,8 @@ def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps
         trace["tcp_xyz"].append(base.agent.tcp.pose.p[0].detach().cpu().numpy().copy())
         trace["step_phase"].append(current_phase)
         trace["sphere_xy"].append(base.obj.pose.p[0, :2].detach().cpu().numpy().copy())
+        trace["sphere_linear_speed_m_s"].append(float(torch.linalg.norm(base.obj.linear_velocity[0]).item()))
+        trace["sphere_angular_speed_rad_s"].append(float(torch.linalg.norm(base.obj.angular_velocity[0]).item()))
         if record_body_sweep:
             trace["body_sweep"].append({"phase": current_phase, "bodies": _collision_bodies(base)})
         if base._first_obstacle_contact is not None and "first_obstacle_contact" not in trace:
@@ -653,6 +656,10 @@ def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps
     def mark(name, reached):
         trace["phase_status"].append((name, "reached" if reached else "timeout"))
         return reached
+
+    def set_phase(name):
+        nonlocal current_phase
+        current_phase = name
 
     ok = True
     for phase, pos, grip in (
@@ -751,7 +758,8 @@ def run_transport_expert(env, start_xy, container_xy, *, detour, seed, max_steps
         status = execute_above_release(
             step=step, move=move, base=base, grasp_quat=grasp_quat, shared_targets=shared_targets,
             trace=trace, cylinder_top_z=float(base.obstacle_collision_height), margin_m=release_margin_m,
-            is_done=lambda: done, action_count=lambda: len(actions), bodies_fn=lambda: _collision_bodies(base))
+            is_done=lambda: done, action_count=lambda: len(actions), bodies_fn=lambda: _collision_bodies(base),
+            set_phase=set_phase)
         release_begin = status.get("release_begin")
         ok = bool(status.get("ok"))
         trace["matched_terminal"] = status

@@ -339,7 +339,111 @@ Also retained:
   SHA `f3001d7fa8032d526453c1bf41ccefcb33d9fa39b57c551d7c28e673d162ed39`.
   This is a T+1 proof artifact, not the 1,000+300 collection and not used for
   training. The existing formal generator still uses the legacy terminal path;
-  generator integration is the next parent-review slice before full collection.
+  that was the state before the Round-21 opt-in integration below.
+- Round 21 matched-terminal collection, source integration and exact commands:
+  `outputs/exp/20261026_133000_placesphere_matched_collection_r21b/`.
+  The final pre-collection registration is
+  `preregistration.json` (`a1f6ff02fac852ea1d73bfce951047e17f6dc74b22a2f4f3643e4dd176ad0a29`),
+  source identity `6a8091fc694e43fffe84fd50d7d60280f649d927986a143445f26d91a420b048`.
+  It pins the collector and all experiment helpers, native PlaceSphere source
+  hashes, environment package versions, field schemas, action/observation
+  dimensions, source layout catalogs, task-identity dedup and finite budgets.
+  ManiSkill source and historical datasets were not modified. Existing geometry
+  challenge, 3 cm cylinder radius, native thresholds, legacy terminal default,
+  and 200-step policy budget remain fixed.
+
+  The bounded native pilot at `pilot_subset/` regenerated 80 DIRECT + 25
+  OBSTACLE demos across 25 matched pair layouts from the frozen final-candidate
+  lists. All 105 T+1 initial/first-transition restore audits passed. There was
+  one rejected expert case, retained in the journal; no policy-performance
+  filter was used. 6/80 DIRECT and 2/25 OBSTACLE episodes exceeded 200 actions;
+  median/p90/p95/max lengths were 105/147/160/909 and 116/179/529/633. Actions
+  beyond the 200-step horizon were 13.4% and 20.9% of each role's action volume.
+  Open near-zero-motion actions were 19.8% DIRECT and 26.9% OBSTACLE. The
+  preregistered native-static 8-action windows were 0/1,765; action-neutral
+  fractions and phase counts are retained in `pilot_subset/report.json`. This
+  does not imply policy convergence; all complete native-success tails remain
+  in the data.
+
+  The first full 1,000+300 attempt at
+  `demos/PlaceSphere-transport-detour/20261026_123000_matched_terminal_r21/`
+  is preserved as a nonqualifying diagnostic package: its mixed-cohort selector
+  produced only 213 greedy-unique OBSTACLE task layouts (87 duplicates). Its
+  trajectory SHA was `61d5d06543bb1e4db13a9083bb10910c65c0d0b4ae0dc532fa72f6747809efd7`;
+  it is superseded below and must not be used for training.
+
+  The corrected, qualifying candidate package is
+  `demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/`.
+  Primary OBSTACLE sources were frozen as the 100 matched pair-catalog layouts
+  plus the 200 `catalog_full` obstacle layouts; all 300 pass the task-identity
+  dedup rule. A separately frozen 212-layout task-unique replacement pool was
+  available; 3 replacements were used after 3 positive OBSTACLE native-terminal
+  failures. The DIRECT class contains 300 matched positive DIRECT partners plus
+  700 DIRECT-only trajectories from the separate source pool. Actual source
+  counts: DIRECT = 703 `direct_scenes/assembled`, 99 `pair_scenes/merged`, 198
+  `catalog_full`; OBSTACLE = 3 `direct_scenes/assembled` replacements, 99
+  `pair_scenes/merged`, 198 `catalog_full`. All source scene IDs, seeds, and
+  role-to-episode mappings are in `collection_full/layout_id_mapping.json`.
+
+  Collection completed in 3,165.2 s: 1,000 DIRECT + 300 OBSTACLE, 300 paired
+  layouts, 1,005 layout attempts, 3 preregistered obstacle replacements, and 5
+  rejected cases (3 positive obstacle terminal failures; 2 positive direct
+  native-placement failures). No exception, runtime error, state-restore
+  failure, timeout, or dev/Ticket04 layout conflict was admitted. All 300
+  accepted OBSTACLE layouts are task-unique and all 300 have paired DIRECT,
+  negative transport-block, and suffix-replay proofs. The DIRECT class has
+  472 greedy-unique task layouts and 528 within-class task repeats; source
+  identity repeats are not presented as new unique layouts. This is comparable
+  in scale to the prior 425 unique / 575 repeat DIRECT package, with the changed
+  paired source mix disclosed above. External conflicts against the frozen
+  dev30 and Ticket 04 catalogs are 0.
+
+  Independent saved-artifact audit passed all 1,300 episodes: 7-D legal native
+  actions, named 39-D policy / 42-D raw observations, T actions and T+1 native
+  state/controller/info/termination records, first native success, and 1,300/1,300
+  exact initial + first-transition restore audits. Every obstacle prefix is
+  contact/crossing-free from execution start. Radius/native thresholds and
+  obstacle geometry are unchanged; vertex clearances remain approximations,
+  with PhysX execution as the safety evidence. Full layout mapping and per-episode
+  findings are in `collection_full/dataset_validation.json`.
+
+  Across all 1,300 episodes, 89 exceeded 200 actions: 60/1,000 DIRECT and
+  29/300 OBSTACLE. Role medians/p90/p95/max are DIRECT 105/147/321/909 and
+  OBSTACLE 126/185/544/889. Above-200 actions account for 15.8% DIRECT and
+  20.7% OBSTACLE action volume. Near-zero open actions account for 21.6% and
+  25.5%; the strict 8-action native-static window count is 0/22,364 before the
+  first native-success stopping point. Step-phase action totals (DIRECT /
+  OBSTACLE) are grasp approach 42,100 / 12,562; grasp pose 5,000 / 1,500;
+  gripper close 8,000 / 2,400; lift 8,028 / 2,404; transport 29,015 / 15,021;
+  clearance approach 4,112 / 1,228; stabilize 2,001 / 600; release 1,000 / 300;
+  retreat 6,101 / 1,807; settle 27,723 / 12,555. Phase labels refer to the
+  expert's current executed phase, with no future-state phase inference. Full
+  per-phase current-action labels, episode lengths and action-window records are
+  in `report.json`; no success tail was truncated or removed. Do not infer that
+  the unchanged 200-step policy budget solves these longer expert tails.
+
+  Identity hashes: `trajectory.h5`
+  `eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0`,
+  `trajectory.json`
+  `ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86`,
+  `attempts.jsonl`
+  `b13b796325af0a838a803bf169d9dfc0daade6a394a7f9ef264da318d47ff42a`,
+  dataset report `9d8e4c9231e37017df17c916df8a00b8cfad06d502f51a86e9f67d077fa3e44d`,
+  independent validation `da77e933fa6f887594800c187d169255724c65ef82957513f3db4d9a84bfe089`,
+  dataset identity `f0b9dd6d5b966744f44608528aa4bbab89baf9ebeb5b01972d315ad5ad78150e`,
+  and layout mapping `a519b542faf497c49d0342851343c67dc7edb19a37c881d84f747ecf65811825`.
+  Complete preregistration, pilot and full-collection command logs are retained
+  in the matching `outputs/exp/20261026_133000_placesphere_matched_collection_r21b/`
+  directory. No training or policy evaluation was run. The dataset is ready for
+  independent parent review. Its HDF5 IDs follow collection order and are
+  interleaved DIRECT/OBSTACLE, so the legacy trusted-formal trainers (fixed to
+  the historical 1,000/100 IDs and hashes) must not be pointed at this version.
+  After review, the matched training slice should add an opt-in reader keyed by
+  the new manifest's class IDs, preregister the 1,000/300 identities, then run
+  Base DP for 30,000 updates on DIRECT and ConstrainNet for 90,000 updates from
+  that matched Base EMA on OBSTACLE. Use separate `outputs/exp/` and
+  `outputs/ckpt/` paths. This is a proposed next plan, not a training result or
+  an executed command.
 - `outputs/exp/20261023_175529_placesphere_transport_detour/`: Ticket 04
   acceptance batch, 4/8 attempts. It does not replace
   `20261022_205500_placesphere_scenes/` or

@@ -480,7 +480,7 @@ def _mark(trace, name, status):
 
 
 def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace, cylinder_top_z,
-                          margin_m, is_done, action_count, bodies_fn):
+                          margin_m, is_done, action_count, bodies_fn, set_phase=None):
     """Reach bin XY above the measured hand clearance, open, then retreat."""
     if is_done():
         return {"ok": False, "reason": "already_done", "release_begin": None}
@@ -519,6 +519,8 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
     trace["release_tcp_z"] = float(release_z)
     trace["geometric_tcp_z"] = float(geometric)
     trace["geometric_is_surface_clearance"] = False
+    if set_phase is not None:
+        set_phase("clearance_approach")
     reached = move(clearance, grasp_quat, grip=-1.0, tolerance=0.006, budget=40)
     _mark(trace, "clearance_approach", "reached" if reached and not is_done() else ("episode_ended" if is_done() else "timeout"))
     if not reached or is_done():
@@ -532,6 +534,8 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
         return {"ok": False, "reason": "hand_below_cylinder_top", "release_begin": None, "release_tcp_z": float(release_z)}
     bin_xy = base.bin.pose.p[0, :2].detach().cpu().numpy()
     stable = False
+    if set_phase is not None:
+        set_phase("stabilize")
     for _ in range(STABILIZE_BUDGET):
         if is_done():
             break
@@ -560,12 +564,16 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
         return {"ok": False, "reason": "sphere_not_stable_before_release", "release_begin": None,
                 "release_tcp_z": float(release_z)}
     release_begin = action_count()
+    if set_phase is not None:
+        set_phase("release")
     step([0, 0, 0, 0, 0, 0, 1])
     _mark(trace, "release", "episode_ended" if is_done() and not _native(base) else "reached")
     hold_steps = int(shared_targets.get("release_hold_steps", 0))
     if hold_steps not in (0, 8, 16):
         raise ValueError("release_hold_steps must use a preregistered value (0, 8, or 16)")
     held = 0
+    if set_phase is not None:
+        set_phase("release_hold")
     for _ in range(hold_steps):
         if is_done() or step([0, 0, 0, 0, 0, 0, 1]):
             break
@@ -581,6 +589,8 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
         _mark(trace, "retreat", "truncated_after_native_success")
         _mark(trace, "settle", "truncated_after_native_success")
     else:
+        if set_phase is not None:
+            set_phase("retreat")
         begin = action_count()
         move(retreat_target, grasp_quat, grip=1.0, tolerance=0.006, budget=planned)
         executed = action_count() - begin
@@ -594,6 +604,8 @@ def execute_above_release(*, step, move, base, grasp_quat, shared_targets, trace
         if _native(base):
             _mark(trace, "settle", "truncated_after_native_success")
         else:
+            if set_phase is not None:
+                set_phase("settle")
             for _ in range(SETTLE_BUDGET):
                 if step([0, 0, 0, 0, 0, 0, 1]):
                     break
@@ -1031,6 +1043,9 @@ def run_layout_expert(layout, *, margin_m, role, shared_targets=None, episode_wa
             relocated=relocated, contact_checks_ran=enabled, latch_info=latch_info,
             release_height_from_planned_geometry=abs(constructed - planned["height_m"]) < 1e-5,
             execution_center=executed)
+        from examples.baselines.constrain.placesphere_transport_detour import _observation_contract
+        summary["observation_contract_ok"] = bool(_observation_contract(
+            env, result, PARKED_CENTER if parked else planned["center_xy"]))
         summary["scene_id"] = scene["scene_id"]
         summary["seed"] = int(scene["seed"])
         summary["shared_targets"] = result["trace"].get("shared_targets")
