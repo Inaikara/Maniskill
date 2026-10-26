@@ -19,6 +19,10 @@ from examples.baselines.constrain.placesphere_base_dp import (
     verify_runtime_observation_contract,
 )
 from examples.baselines.constrain.train_logging import RunLogger, atomic_write_json
+from examples.baselines.constrain.placesphere_manifest_dataset import (
+    MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION,
+    PlaceSphereManifestDataset,
+)
 
 
 def parse_args(argv=None):
@@ -35,6 +39,7 @@ def parse_args(argv=None):
     p.add_argument("--warmup", type=int, default=500)
     p.add_argument("--ema-power", type=float, default=0.75)
     p.add_argument("--profile-seconds", type=float, default=0)
+    p.add_argument("--matched-r21b", action="store_true")
     return p.parse_args(argv)
 
 
@@ -70,14 +75,18 @@ def main(argv=None):
     args = parse_args(argv)
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
-    if sha256_file(args.demo_path) != "fec4620c496ae3c5c0dec7db469333f302f7170363e11f66cba961cbb5d56ec4":
-        raise ValueError("formal PlaceSphere HDF5 SHA-256 mismatch")
-    if sha256_file(FORMAL_CONTRACT) != "ff11b940ede86e290928d26ccd4ac96e7ba480995af774d46a018dbda8b6e761":
-        raise ValueError("formal PlaceSphere frozen contract SHA-256 mismatch")
-    if sha256_file(args.manifest) != TRUSTED_MANIFEST_SHA256:
-        raise ValueError("formal PlaceSphere manifest SHA-256 mismatch")
-    if sha256_file(FORMAL_REPORT) != TRUSTED_REPORT_SHA256:
-        raise ValueError("formal PlaceSphere report SHA-256 mismatch")
+    if args.matched_r21b:
+        if sha256_file(args.demo_path) != MATCHED_H5_SHA256 or sha256_file(args.manifest) != MATCHED_MANIFEST_SHA256:
+            raise ValueError("matched PlaceSphere r21b data identity mismatch")
+    else:
+        if sha256_file(args.demo_path) != "fec4620c496ae3c5c0dec7db469333f302f7170363e11f66cba961cbb5d56ec4":
+            raise ValueError("formal PlaceSphere HDF5 SHA-256 mismatch")
+        if sha256_file(FORMAL_CONTRACT) != "ff11b940ede86e290928d26ccd4ac96e7ba480995af774d46a018dbda8b6e761":
+            raise ValueError("formal PlaceSphere frozen contract SHA-256 mismatch")
+        if sha256_file(args.manifest) != TRUSTED_MANIFEST_SHA256:
+            raise ValueError("formal PlaceSphere manifest SHA-256 mismatch")
+        if sha256_file(FORMAL_REPORT) != TRUSTED_REPORT_SHA256:
+            raise ValueError("formal PlaceSphere report SHA-256 mismatch")
     random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
     if args.device.startswith("cuda"):
         torch.cuda.manual_seed_all(args.seed)
@@ -87,8 +96,9 @@ def main(argv=None):
     # Snapshot executed local sources before preflight/configuration or updates.
     source_files = [Path(__file__), Path(__import__("examples.baselines.constrain.placesphere_base_dp", fromlist=["__file__"]).__file__),
                     Path(__import__("examples.baselines.constrain.base_dp", fromlist=["__file__"]).__file__),
-                    Path(__import__("examples.baselines.constrain.train_logging", fromlist=["__file__"]).__file__),
-                    Path(__import__("examples.baselines.constrain.placesphere_base_dp", fromlist=["OFFICIAL_DP"]).OFFICIAL_DP) / "train.py"]
+                     Path(__import__("examples.baselines.constrain.train_logging", fromlist=["__file__"]).__file__),
+                     Path(__import__("examples.baselines.constrain.placesphere_manifest_dataset", fromlist=["__file__"]).__file__),
+                     Path(__import__("examples.baselines.constrain.placesphere_base_dp", fromlist=["OFFICIAL_DP"]).OFFICIAL_DP) / "train.py"]
     snapshot = args.run_dir / "source_snapshot"
     snapshot.mkdir()
     source_identity = {}
@@ -97,7 +107,8 @@ def main(argv=None):
         source_identity[str(source.relative_to(Path.cwd()))] = sha256_file(source)
     atomic_write_json(snapshot / "source_hashes.json", source_identity)
 
-    dataset = PlaceSphereBaseDataset(args.demo_path, args.manifest)
+    dataset = (PlaceSphereManifestDataset(args.demo_path, args.manifest, "direct")
+               if args.matched_r21b else PlaceSphereBaseDataset(args.demo_path, args.manifest))
     runtime_schema = verify_runtime_observation_contract()
     agent = build_agent(args.device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6)
@@ -118,12 +129,13 @@ def main(argv=None):
                      "gradient_clip_norm": None, "profile_seconds": args.profile_seconds,
                      "selected_weights": "final EMA fixed before training; no task evaluation"},
         "policy_contract": contract(), "runtime_observation_schema": runtime_schema,
-        "data": {"path": str(args.demo_path), "manifest": str(args.manifest),
-                 "selected_class": "direct", "selected_episode_ids": dataset.trajectory_ids,
-                 "episodes": len(dataset.trajectory_ids), "windows": len(dataset),
-                 "h5_sha256": sha256_file(args.demo_path), "manifest_sha256": sha256_file(args.manifest),
-                 "frozen_contract_sha256": sha256_file(FORMAL_CONTRACT),
-                 "collection_report_sha256": sha256_file(FORMAL_REPORT)},
+         "data": {"path": str(args.demo_path), "manifest": str(args.manifest),
+                  "selected_class": "direct", "selected_episode_ids": dataset.trajectory_ids,
+                  "episodes": len(dataset.trajectory_ids), "windows": len(dataset),
+                  "h5_sha256": sha256_file(args.demo_path), "manifest_sha256": sha256_file(args.manifest),
+                  "frozen_contract_sha256": None if args.matched_r21b else sha256_file(FORMAL_CONTRACT),
+                  "collection_report_sha256": None if args.matched_r21b else sha256_file(FORMAL_REPORT),
+                  **({"dataset_version": MATCHED_VERSION} if args.matched_r21b else {})},
         "architecture": dict(MODEL_CONFIG), "normalization": {"observation": "identity", "action": "identity"},
         "outputs": {"experiment": str(args.run_dir), "checkpoint": str(args.checkpoint_dir)},
         "executed_source_sha256": source_identity, "initial_model_sha256": _sha_params(agent),

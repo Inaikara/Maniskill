@@ -182,24 +182,29 @@ class PlaceSphereBaseDPAdapter:
     def validate_checkpoint(checkpoint, expected_episode_ids=None, trusted_h5_sha256=None):
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
         data, schema = ck.get("data_identity", {}), ck.get("named_state_schema", {})
+        matched = data.get("dataset_version") == "placesphere_matched_terminal_r21b_v1"
+        expected_ids = data.get("selected_episode_ids") if matched else list(range(1000))
         if (ck.get("format") != FORMAT or ck.get("contract") != contract()
                 or schema.get("base_dim") != 39 or schema.get("flat_dim") != 42
                 or schema.get("obstacle_field") != "extra/placesphere_obstacle"
                 or schema.get("field_order") != [field[0] for field in NAMED_FIELDS]
                 or data.get("selected_class") != "direct" or data.get("episodes") != 1000
-                or data.get("selected_episode_ids") != list(range(1000))
+                or not isinstance(expected_ids, list) or len(expected_ids) != 1000
                 or not data.get("h5_sha256") or not data.get("manifest_sha256")
-                or data.get("frozen_contract_sha256") != TRUSTED_CONTRACT_SHA256):
+                or (not matched and data.get("selected_episode_ids") != list(range(1000)))
+                or (not matched and data.get("frozen_contract_sha256") != TRUSTED_CONTRACT_SHA256)
+                or (matched and (data.get("h5_sha256") != "eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0"
+                                 or data.get("manifest_sha256") != "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"))):
             raise ValueError("PlaceSphere checkpoint contract mismatch")
         if expected_episode_ids is not None and data["selected_episode_ids"] != list(expected_episode_ids):
             raise ValueError("PlaceSphere checkpoint selected episode IDs mismatch")
         if trusted_h5_sha256 is not None and data["h5_sha256"] != trusted_h5_sha256:
             raise ValueError("PlaceSphere checkpoint HDF5 identity mismatch")
-        if trusted_h5_sha256 is None and data["h5_sha256"] != TRUSTED_H5_SHA256:
+        if trusted_h5_sha256 is None and not matched and data["h5_sha256"] != TRUSTED_H5_SHA256:
             raise ValueError("PlaceSphere checkpoint is not from the trusted formal HDF5")
-        if data["manifest_sha256"] != TRUSTED_MANIFEST_SHA256:
+        if not matched and data["manifest_sha256"] != TRUSTED_MANIFEST_SHA256:
             raise ValueError("PlaceSphere checkpoint formal manifest identity mismatch")
-        if data.get("collection_report_sha256") != TRUSTED_REPORT_SHA256:
+        if not matched and data.get("collection_report_sha256") != TRUSTED_REPORT_SHA256:
             raise ValueError("PlaceSphere checkpoint collection report identity mismatch")
         return ck
 

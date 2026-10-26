@@ -485,4 +485,205 @@ manifest/checkpoint paths. More specific checkpoint mappings take precedence.
 
 Activate `maniskill` before any execution. New data must use an explicit path
 under `demos/`; new weights belong in `outputs/ckpt/`, and experiment records in
-`outputs/exp/YYYYMMDD_HHMMSS_<name>/`. Do not overwrite the retained final runs.
+  `outputs/exp/YYYYMMDD_HHMMSS_<name>/`. Do not overwrite the retained final runs.
+
+## Round 22 — matched PlaceSphere DIRECT/OBSTACLE training and paired dev
+
+This is the authorized matched-data optimization continuation of Ticket 06,
+not formal evaluation or generalization evidence. The branch remains
+`goal/transport-detour-optimization` at base `730b744495914b82f3c19415cfaf30f536779ba2`;
+no checkout, branch change, commit, or push occurred. ManiSkill source and all
+historical datasets/checkpoints were left unchanged. The earlier
+`20261026_123000_matched_terminal_r21` dataset (213 unique obstacle layouts / 87
+repeats) was excluded. The only training data were the qualifying
+`20261026_133000_matched_terminal_r21b` package:
+
+- HDF5 `eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0`;
+  manifest `ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86`.
+- Manifest-selected IDs are pinned in preregistration; the actual HDF5 order is
+  interleaved (DIRECT IDs are even, OBSTACLE IDs odd). Counts are exactly 1,000
+  DIRECT / 300 OBSTACLE, disjoint and covering 0–1299. The opt-in versioned
+  reader cross-checks the manifest labels against HDF5 `kind`, rejects missing
+  labels, wrong counts and unpinned identities, and verifies T+1 39/42 state,
+  seven-channel native actions and successful terminal evidence. Historical
+  formal readers remain locked to their original hashes and 1,000/100 IDs.
+- Actual official training windows: 132,080 DIRECT / 50,077 OBSTACLE. The
+  separate stride-8 diagnostic has 16,189 / 6,175 windows and is not the
+  training-window denominator. Episode length median/p90/p95/max is
+  105/147/321/909 DIRECT and 126/185/544/889 OBSTACLE. Actions beyond 200 are
+  15.83% / 20.71% of action volume; open near-zero actions are 21.58% / 25.52%
+  (28,723 / 12,855 actions). Since the tails are below 50% and the action-neutral
+  share is independently substantial, the preregistered choice was uniform
+   official DP window sampling: no phase weight, trajectory reweighting, or
+   truncation. Expert tails do not prove policy sufficiency at 200 steps.
+
+  A separate, non-selecting quality audit was calculated from each episode's
+  saved current-action phase and per-step linear/angular speeds in the HDF5. It
+  uses fixed non-overlapping 8-action windows and no future phase inference. The
+  action-only open/near-zero predicate is all eight gripper actions open and
+  max norm of the six pose channels ≤0.02; linear and angular native speed checks
+  are counted independently (≤0.01 m/s and ≤0.5 rad/s):
+
+  | Role | All stride-8 windows | Open/near-zero action-only windows | Linear static among action-only | Angular static among action-only | Linear-static / angular-only failure | Both native-static |
+  | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+  | DIRECT | 16,189 | 3,311 (20.45%) | 3,301/3,311 (99.70%) | 0/3,311 | 3,301/3,311 (99.70%) | 0/3,311 |
+  | OBSTACLE | 6,175 | 1,513 (24.50%) | 1,506/1,513 (99.54%) | 0/1,513 | 1,506/1,513 (99.54%) | 0/1,513 |
+
+  Reproduction command (read-only against the pinned HDF5):
+
+  ```bash
+  source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s \
+    python -u -m examples.baselines.constrain.audit_placesphere_matched_windows \
+    --data demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/trajectory.h5 \
+    --output outputs/exp/20261026_153000_placesphere_matched_paired_eval/matched_window_quality_posthoc.json
+  ```
+
+  All action-only windows are current-phase `settle`; 10 DIRECT and 7 OBSTACLE
+  action-only windows fail the linear static check. Full report:
+  `outputs/exp/20261026_153000_placesphere_matched_paired_eval/matched_window_quality_posthoc.json`.
+  SHA `b0afc25631f84c745ddf486d203dd009438b19c71e15772fc35b203d2c0a6f5c`.
+  This analysis was completed after preregistered training/evaluation, so it did
+  not affect sampling, checkpoint choice, or gate interpretation. It is a
+  process deviation from the requested order to resolve this quality gap before
+  training; these rates are post-hoc, not preregistered independent
+  angular-window coverage. Expert angular settling remains a bottleneck for
+  parent review.
+
+The before-training registration is
+`outputs/exp/20261026_153000_placesphere_matched_paired_eval/preregistration_matched_r3.json`
+(SHA `d0b7b88d5514198a5cae44ec4aff41b5bb1968b3162f580ff2956bc8144f0e02`),
+which pins the dataset IDs/hashes, actual source file bytes, final-EMA selection,
+30-scene seeds, budgets, and output paths. Training-source identity
+`7c9bec6b3310ac6e3f2715a11f63a4b889b433f79dbce7f80ebbf98d6d0d0f79` was
+verified before the Base and 90k runs. The earlier r1/r2 registration files in
+the same experiment folder are superseded preregistration drafts: r1 had not
+yet recorded calculated DP window totals, and r2 was generated before a trainer
+syntax cleanup. Neither was used for any training or evaluation command.
+Before evaluation, the adverse contact/XY
+transition labels in the summary writer were corrected (episode inference was
+unchanged) and re-frozen in preregistration r4, SHA
+`f1a49951d652cfb30fd40a33b867f0664d0cc19efd1039d95ff63cf6b9a53adf`, source
+identity `8fab4e962a21c8b67de70bd5272e6994f85595ad29ee7cf0e4e8b71b97527a0e`.
+
+Preflight loaded the new Base EMA strictly into the PlaceSphere control model:
+epsilon and full 100-step disabled-control equivalence both had max absolute
+difference 0.0. The 300 obstacle IDs yielded 50,077 windows. Two finite
+preflight updates verified finite loss, movement in the zero-initialized
+control path, nonzero zero-convolution gradients and an unchanged frozen base.
+An initial overly strong preflight assertion expected gradients in all upstream
+and hint modules before those zero convolutions moved; those gradients are
+structurally zero at initialization. No training had started in those attempts;
+the corrected two-update check passed. All attempts terminated cleanly.
+Before training, `py_compile` also caught an indentation error in the optional
+trainer snapshot list; it was fixed and compilation/focused tests passed before
+the final training registration. The first reader sample assertion expected a
+42-D policy observation; the actual contract is 39-D policy plus 42-D raw, and
+the assertion was corrected before registration. One process-inspection shell
+check found `rg` unavailable; it was rerun successfully with `ps` piped to
+Python. None of these issues changed dataset bytes or launched an unregistered
+training/evaluation run. No `.tmp` checkpoints or experiment processes remained.
+
+Exact finite-budget commands (all after activating `maniskill`):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=30s 2400s \
+  python -u -m examples.baselines.constrain.train_placesphere_base_dp \
+  --demo-path demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/trajectory.h5 \
+  --manifest demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/trajectory.json \
+  --run-dir outputs/exp/20261026_153000_placesphere_matched_base_dp \
+  --checkpoint-dir outputs/ckpt/20261026_153000_placesphere_matched_base_dp \
+  --device cuda --seed 1 --total-iters 30000 --batch-size 1024 --lr 1e-4 \
+  --warmup 500 --ema-power 0.75 --matched-r21b
+
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=30s 6000s \
+  python -u -m examples.baselines.constrain.placesphere_constrain \
+  --demo-path demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/trajectory.h5 \
+  --manifest demos/PlaceSphere-transport-detour/20261026_133000_matched_terminal_r21b/trajectory.json \
+  --base-checkpoint outputs/ckpt/20261026_153000_placesphere_matched_base_dp/final.pt \
+  --run-dir outputs/exp/20261026_153000_placesphere_matched_constrain_90k \
+  --checkpoint-dir outputs/ckpt/20261026_153000_placesphere_matched_constrain_90k \
+  --device cuda --total-iters 90000 --batch-size 1024 --seed 1 --lr 1e-4 \
+  --warmup 500 --ema-power 0.75 --matched-r21b
+```
+
+Base completed 30,000 updates in 886.36 s; losses were finite (first
+1.16264045, last 0.00248973). Final EMA:
+`outputs/ckpt/20261026_153000_placesphere_matched_base_dp/final.pt`, SHA
+`4484b76f1767a4723c7a60f17c1cdd2b25afc6876bc0f732f66a0997919c6942`.
+Base run config SHA `6cf5c963f1bb475489b826c7515b93591522c4b8f54d5f78ca692461ff7e6aff`;
+summary SHA `a5cede581b8cb747d942159eff4f675c8162399c34428da88ef200dcaef49eb6`.
+Control completed 90,000 updates in 2,533.85 s; losses were finite (first
+0.02094785, last 0.00165384), frozen Base unchanged, control parameters moved,
+and control-down, mid and hint gradients were nonzero. Pre/post disabled-control
+epsilon and sampling equivalence max difference was 0.0. Final EMA:
+`outputs/ckpt/20261026_153000_placesphere_matched_constrain_90k/final.pt`, SHA
+`4c8f18c79c00188da785740bae5750c5989b8516a2f741712f3d5c833d915b88`.
+Control run config SHA `ef7fe1925a735817c57263d8376759d301b703500749d93366dfbc53dd700be6`;
+summary SHA `ed67aa7c98d3c11ce50714dd64fd8887e1dde6cec9ca3186784296d6a5a8d042`.
+
+Paired evaluation reused the original frozen 30-scene development set from
+`outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes` (the same
+set used by the 2026-10-25 300/90k run), with identical restored states,
+controllers, observations and per-scene seeds; max 200 control steps, 120 s per
+episode, 8,000 s overall. The primary comparison is the old 300/90k EMA; the
+old 100-obstacle EMA is secondary. New evaluation command:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s 8000s \
+  python -u -m examples.baselines.constrain.evaluate_placesphere_matched \
+  --scene-dir outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes \
+  --base-checkpoint outputs/ckpt/20261026_153000_placesphere_matched_base_dp/final.pt \
+  --constrain-checkpoint outputs/ckpt/20261026_153000_placesphere_matched_constrain_90k/final.pt \
+  --output-dir outputs/exp/20261026_153000_placesphere_matched_paired_eval/paired_eval \
+  --primary-baseline outputs/exp/20261025_085101_placesphere_obstacle300_90k/paired \
+  --secondary-baseline outputs/exp/20261024_155244_placesphere_data_expansion/paired \
+  --device cuda
+```
+
+Both new policies evaluated all 30/30 episodes, zero runtime errors. Base was
+6/30 task, 0/30 safe, 30/30 contact, 24/30 XY; old 300/90k Base was
+5/30, 0/30, 30/30, 24/30. New Constrain was 26/30 task, 25/30 safe, 1/30
+contact and 0/30 XY. Against the old 300/90k Constrain
+27/21/6/1: task improved/regressed/both/neither = 2/3/24/1; safe = 7/3/18/2;
+contact cleared/introduced/both/neither = 6/1/0/23; XY = 1/0/0/29. Against
+the old 100-obstacle Constrain 25/21/7/0: task = 5/4/21/0; safe = 8/4/17/1;
+contact = 6/0/1/23; XY = 0/0/0/30. New Base versus old 300/90k Base task
+transitions = 4/3/2/21; safe = 0/0/0/30; contact = 0/0/30/0; XY = 1/1/23/5.
+
+The frozen gate is **pause / fail**: required task ≥27/30 and safe ≥26/30,
+contact ≤3/30 and XY ≤3/30; observed task 26 and safe 25 fail, while contact
+and XY pass. These are development results, not formal/generalization claims.
+Compared with the old 300/90k run, this matched dataset plus layout-replacement
+package improves safety/contact outcomes but does not isolate a pure expert
+causal effect. Do not proceed to Ticket 08 or PickCube formal work from this
+result without parent review.
+
+Episode-level evidence is retained in
+`paired_eval/{base_dp,constrain_dp}/episode_*.json`; derived summaries are in
+`paired_summary.json` (SHA `4ea9288fa5fb6506d92b5fb0d753b21a4747857c1a92a9ac2b517a53dbcf67b7`)
+and `episode_diagnostics.json` (SHA
+`eb241ecd060233a743d3c8607b40bed97a8a17eed06ab12a81c4235fc9081537`). New
+Constrain had one first contact: grasp-approach, Panda left finger/gripper on
+the top cap. It ended ungrasped; 30 releases were recorded, with 2
+`incorrect_release` and 2 `not_stabilized` failures. Successful native completion
+steps: 26/30, median 107, p90 160, max 165; all successes occurred within the
+200-step policy budget. Base first contact occurred 30/30 (29 transport, one
+release/stabilization); Base had 24 incorrect-release failures. Terminal speed,
+grasp, contact entity/phase/location and release records remain per-episode.
+Frozen evaluation config SHA
+`edc7e458d9caad81bb7e73d6d0bf638ac7442c659a8225960295b7c5f1bc81f6`. Base and
+Constrain episode-directory identity hashes are respectively
+`f2d668093cdb60cdd0420feb0ad7c8f1cc2f558b9dac67fa6c27c8e21c4fe896` and
+`877cd6ad6c5faca05da52cea50970227a1f06ddaee4bc7d66c10c40dc6b8b2da`.
+
+Full constrain test suite after the post-hoc window-audit check:
+`timeout --signal=TERM --kill-after=20s 700s python -m pytest
+examples/baselines/constrain/tests -q --tb=line` — **484 passed, 28 warnings,
+83.23 s**. `git diff --check` passed. GPU training/evaluation processes
+were gone at verification; the RTX 5070 returned to idle. No runtime checkpoint
+or evaluation errors occurred. Files changed are limited to
+`examples/baselines/constrain/` plus this index and Ticket 06 execution notes.
