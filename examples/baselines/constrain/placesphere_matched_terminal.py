@@ -999,7 +999,8 @@ def _rejected(layout, reason, *, role, error=None):
     }
 
 
-def run_layout_expert(layout, *, margin_m, role, shared_targets=None, episode_wall_s=160):
+def run_layout_expert(layout, *, margin_m, role, shared_targets=None, release_hold_steps=0,
+                     episode_wall_s=160):
     from examples.baselines.constrain.placesphere_obstacle import PARKED_CENTER
     from examples.baselines.constrain.placesphere_transport_detour import run_transport_expert
 
@@ -1019,7 +1020,10 @@ def run_layout_expert(layout, *, margin_m, role, shared_targets=None, episode_wa
         detour = role == ROLE_POSITIVE_OBSTACLE
         if parked:
             snapshot, latch_info = park_execution_snapshot(snapshot)
+        if int(release_hold_steps) not in RELEASE_HOLD_STEPS_CANDIDATES:
+            raise ValueError("release_hold_steps must use a preregistered value (0, 8, or 16)")
         targets = dict(scene["expert"]["fork_targets"] if shared_targets is None else shared_targets)
+        targets["release_hold_steps"] = int(release_hold_steps)
         waypoint = np.asarray(targets["waypoint_xyz"], dtype=np.float64)[:2] if detour else None
         center = np.asarray(PARKED_CENTER if parked else planned["center_xy"], dtype=np.float64)
         result = run_transport_expert(

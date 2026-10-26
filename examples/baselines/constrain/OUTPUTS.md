@@ -687,3 +687,146 @@ examples/baselines/constrain/tests -q --tb=line` — **484 passed, 28 warnings,
 were gone at verification; the RTX 5070 returned to idle. No runtime checkpoint
 or evaluation errors occurred. Files changed are limited to
 `examples/baselines/constrain/` plus this index and Ticket 06 execution notes.
+
+## Round 23 — measured PlaceSphere hold-8 continuation
+
+User-authorized continuous Ticket 06 optimization on
+`goal/transport-detour-optimization`, starting HEAD
+`a402e6c6b01bd2622468e8f827fb13a076795d2a`. No checkout, commit, or push.
+ManiSkill source and all retained Round-22 artifacts were unchanged. This is a
+development experiment, not formal evaluation or generalization evidence.
+
+### Current matched-checkpoint diagnosis
+
+`placesphere_matched_diagnosis.py` is pinned to the Round-22 Base EMA
+`4484b76f1767a4723c7a60f17c1cdd2b25afc6876bc0f732f66a0997919c6942`, Constrain
+EMA `4c8f18c79c00188da785740bae5750c5989b8516a2f741712f3d5c833d915b88`, and the
+unchanged 30-scene paired evaluation manifest. It traces indices 12/13/21/22/25/28
+and safe Constrain controls 0/2/4/6 for both policies, with full raw observations,
+queued seven-D actions, TCP/sphere/bin/cylinder fields, action queue/replan
+indices, grasp/release/contact/crossing transitions, and post-action linear and
+angular velocity vectors. Controller/action slice `[1,9)`, horizons 2/16/8,
+scene-seed inference, 200-step horizon, and native limits (0.01 m/s, 0.5 rad/s)
+are unchanged. All 20/20 traces per policy reproduced the saved success/safety/
+contact/crossing/termination/step outcomes across 10 selected scenes per policy;
+0 mismatches and 0 runtime errors.
+
+| Constrain dev index | Result | First contact / release | Terminal linear / angular speed |
+| ---: | --- | --- | ---: |
+| 12 | native task success, unsafe | grasp-approach contact step 4, queue 3; left finger/top cap | 0.008181 m/s / 0.470576 rad/s |
+| 13 | release/stability timeout | release step 86, queue 5 | 0.025526 m/s / 1.276365 rad/s |
+| 21 | release/stability timeout | release step 169, queue 0 | 0.581996 m/s / 29.099939 rad/s |
+| 22 | release/stability timeout | release step 114, queue 1 | 0.000720 m/s / 4.987443 rad/s |
+| 25 | safe native success | release step 111, queue 6 | 0.002481 m/s / 0.126532 rad/s |
+| 28 | release/stability timeout | release step 99, queue 2 | 0.001383 m/s / 5.122324 rad/s |
+
+The sole contact is early grasp approach, not release. Four current 200-step
+failures are angular/stability failures, including two with sub-threshold
+terminal linear speed. That did not isolate queued-action staleness as the shared
+cause. Full corrected diagnostic:
+`outputs/exp/20261026_210000_placesphere_matched_diagnosis_r23d/`; diagnosis SHA
+`d3780c27bd156af222527e7e0a63b9d34d5807e47b747e92a017c2e4b840711e`, preregistration
+SHA `9f66f2827b4db02f0defc45cb9e460d76aaee2c790f303dde22a204fc48f11f8`.
+The full T+1 expert velocity/action join SHA is
+`956e5a5ad0b00018a1c37294709536d7969631d98288cea48b51e3d15569fa4e`. It aligns
+each action to its *post-action* native state and checks against recorded
+per-action velocity norms. Among the 300 matched OBSTACLE training releases,
+linear-speed median/p90/max was 0.368188/0.373907/0.375557 m/s (300/300 above
+native linear limit); angular-speed median/p90/max was 0.403734/0.438300/0.501188
+rad/s (1/300 above angular limit). Of the 12,555 post-release settle
+transitions, 12,457 exceeded the native angular limit and 138 exceeded the
+linear limit; retained expert tails do eventually reach their first native
+endpoints.
+
+### Physics selection, data regeneration, and training
+
+Before any dev-set result was inspected, a physics-only replay compared 0/8/16
+open-neutral holds after the actual release transition on frozen training
+OBSTACLE IDs 1/3/5/7/9/11/13/15. Each candidate reused the same full initial
+environment/controller state and native action prefix, inserting only the
+registered hold. Safe native success was 6/8, 7/8, 7/8; contact and crossing were
+0/8 for all candidates; terminal speed-threshold passes were 6/8, 7/8, 7/8.
+The frozen tie-break selected the shorter 8-step hold. Probe result
+`outputs/exp/20261026_181000_placesphere_matched_hold_probe_r23f/result.json`
+SHA `eb45994e780b7553b79ec966fb6ccf37f1628eb7ee4c6a78830d313f0b29b769`;
+preregistration SHA
+`adb7dfdb2bc4ef8f3c65ac378d3e2ab0d4da90c1c650f701df19368e37fadbbf`.
+
+The full collector registration
+`outputs/exp/20261026_183000_placesphere_hold8_registration_r23.json` SHA
+`0ae6445a848cf5a046b1602fdebcca1364233f766a42a70a5a1aa73574e69af6` freezes
+hold 8, source-catalog identity, direct/obstacle role rules, task-layout dedup,
+and finite serial budgets. A 20+20 paired native collector pilot completed in
+73 s and validated 20 unique paired obstacle layouts and 40/40 restore audits;
+it is retained separately at `demos/PlaceSphere-transport-detour/20261026_183500_hold8_pilot_r23/`
+and excluded from full training.
+
+The regenerated full data is
+`demos/PlaceSphere-transport-detour/20261026_184500_matched_terminal_hold8_r23/`:
+1,000 DIRECT + 300 OBSTACLE, 1,004 layout attempts, 2 predeclared replacements,
+4 rejected layouts, 3,104.39 s, 300 unique matched obstacle layouts, and 474/1,000
+greedy-unique direct layouts (526 repeats, not claimed unique coverage). No old
+trajectory arrays were copied. Independent validation passed 1,300/1,300 exact
+T+1 restore audits, native seven-D actions, 39/42 state observation schema,
+first-native-success evidence, full-prefix contact/crossing checks, and paired
+negative/replay proofs. Dataset identity: HDF5 SHA
+`2bd725179ed61c8c32b97cdc9b89ce348add0bbf6b4d7a912cfa8bad30b9a5a1`, manifest
+SHA `8685d2303cb269c5e9ccda9964586c25406e40afdcd83c49ad6fd3adbb24fbad`,
+training identity SHA `76fd854fcea553bd020f8e22ea25ab078552c903afe5bafd0bf3125ad61af70a`.
+Independent validation SHA
+`c7508ec2709252c33ad534df24be390a902c922baf8fde622dc90a6a11e607a1`;
+collection report SHA `aa292bcaec9a0671a3df3074ddab29ec4cbb493b610d8d5a0349160ed5c0c08f`.
+
+The before-training trial registration is
+`outputs/exp/20261026_195500_placesphere_hold8_training_prereg_r23b.json` SHA
+`32057e428d24e301b78e485a8cbfd1c8ddec56cd7c6d3962d80dab314e27ac84`; registered
+source identity `8baa3958d6341d6e5e632b74fd8150297dc3fae9bedeb703c96f43ad6eafa059`
+was rechecked with no source drift before training. It pins uniform official
+window sampling, new matching data identity, seed 1, Base 30,000 updates,
+Constrain 90,000 updates from the new Base final EMA, final-EMA weight selection,
+the frozen 30 dev scenes, 200 policy steps, 120 s per episode, 8,000 s overall,
+output paths, and original gate thresholds.
+
+Base: 30,000 updates in 881.56 s, all losses finite (1.159990 → 0.002054), final
+EMA SHA `92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c`.
+Run config SHA `bfcde1a99d908b29cdb569eb3af401ae33119aca8f96b3db100fbec449ffbaee`;
+summary SHA `ddab69156d38f80e2f524497659470d2ecec56d6ca36878d1774ac1831cda35c`.
+Constrain: 90,000 updates in 2,518.40 s, all losses finite (0.015319 →
+0.001245), frozen Base unchanged, control branch moved with nonzero gradients,
+pre/post disabled-control epsilon and 100-step sampler equivalence exact.
+Final EMA SHA `c8d1404f68cf153176035c8d7d95d032517838f9df877b295bbefd5102f57ada`;
+run config SHA `7bbe0dc6c4e89e9f1f5b5df332a083d6eda19a0cc398c041f2a938dce8385d2f`;
+summary SHA `8fab4eead8d240205a6db64b3f9395b2899d115453eb47a82d89784aae12303d`.
+
+### One paired dev trial and gate
+
+The one registered evaluation used the exact Round-22 frozen 30-scene manifest,
+200 steps, both policies, and zero runtime errors (30/30 each). Hold-8 Constrain
+scored 25/30 task, 25/30 safe, 0/30 contact, 0/30 XY; successful native
+completion steps were median/p90/max 113/160/184. Against the primary current
+matched Round-22 Constrain (26/25/1/0): task improved/regressed/both/neither
+4/5/21/0; safe 5/5/20/0; contact cleared/introduced/both/neither 1/0/0/29;
+XY 0/0/0/30. The previous contact cleared at scene 12, but native task success
+regressed at scenes 5/10/11/17/24 while former failures 13/21/22/28 recovered.
+The five current failures were all release/stability timeouts at the 200-step
+limit: scenes 5/10/24 stayed on-bin but spinning; scenes 11/17 were high-motion
+off-bin releases. The hold removes the single contact but does not clear the
+remaining release/stability bottleneck.
+
+**Gate: pause/fail.** Task 25 < 27 and safe 25 < 26; contact and XY pass.
+This is a development result, not formal evaluation. Paired summary SHA
+`63f316e6188c1ce2ea4b0c454c1552de67b63510bbca0aae13aa7348a54c8f04`; frozen
+config SHA `fef33e7ca0f8319d043cfc7bdf5fcb74654a1ac12bf104e7825df94a6f8c3d88`.
+The matched current EMA baseline and per-episode files remain intact.
+Persistent Round-23 argv/budget/outcome ledger:
+`outputs/exp/20261026_195000_placesphere_hold8_paired_eval_r23/round23_execution.json`
+SHA `a30b1436e315413befa5013e30ee906d3310e27d9f0325c647d5556739f5f41f`;
+all frozen training source hashes still match.
+
+Final full constrain suite after Round-23 code additions:
+`timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line`
+— **498 passed, 28 warnings, 82.41 s**. `git diff --check` passed. Training,
+evaluation, diagnostic and collection processes exited; no leftover `.tmp`
+checkpoints or experiment processes were present. Ticket 08 remains blocked. The
+next data-backed seam is current angular release/stability under the 200-step
+policy budget; no additional R23 factor or formal evaluation was started.

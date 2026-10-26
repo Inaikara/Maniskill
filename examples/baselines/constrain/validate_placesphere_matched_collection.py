@@ -43,9 +43,15 @@ def _flag(info, name):
 def validate_collection(dataset_dir, experiment_dir, registration_path):
     dataset, experiment = Path(dataset_dir), Path(experiment_dir)
     registration = assert_preregistration(registration_path)
+    frozen_contract = json.loads((dataset / "frozen_contract.json").read_text())
+    registration_sha = hashlib.sha256(Path(registration_path).read_bytes()).hexdigest()
+    if (frozen_contract.get("registration_sha256") != registration_sha
+            or frozen_contract.get("source_identity") != registration["source_identity"]):
+        raise ValueError("frozen collection contract differs from the exact registration")
     report = json.loads((dataset / "report.json").read_text())
     manifest = json.loads((dataset / "trajectory.json").read_text())["episodes"]
-    expected = registration["targets"]
+    expected = frozen_contract["targets"]
+    release_hold_steps = int(registration["terminal"]["release_hold_steps"])
     counts = {kind: sum(row["kind"] == kind for row in manifest) for kind in ("direct", "obstacle")}
     if not report.get("complete") or counts != {"direct": int(expected["direct"]),
                                                   "obstacle": int(expected["obstacle"])}:
@@ -121,6 +127,10 @@ def validate_collection(dataset_dir, experiment_dir, registration_path):
             if not (record.get("native_success") and record.get("on_bin")
                     and record.get("static") and record.get("ungrasped")):
                 raise ValueError(f"{key}: saved expert record lacks native success")
+            hold_executed = int(record.get("release_hold_steps_executed", -1))
+            hold_status = dict(record.get("phase_status", [])).get("release_hold")
+            if not 0 <= hold_executed <= release_hold_steps or hold_status not in ("reached", "native_success"):
+                raise ValueError(f"{key}: release hold execution differs from preregistered path")
             if kind == "direct":
                 if not positive_direct_accepted(record):
                     raise ValueError(f"{key}: positive DIRECT admission predicate failed")
@@ -204,6 +214,30 @@ def validate_collection(dataset_dir, experiment_dir, registration_path):
         "collection_identity": registration["source_identity"],
         "auditor_sha256": result["auditor_sha256"],
     }, indent=2, sort_keys=True) + "\n")
+    if release_hold_steps == 8 and expected == {"direct": 1000, "obstacle": 300}:
+        training_identity = {
+            "format": "placesphere_matched_training_identity_v1",
+            "dataset_version": "placesphere_matched_terminal_r23_hold8_v1",
+            "release_hold_steps": 8,
+            "h5_sha256": artifact_hashes["trajectory.h5"],
+            "manifest_sha256": artifact_hashes["trajectory.json"],
+            "class_counts": counts,
+            "episode_ids": {
+                "direct": [int(row["episode_id"]) for row in manifest if row["kind"] == "direct"],
+                "obstacle": [int(row["episode_id"]) for row in manifest if row["kind"] == "obstacle"],
+            },
+            "validation_complete": True,
+            "admitted_for_training": True,
+            "registration_sha256": artifact_hashes["registration.json"],
+            "dataset_validation_sha256": hashlib.sha256(
+                (experiment / "dataset_validation.json").read_bytes()).hexdigest(),
+            "dataset_identity_sha256": hashlib.sha256(
+                (experiment / "dataset_identity.json").read_bytes()).hexdigest(),
+            "native_thresholds_changed": False,
+            "geometry_changed": False,
+        }
+        identity_path = dataset / "training_identity.json"
+        identity_path.write_text(json.dumps(training_identity, indent=2, sort_keys=True) + "\n")
     return result
 
 

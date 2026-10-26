@@ -34,6 +34,8 @@ NAMED_FIELDS = [
     ["extra/tcp_to_obj_pos", 3], ["extra/placesphere_obstacle", 3],
 ]
 FORMAT = "placesphere_base_dp_v1"
+MATCHED_VERSION = "placesphere_matched_terminal_r21b_v1"
+MATCHED_HOLD8_VERSION = "placesphere_matched_terminal_r23_hold8_v1"
 
 
 def sha256_file(path):
@@ -182,19 +184,25 @@ class PlaceSphereBaseDPAdapter:
     def validate_checkpoint(checkpoint, expected_episode_ids=None, trusted_h5_sha256=None):
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
         data, schema = ck.get("data_identity", {}), ck.get("named_state_schema", {})
-        matched = data.get("dataset_version") == "placesphere_matched_terminal_r21b_v1"
+        version = data.get("dataset_version")
+        matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION)
         expected_ids = data.get("selected_episode_ids") if matched else list(range(1000))
+        matched_ids_valid = (not matched or expected_ids == list(range(0, 600, 2)) + list(range(600, 1300)))
         if (ck.get("format") != FORMAT or ck.get("contract") != contract()
                 or schema.get("base_dim") != 39 or schema.get("flat_dim") != 42
                 or schema.get("obstacle_field") != "extra/placesphere_obstacle"
                 or schema.get("field_order") != [field[0] for field in NAMED_FIELDS]
                 or data.get("selected_class") != "direct" or data.get("episodes") != 1000
                 or not isinstance(expected_ids, list) or len(expected_ids) != 1000
+                or not matched_ids_valid
                 or not data.get("h5_sha256") or not data.get("manifest_sha256")
                 or (not matched and data.get("selected_episode_ids") != list(range(1000)))
                 or (not matched and data.get("frozen_contract_sha256") != TRUSTED_CONTRACT_SHA256)
-                or (matched and (data.get("h5_sha256") != "eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0"
-                                 or data.get("manifest_sha256") != "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"))):
+                or (version == MATCHED_VERSION and (data.get("h5_sha256") != "eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0"
+                                                    or data.get("manifest_sha256") != "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"))
+                or (version == MATCHED_HOLD8_VERSION and (data.get("release_hold_steps") != 8
+                                                          or len(data.get("h5_sha256", "")) != 64
+                                                          or len(data.get("manifest_sha256", "")) != 64))):
             raise ValueError("PlaceSphere checkpoint contract mismatch")
         if expected_episode_ids is not None and data["selected_episode_ids"] != list(expected_episode_ids):
             raise ValueError("PlaceSphere checkpoint selected episode IDs mismatch")

@@ -20,8 +20,8 @@ from examples.baselines.constrain.placesphere_base_dp import (
 )
 from examples.baselines.constrain.train_logging import RunLogger, atomic_write_json
 from examples.baselines.constrain.placesphere_manifest_dataset import (
-    MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION,
-    PlaceSphereManifestDataset,
+    MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+    PlaceSphereManifestDataset, load_matched_training_identity,
 )
 
 
@@ -40,6 +40,7 @@ def parse_args(argv=None):
     p.add_argument("--ema-power", type=float, default=0.75)
     p.add_argument("--profile-seconds", type=float, default=0)
     p.add_argument("--matched-r21b", action="store_true")
+    p.add_argument("--matched-data-identity", type=Path)
     return p.parse_args(argv)
 
 
@@ -75,10 +76,16 @@ def main(argv=None):
     args = parse_args(argv)
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
+    if args.matched_r21b and args.matched_data_identity:
+        raise ValueError("choose one matched dataset identity mode")
+    matched_hold8 = args.matched_data_identity is not None
+    identity = (load_matched_training_identity(args.matched_data_identity, args.demo_path, args.manifest,
+                                                expected_version=MATCHED_HOLD8_VERSION)
+                if matched_hold8 else None)
     if args.matched_r21b:
         if sha256_file(args.demo_path) != MATCHED_H5_SHA256 or sha256_file(args.manifest) != MATCHED_MANIFEST_SHA256:
             raise ValueError("matched PlaceSphere r21b data identity mismatch")
-    else:
+    elif not matched_hold8:
         if sha256_file(args.demo_path) != "fec4620c496ae3c5c0dec7db469333f302f7170363e11f66cba961cbb5d56ec4":
             raise ValueError("formal PlaceSphere HDF5 SHA-256 mismatch")
         if sha256_file(FORMAL_CONTRACT) != "ff11b940ede86e290928d26ccd4ac96e7ba480995af774d46a018dbda8b6e761":
@@ -107,8 +114,14 @@ def main(argv=None):
         source_identity[str(source.relative_to(Path.cwd()))] = sha256_file(source)
     atomic_write_json(snapshot / "source_hashes.json", source_identity)
 
-    dataset = (PlaceSphereManifestDataset(args.demo_path, args.manifest, "direct")
-               if args.matched_r21b else PlaceSphereBaseDataset(args.demo_path, args.manifest))
+    dataset = (PlaceSphereManifestDataset(
+        args.demo_path, args.manifest, "direct",
+        expected_h5_sha256=identity["h5_sha256"],
+        expected_manifest_sha256=identity["manifest_sha256"],
+        max_release_hold_steps=8)
+        if matched_hold8 else
+        PlaceSphereManifestDataset(args.demo_path, args.manifest, "direct")
+        if args.matched_r21b else PlaceSphereBaseDataset(args.demo_path, args.manifest))
     runtime_schema = verify_runtime_observation_contract()
     agent = build_agent(args.device)
     optimizer = torch.optim.AdamW(agent.parameters(), lr=args.lr, betas=(0.95, 0.999), weight_decay=1e-6)
@@ -133,9 +146,11 @@ def main(argv=None):
                   "selected_class": "direct", "selected_episode_ids": dataset.trajectory_ids,
                   "episodes": len(dataset.trajectory_ids), "windows": len(dataset),
                   "h5_sha256": sha256_file(args.demo_path), "manifest_sha256": sha256_file(args.manifest),
-                  "frozen_contract_sha256": None if args.matched_r21b else sha256_file(FORMAL_CONTRACT),
-                  "collection_report_sha256": None if args.matched_r21b else sha256_file(FORMAL_REPORT),
-                  **({"dataset_version": MATCHED_VERSION} if args.matched_r21b else {})},
+                   "frozen_contract_sha256": None if (args.matched_r21b or matched_hold8) else sha256_file(FORMAL_CONTRACT),
+                   "collection_report_sha256": None if (args.matched_r21b or matched_hold8) else sha256_file(FORMAL_REPORT),
+                   **({"dataset_version": MATCHED_VERSION} if args.matched_r21b else {}),
+                   **({"dataset_version": MATCHED_HOLD8_VERSION, "release_hold_steps": 8,
+                       "training_identity_sha256": sha256_file(args.matched_data_identity)} if matched_hold8 else {})},
         "architecture": dict(MODEL_CONFIG), "normalization": {"observation": "identity", "action": "identity"},
         "outputs": {"experiment": str(args.run_dir), "checkpoint": str(args.checkpoint_dir)},
         "executed_source_sha256": source_identity, "initial_model_sha256": _sha_params(agent),

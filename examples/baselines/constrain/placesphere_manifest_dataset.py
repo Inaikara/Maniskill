@@ -18,6 +18,33 @@ from examples.baselines.constrain.placesphere_base_dp import sha256_file
 MATCHED_H5_SHA256 = "eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4556d0"
 MATCHED_MANIFEST_SHA256 = "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"
 MATCHED_VERSION = "placesphere_matched_terminal_r21b_v1"
+MATCHED_HOLD8_VERSION = "placesphere_matched_terminal_r23_hold8_v1"
+
+
+def load_matched_training_identity(path, data_path, manifest_path, *, expected_version):
+    identity = json.loads(Path(path).read_text())
+    manifest = json.loads(Path(manifest_path).read_text())
+    episodes = manifest.get("episodes", [])
+    direct_ids = [int(row["episode_id"]) for row in episodes if row.get("kind") == "direct"]
+    obstacle_ids = [int(row["episode_id"]) for row in episodes if row.get("kind") == "obstacle"]
+    if (identity.get("format") != "placesphere_matched_training_identity_v1"
+            or identity.get("dataset_version") != expected_version
+            or identity.get("admitted_for_training") is not True
+            or identity.get("release_hold_steps") != 8
+            or identity.get("h5_sha256") != sha256_file(data_path)
+            or identity.get("manifest_sha256") != sha256_file(manifest_path)
+            or identity.get("class_counts") != {"direct": 1000, "obstacle": 300}
+            or identity.get("episode_ids") != {"direct": direct_ids, "obstacle": obstacle_ids}
+            or len(set(direct_ids + obstacle_ids)) != 1300
+            or set(direct_ids + obstacle_ids) != set(range(1300))
+            or identity.get("validation_complete") is not True
+            or identity.get("admitted_for_training") is not True
+            or identity.get("native_thresholds_changed") is not False
+            or identity.get("geometry_changed") is not False
+            or len(identity.get("registration_sha256", "")) != 64
+            or len(identity.get("dataset_validation_sha256", "")) != 64):
+        raise ValueError("matched training identity, hold protocol, or validated artifact hash mismatch")
+    return identity
 
 
 class PlaceSphereManifestDataset(Dataset):
@@ -26,7 +53,8 @@ class PlaceSphereManifestDataset(Dataset):
     def __init__(self, data_path, manifest_path, selected_class, *,
                  expected_h5_sha256=MATCHED_H5_SHA256,
                  expected_manifest_sha256=MATCHED_MANIFEST_SHA256,
-                 obs_horizon=2, pred_horizon=16, expected_count=None):
+                 obs_horizon=2, pred_horizon=16, expected_count=None,
+                 max_release_hold_steps=None):
         if selected_class not in ("direct", "obstacle"):
             raise ValueError(f"unsupported PlaceSphere class {selected_class!r}")
         self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
@@ -85,6 +113,12 @@ class PlaceSphereManifestDataset(Dataset):
                     raise ValueError(f"traj_{episode_id}: policy state does not match raw-state selection")
                 metadata = json.loads(group.attrs.get("metadata_json", "{}"))
                 terminal = metadata.get("expert_record", {})
+                if max_release_hold_steps is not None:
+                    hold_executed = int(terminal.get("release_hold_steps_executed", -1))
+                    hold_phase = dict(terminal.get("phase_status", [])).get("release_hold")
+                    if (not 0 <= hold_executed <= int(max_release_hold_steps)
+                            or hold_phase not in ("reached", "native_success")):
+                        raise ValueError(f"traj_{episode_id}: expert release hold exceeds the registered protocol")
                 if (not bool(group["success"][-1]) or not bool(group["terminated"][-1]) or
                         bool(group["truncated"][:].any()) or
                         not bool(terminal.get("native_success")) or

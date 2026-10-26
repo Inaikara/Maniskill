@@ -22,8 +22,8 @@ from examples.baselines.constrain.placesphere_base_dp import (
     PlaceSphereBaseDPAdapter, build_agent, sha256_file,
 )
 from examples.baselines.constrain.placesphere_manifest_dataset import (
-    MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION,
-    PlaceSphereManifestDataset,
+    MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+    PlaceSphereManifestDataset, load_matched_training_identity,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -79,13 +79,27 @@ def placesphere_hint(queued, normalization=NORM):
 
 class PlaceSphereObstacleDataset(Dataset):
     """Only trusted formal obstacle episodes 1000..1099; native successful T+1 data."""
-    def __init__(self, data_path=FORMAL_H5, manifest_path=FORMAL_MANIFEST, matched_r21b=False):
+    def __init__(self, data_path=FORMAL_H5, manifest_path=FORMAL_MANIFEST, matched_r21b=False,
+                 matched_identity=None):
         self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
         self.matched_r21b = matched_r21b
-        if matched_r21b:
-            self.matched = PlaceSphereManifestDataset(data_path, manifest_path, "obstacle")
+        self.is_matched = bool(matched_r21b or matched_identity is not None)
+        if matched_r21b or matched_identity is not None:
+            if matched_r21b and matched_identity is not None:
+                raise ValueError("choose one matched dataset identity mode")
+            identity = (load_matched_training_identity(
+                matched_identity, data_path, manifest_path, expected_version=MATCHED_HOLD8_VERSION)
+                if matched_identity is not None else None)
+            self.matched = PlaceSphereManifestDataset(
+                data_path, manifest_path, "obstacle",
+                expected_h5_sha256=identity["h5_sha256"] if identity else MATCHED_H5_SHA256,
+                expected_manifest_sha256=identity["manifest_sha256"] if identity else MATCHED_MANIFEST_SHA256,
+                max_release_hold_steps=8 if identity else None)
             self.trajectory_ids = self.matched.trajectory_ids
             self.h5_sha256, self.manifest_sha256 = self.matched.h5_sha256, self.matched.manifest_sha256
+            self.dataset_version = MATCHED_HOLD8_VERSION if identity else MATCHED_VERSION
+            self.release_hold_steps = 8 if identity else 0
+            self.training_identity_sha256 = sha256_file(matched_identity) if identity else None
             return
         if sha256_file(self.data_path) != TRUSTED_H5_SHA256 or sha256_file(self.manifest_path) != TRUSTED_MANIFEST_SHA256:
             raise ValueError("formal PlaceSphere data identity is not trusted")
@@ -121,10 +135,10 @@ class PlaceSphereObstacleDataset(Dataset):
         self.trajectory_ids = list(range(1000, 1100))
         self.h5_sha256, self.manifest_sha256 = TRUSTED_H5_SHA256, TRUSTED_MANIFEST_SHA256
 
-    def __len__(self): return len(self.matched) if self.matched_r21b else len(self.slices)
+    def __len__(self): return len(self.matched) if self.is_matched else len(self.slices)
 
     def __getitem__(self, index):
-        if self.matched_r21b:
+        if self.is_matched:
             item = self.matched[index]
             return {"observations": item["raw_observations"], "actions": item["actions"]}
         trajectory, start = self.slices[index]
@@ -145,11 +159,19 @@ def _base_checkpoint(path):
     if sha256_file(path) != TRUSTED_BASE_SHA256:
         ck = PlaceSphereBaseDPAdapter.validate_checkpoint(path)
         data = ck.get("data_identity", {})
-        if (data.get("dataset_version") != MATCHED_VERSION or
-                data.get("h5_sha256") != MATCHED_H5_SHA256 or
-                data.get("manifest_sha256") != MATCHED_MANIFEST_SHA256 or
-                ck.get("step") != 30000):
-            raise ValueError("base checkpoint is not the trusted historical or matched-r21b 30000-step EMA")
+        version = data.get("dataset_version")
+        if (version == MATCHED_VERSION and
+                (data.get("h5_sha256") != MATCHED_H5_SHA256 or
+                 data.get("manifest_sha256") != MATCHED_MANIFEST_SHA256)):
+            raise ValueError("matched-r21b base dataset identity mismatch")
+        if (version == MATCHED_HOLD8_VERSION and
+                (data.get("release_hold_steps") != 8 or len(data.get("h5_sha256", "")) != 64
+                 or len(data.get("manifest_sha256", "")) != 64)):
+            raise ValueError("matched hold-8 base dataset identity mismatch")
+        if (version not in (MATCHED_VERSION, MATCHED_HOLD8_VERSION) or ck.get("step") != 30000
+                or data.get("selected_class") != "direct" or data.get("episodes") != 1000
+                or len(data.get("selected_episode_ids", [])) != 1000):
+            raise ValueError("base checkpoint is not a trusted matched 30000-step EMA")
         return ck
     ck = PlaceSphereBaseDPAdapter.validate_checkpoint(path, expected_episode_ids=range(1000), trusted_h5_sha256=TRUSTED_H5_SHA256)
     if ck.get("step") != 30000: raise ValueError("base checkpoint is not the completed 30000-update model")
@@ -167,18 +189,37 @@ def _diffusion():
 def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_checkpoint=None):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False); cfg = ck.get("config", {})
     data, base, training = cfg.get("data_identity", {}), cfg.get("base_weights", {}), cfg.get("training", {})
-    matched = data.get("dataset_version") == MATCHED_VERSION
+    version = data.get("dataset_version")
+    matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION)
     expected_updates = 90000 if matched else 30000
-    if (ck.get("format") != FORMAT or cfg.get("model") != MODEL or cfg.get("policy") != POLICY or
-            cfg.get("diffusion") != _diffusion() or cfg.get("normalization") != NORM or ck.get("step") != expected_updates or
-            data.get("h5_sha256") != (MATCHED_H5_SHA256 if matched else TRUSTED_H5_SHA256) or data.get("manifest_sha256") != (MATCHED_MANIFEST_SHA256 if matched else TRUSTED_MANIFEST_SHA256) or
-            (not matched and (data.get("frozen_contract_sha256") != TRUSTED_CONTRACT_SHA256 or data.get("collection_report_sha256") != TRUSTED_REPORT_SHA256 or data.get("selected_episode_ids") != list(range(1000,1100)) or data.get("episodes") != 100)) or
-            (matched and (data.get("selected_class") != "obstacle" or data.get("episodes") != 300 or len(data.get("selected_episode_ids", [])) != 300)) or
-            data.get("selected_class") != "obstacle" or
-            (not matched and base.get("sha256") != TRUSTED_BASE_SHA256) or base.get("subkey") != "weights.ema" or base.get("updates") != 30000 or
-        training.get("seed") != 1 or training.get("total_iters") != expected_updates or training.get("batch_size") != 1024 or
-        training.get("lr") != 1e-4 or training.get("warmup") != 500 or training.get("ema_power") != .75 or
-        training.get("selected_weights") != "final EMA fixed before training"):
+    model_invalid = (ck.get("format") != FORMAT or cfg.get("model") != MODEL
+                     or cfg.get("policy") != POLICY or cfg.get("diffusion") != _diffusion()
+                     or cfg.get("normalization") != NORM or ck.get("step") != expected_updates)
+    if version == MATCHED_VERSION:
+        data_invalid = (data.get("h5_sha256") != MATCHED_H5_SHA256
+                        or data.get("manifest_sha256") != MATCHED_MANIFEST_SHA256)
+    elif version == MATCHED_HOLD8_VERSION:
+        data_invalid = (data.get("release_hold_steps") != 8
+                        or len(data.get("h5_sha256", "")) != 64
+                        or len(data.get("manifest_sha256", "")) != 64)
+    else:
+        data_invalid = (data.get("h5_sha256") != TRUSTED_H5_SHA256
+                        or data.get("manifest_sha256") != TRUSTED_MANIFEST_SHA256
+                        or data.get("frozen_contract_sha256") != TRUSTED_CONTRACT_SHA256
+                        or data.get("collection_report_sha256") != TRUSTED_REPORT_SHA256
+                        or data.get("selected_episode_ids") != list(range(1000, 1100))
+                        or data.get("episodes") != 100)
+    class_invalid = (data.get("selected_class") != "obstacle"
+                     or data.get("episodes") != (300 if matched else 100)
+                     or (matched and data.get("selected_episode_ids") != list(range(1, 600, 2)))
+                     or (not matched and data.get("selected_episode_ids") != list(range(1000, 1100))))
+    base_invalid = (base.get("subkey") != "weights.ema" or base.get("updates") != 30000
+                    or (not matched and base.get("sha256") != TRUSTED_BASE_SHA256))
+    training_invalid = (training.get("seed") != 1 or training.get("total_iters") != expected_updates
+                        or training.get("batch_size") != 1024 or training.get("lr") != 1e-4
+                        or training.get("warmup") != 500 or training.get("ema_power") != .75
+                        or training.get("selected_weights") != "final EMA fixed before training")
+    if model_invalid or data_invalid or class_invalid or base_invalid or training_invalid:
         raise ValueError("PlaceSphere ConstrainNet checkpoint contract mismatch")
     denoiser = build_constrain_denoiser(cfg["model"], device=device); denoiser.load_state_dict(ck["model"], strict=True)
     if weights == "ema":
@@ -187,6 +228,11 @@ def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_che
     elif weights != "model": raise ValueError("weights must be ema or model")
     if base_checkpoint is not None:
         base_ck = _base_checkpoint(base_checkpoint); agent = build_agent("cpu"); agent.load_state_dict(base_ck["weights"]["ema"], strict=True)
+        base_identity = base_ck.get("data_identity", {})
+        if matched and any(base_identity.get(key) != data.get(key)
+                           for key in ("dataset_version", "h5_sha256", "manifest_sha256",
+                                       "release_hold_steps", "training_identity_sha256")):
+            raise ValueError("Base and Constrain matched dataset identities differ")
         if _state_sha(agent.noise_pred_net.state_dict()) != cfg["base_weights"]["state_sha256"]:
             raise ValueError("embedded base differs from independent trusted EMA")
     return denoiser, ck
@@ -240,16 +286,17 @@ class PlaceSphereConstrainAdapter:
 
 
 class PlaceSphereConstrainTrainer:
-    def __init__(self,demo_path=FORMAL_H5,manifest_path=FORMAL_MANIFEST,base_checkpoint=BASE_CKPT,device="cuda",batch_size=1024,total_iters=30000,lr=1e-4,warmup=500,ema_power=.75,seed=1,run_dir=None,matched_r21b=False):
+    def __init__(self,demo_path=FORMAL_H5,manifest_path=FORMAL_MANIFEST,base_checkpoint=BASE_CKPT,device="cuda",batch_size=1024,total_iters=30000,lr=1e-4,warmup=500,ema_power=.75,seed=1,run_dir=None,matched_r21b=False,matched_identity=None):
         self.demo_path,self.manifest_path,self.base_checkpoint=Path(demo_path),Path(manifest_path),Path(base_checkpoint)
         self.device,self.batch_size,self.total_iters=device,batch_size,total_iters; self.lr,self.warmup,self.ema_power,self.seed=lr,warmup,ema_power,seed
         self.run_dir=Path(run_dir) if run_dir else None; self.step=0; self.losses=[]; self.matched_r21b=matched_r21b
+        self.matched_identity=Path(matched_identity) if matched_identity else None
     def setup(self):
         random.seed(self.seed);np.random.seed(self.seed);torch.manual_seed(self.seed)
         if str(self.device).startswith("cuda"):
             if not torch.cuda.is_available(): raise RuntimeError("CUDA requested but unavailable")
             torch.cuda.manual_seed_all(self.seed)
-        ck=_base_checkpoint(self.base_checkpoint);self.dataset=PlaceSphereObstacleDataset(self.demo_path,self.manifest_path,self.matched_r21b)
+        ck=_base_checkpoint(self.base_checkpoint);self.dataset=PlaceSphereObstacleDataset(self.demo_path,self.manifest_path,self.matched_r21b,self.matched_identity)
         agent=build_agent("cpu");agent.load_state_dict(ck["weights"]["ema"],strict=True)
         self.denoiser=build_constrain_denoiser(MODEL,device="cpu");self.denoiser.base_net.load_state_dict(agent.noise_pred_net.state_dict(),strict=True);self.denoiser.to(self.device)
         self.base_state_sha=_state_sha(self.denoiser.base_net.state_dict());self.initial_control=[p.detach().clone() for p in self.denoiser.trainable_parameters()]
@@ -270,15 +317,18 @@ class PlaceSphereConstrainTrainer:
         self.step+=1;self.losses.append(float(loss.item()));return self.losses[-1]
     def config(self):
         return {"model":dict(MODEL),"policy":dict(POLICY),"normalization":dict(NORM),"diffusion":_diffusion(),"base_weights":dict(self.base_info),
-          "data_identity":{"h5_sha256":self.dataset.h5_sha256,"manifest_sha256":self.dataset.manifest_sha256,"frozen_contract_sha256":None if self.matched_r21b else TRUSTED_CONTRACT_SHA256,"collection_report_sha256":None if self.matched_r21b else TRUSTED_REPORT_SHA256,"selected_class":"obstacle","selected_episode_ids":self.dataset.trajectory_ids,"episodes":len(self.dataset.trajectory_ids),**({"dataset_version":MATCHED_VERSION} if self.matched_r21b else {})},
+          "data_identity":{"h5_sha256":self.dataset.h5_sha256,"manifest_sha256":self.dataset.manifest_sha256,"frozen_contract_sha256":None if (self.matched_r21b or self.matched_identity) else TRUSTED_CONTRACT_SHA256,"collection_report_sha256":None if (self.matched_r21b or self.matched_identity) else TRUSTED_REPORT_SHA256,"selected_class":"obstacle","selected_episode_ids":self.dataset.trajectory_ids,"episodes":len(self.dataset.trajectory_ids),**({"dataset_version":self.dataset.dataset_version} if (self.matched_r21b or self.matched_identity) else {}),**({"release_hold_steps":8,"training_identity_sha256":self.dataset.training_identity_sha256} if self.matched_identity else {})},
           "training":{"seed":self.seed,"total_iters":self.total_iters,"batch_size":self.batch_size,"lr":self.lr,"betas":[.95,.999],"weight_decay":1e-6,"warmup":self.warmup,"scheduler":"cosine","ema_power":self.ema_power,"selected_weights":"final EMA fixed before training"}}
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument("--demo-path",type=Path,default=FORMAL_H5);p.add_argument("--manifest",type=Path,default=FORMAL_MANIFEST);p.add_argument("--base-checkpoint",type=Path,default=BASE_CKPT);p.add_argument("--run-dir",type=Path,required=True);p.add_argument("--checkpoint-dir",type=Path,required=True);p.add_argument("--device",default="cuda");p.add_argument("--total-iters",type=int,default=30000);p.add_argument("--batch-size",type=int,default=1024);p.add_argument("--seed",type=int,default=1);p.add_argument("--lr",type=float,default=1e-4);p.add_argument("--warmup",type=int,default=500);p.add_argument("--ema-power",type=float,default=.75);p.add_argument("--matched-r21b",action="store_true");a=p.parse_args(argv)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument("--demo-path",type=Path,default=FORMAL_H5);p.add_argument("--manifest",type=Path,default=FORMAL_MANIFEST);p.add_argument("--base-checkpoint",type=Path,default=BASE_CKPT);p.add_argument("--run-dir",type=Path,required=True);p.add_argument("--checkpoint-dir",type=Path,required=True);p.add_argument("--device",default="cuda");p.add_argument("--total-iters",type=int,default=30000);p.add_argument("--batch-size",type=int,default=1024);p.add_argument("--seed",type=int,default=1);p.add_argument("--lr",type=float,default=1e-4);p.add_argument("--warmup",type=int,default=500);p.add_argument("--ema-power",type=float,default=.75);p.add_argument("--matched-r21b",action="store_true");p.add_argument("--matched-data-identity",type=Path);a=p.parse_args(argv)
     a.run_dir.mkdir(parents=True,exist_ok=False);a.checkpoint_dir.mkdir(parents=True,exist_ok=False)
+    if a.matched_r21b and a.matched_data_identity: raise ValueError("choose one matched dataset identity mode")
     if a.matched_r21b and (sha256_file(a.demo_path) != MATCHED_H5_SHA256 or sha256_file(a.manifest) != MATCHED_MANIFEST_SHA256): raise ValueError("matched PlaceSphere r21b data identity mismatch")
-    trainer=PlaceSphereConstrainTrainer(a.demo_path,a.manifest,a.base_checkpoint,a.device,a.batch_size,a.total_iters,a.lr,a.warmup,a.ema_power,a.seed,a.run_dir,a.matched_r21b);trainer.setup()
+    if a.matched_data_identity:
+        load_matched_training_identity(a.matched_data_identity,a.demo_path,a.manifest,expected_version=MATCHED_HOLD8_VERSION)
+    trainer=PlaceSphereConstrainTrainer(a.demo_path,a.manifest,a.base_checkpoint,a.device,a.batch_size,a.total_iters,a.lr,a.warmup,a.ema_power,a.seed,a.run_dir,a.matched_r21b,a.matched_data_identity);trainer.setup()
     start=time.monotonic();pre=equivalence_evidence(trainer.denoiser,a.base_checkpoint,a.device)
     if not pre["epsilon_matches"] or not pre["sampling_matches"]: raise RuntimeError(f"pretraining equivalence failed: {pre}")
     cfg=trainer.config();cfg["outputs"]={"experiment":str(a.run_dir),"checkpoint":str(a.checkpoint_dir)};cfg["pretraining_equivalence"]=pre

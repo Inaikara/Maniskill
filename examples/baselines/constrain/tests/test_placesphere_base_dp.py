@@ -7,6 +7,7 @@ import torch
 
 from examples.baselines.constrain.placesphere_base_dp import (
     FORMAT,
+    MATCHED_HOLD8_VERSION,
     NAMED_FIELDS,
     PlaceSphereBaseDPAdapter,
     PlaceSphereBaseDataset,
@@ -118,6 +119,28 @@ def test_checkpoint_loader_requires_exact_formal_direct_ids_and_trusted_data(tmp
     ):
         torch.save({**valid, "data_identity": changed_data}, checkpoint)
         with pytest.raises(ValueError, match="contract|identity|IDs|trusted formal"):
+            PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)
+
+
+def test_checkpoint_loader_accepts_only_versioned_hold8_matched_direct_identity(tmp_path):
+    checkpoint = tmp_path / "matched_hold8.pt"
+    direct_ids = list(range(0, 600, 2)) + list(range(600, 1300))
+    data = {"dataset_version": MATCHED_HOLD8_VERSION, "release_hold_steps": 8,
+            "selected_class": "direct", "selected_episode_ids": direct_ids,
+            "episodes": 1000, "h5_sha256": "a" * 64, "manifest_sha256": "b" * 64}
+    schema = {"base_dim": 39, "flat_dim": 42,
+              "obstacle_field": "extra/placesphere_obstacle",
+              "field_order": [field[0] for field in NAMED_FIELDS]}
+    valid = {"format": FORMAT, "contract": contract(), "data_identity": data,
+             "named_state_schema": schema}
+    torch.save(valid, checkpoint)
+    assert PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)["data_identity"] == data
+    for changed in ({**data, "release_hold_steps": 16},
+                    {**data, "dataset_version": "unregistered"},
+                    {**data, "episodes": 999},
+                    {**data, "selected_episode_ids": direct_ids[:-1] + [1300]}):
+        torch.save({**valid, "data_identity": changed}, checkpoint)
+        with pytest.raises(ValueError, match="contract"):
             PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)
 
 

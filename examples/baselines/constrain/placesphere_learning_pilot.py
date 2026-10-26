@@ -953,7 +953,8 @@ def _episode_deadline(_signum, _frame):
     raise EpisodeDeadline("episode wall exceeded")
 
 
-def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
+def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
+                      trace_callback=None, replan_stride=8):
     from examples.baselines.constrain.diagnose_placesphere_failure import (
         _terminal_pose, classify_contact_location, classify_contact_phase, classify_crossing,
         classify_terminal_mechanism, diagnostic_lifted, diagnostic_near_goal, read_obstacle_contact,
@@ -962,6 +963,8 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
     from examples.baselines.constrain.placesphere_pilot import PlaceSpherePilotConfig, make_env
 
     scene = scene_set.load(index)
+    if not 1 <= int(replan_stride) <= 8:
+        raise ValueError("replan_stride must be in [1, 8]")
     geometry = scene["metadata"]["cylinder"]
     env = make_env(config=PlaceSpherePilotConfig(
         max_steps=max_steps, obstacle_radius=geometry["radius"], obstacle_height=geometry["height"]))
@@ -981,6 +984,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
         if str(device).startswith("cuda") and torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         elapsed = 0
+        previous_grasped = _bool_info(base.evaluate(), "is_obj_grasped")
         collision = crossing = grasped = lifted = transported = released = False
         initial_z = float(base.obj.pose.p[0, 2].detach().cpu())
         goal_xy = base.bin.pose.p[0, :2].detach().cpu().numpy()
@@ -998,12 +1002,22 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
         termination = None
         info = {}
         while elapsed < max_steps:
+            prediction_step = elapsed
             prediction = coerce_action_sequence(adapter.get_action(history))
             native = PlaceSphereBaseDPAdapter.map_action_ee_delta_pose(prediction)
             if native.ndim != 3 or native.shape[-1] != 7:
                 raise ValueError(f"mapped action is not (batch, horizon, 7): {tuple(native.shape)}")
-            for action in native[0][:min(8, max_steps - elapsed)]:
+            queued_count = min(int(replan_stride), max_steps - elapsed)
+            for queue_index, action in enumerate(native[0][:queued_count]):
                 action_cpu = action.detach().cpu().numpy().reshape(7)
+                before = None
+                if trace_callback is not None:
+                    before = {
+                        "policy_observation": history[-1].astype(float).tolist(),
+                        "queue": native[0][:queued_count].detach().cpu().numpy().astype(float).tolist(),
+                        "queue_index": queue_index, "replan_step": prediction_step,
+                        "action": action_cpu.tolist(),
+                    }
                 _obs, _, step_terminated, step_truncated, info = env.step(action_cpu[None])
                 elapsed += 1
                 terminated = bool(terminated or step_terminated)
@@ -1017,6 +1031,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
                 new_crossing = bool(step_crossing and not crossing)
                 crossing = bool(crossing or step_crossing)
                 now_grasped = _bool_info(info, "is_obj_grasped")
+                release_transition = bool(previous_grasped and not now_grasped)
                 grasped = bool(grasped or now_grasped)
                 released = bool(released or (grasped and not now_grasped))
                 sphere = base.obj.pose.p[0].detach().cpu().numpy()
@@ -1027,6 +1042,22 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
                 phase = classify_contact_phase(
                     grasped=now_grasped, lifted=lifted_now, near_goal=near_goal,
                     released=bool(grasped and not now_grasped), native_success=step_success)
+                if trace_callback is not None:
+                    tcp = base.agent.tcp.pose.p[0].detach().cpu().numpy()
+                    sphere_position = base.obj.pose.p[0].detach().cpu().numpy()
+                    trace_callback({
+                        **before, "step": elapsed, "phase": phase,
+                        "tcp_xyz": tcp.astype(float).tolist(),
+                        "sphere_xyz": sphere_position.astype(float).tolist(),
+                        "sphere_linear_velocity_m_s": base.obj.linear_velocity[0].detach().cpu().numpy().astype(float).tolist(),
+                        "sphere_angular_velocity_rad_s": base.obj.angular_velocity[0].detach().cpu().numpy().astype(float).tolist(),
+                        "sphere_linear_speed_m_s": float(torch.linalg.norm(base.obj.linear_velocity, dim=1)[0].item()),
+                        "sphere_angular_speed_rad_s": float(torch.linalg.norm(base.obj.angular_velocity, dim=1)[0].item()),
+                        "grasped": now_grasped, "released_this_step": release_transition,
+                        "obstacle_contact": step_collision, "obstacle_crossing": step_crossing,
+                        "failure_transition": bool((step_collision and not collision_before) or new_crossing),
+                        "native_success": step_success,
+                    })
                 if first_contact is None and step_collision and not collision_before:
                     try:
                         hit = read_obstacle_contact(env)
@@ -1060,6 +1091,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS):
                 if obs.shape != (RAW_OBS_DIM,):
                     raise ValueError(f"step observation is not {RAW_OBS_DIM}d")
                 history = np.concatenate((history[1:], obs[None]), axis=0)
+                previous_grasped = now_grasped
                 prev_xy = sphere[:2].astype(np.float64)
                 prev_z = float(sphere[2])
                 termination = classify_termination(step_success, step_terminated, step_truncated, elapsed, max_steps)

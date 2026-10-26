@@ -166,10 +166,13 @@ def _runtime_contract():
         env.close()
 
 
-def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621):
+def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621,
+                release_hold_steps=HOLD_STEPS):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
+    if int(release_hold_steps) not in matched.RELEASE_HOLD_STEPS_CANDIDATES:
+        raise ValueError("release_hold_steps must use a preregistered value (0, 8, or 16)")
     rows = layout_rows(catalogs)
     if len(rows) < DIRECT_TARGET:
         raise ValueError(f"frozen catalogs provide only {len(rows)} layouts; need {DIRECT_TARGET}")
@@ -214,7 +217,7 @@ def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621):
         "selection": "300 primary paired layouts are exactly the 100 pair catalog plus 200 catalog_full obstacle layouts; 900 direct-only candidates are separate; obstacle failure replacements use only the preregistered task-unique direct-catalog backup list; failed layouts remain in the rejection journal",
         "replacement_order_seed": int(seed),
         "terminal": {"mode": "above_release", "margin_m": MARGIN_M,
-                     "release_hold_steps": HOLD_STEPS,
+                     "release_hold_steps": int(release_hold_steps),
                      "common_z": "max(measured direct requirement, measured actual-cylinder obstacle requirement, transport-exit z)",
                      "settle_budget_steps": matched.SETTLE_BUDGET,
                      "expert_action_budget_steps": matched.EXPERT_MAX_STEPS,
@@ -255,6 +258,8 @@ def assert_preregistration(path):
         raise RuntimeError("runtime package, native source, action, or observation contract changed")
     if registration.get("training") is not False or registration.get("created_before_collection") is not True:
         raise RuntimeError("registration is not a valid pre-collection freeze")
+    if registration.get("terminal", {}).get("release_hold_steps") not in matched.RELEASE_HOLD_STEPS_CANDIDATES:
+        raise RuntimeError("registration has an unsupported release hold")
     for catalog in registration["catalogs"]:
         digest = hashlib.sha256((Path(catalog["path"]) / "manifest.json").read_bytes()).hexdigest()
         if digest != catalog["manifest_sha256"]:
@@ -293,23 +298,26 @@ def _layout_key(layout):
     return (str(layout["catalog"]), int(layout["index"]), int(layout["seed"]))
 
 
-def _pair(layout, episode_wall_s):
+def _pair(layout, episode_wall_s, release_hold_steps):
     obstacle = matched.run_layout_expert(
         layout, margin_m=MARGIN_M, role=matched.ROLE_POSITIVE_OBSTACLE,
-        episode_wall_s=episode_wall_s)
+        release_hold_steps=release_hold_steps, episode_wall_s=episode_wall_s)
     direct = matched.run_layout_expert(
         layout, margin_m=MARGIN_M, role=matched.ROLE_POSITIVE_DIRECT,
-        shared_targets=obstacle.get("shared_targets"), episode_wall_s=episode_wall_s)
+        shared_targets=obstacle.get("shared_targets"), release_hold_steps=release_hold_steps,
+        episode_wall_s=episode_wall_s)
     common = matched._common_release_targets(obstacle.get("shared_targets") or {}, direct, obstacle)
     if common is not None:
-        common["release_hold_steps"] = HOLD_STEPS
+        common["release_hold_steps"] = int(release_hold_steps)
         if obstacle.get("release_tcp_z") is None or abs(float(obstacle["release_tcp_z"]) - common["release_tcp_z"]) > 1e-6:
             obstacle = matched.run_layout_expert(
                 layout, margin_m=MARGIN_M, role=matched.ROLE_POSITIVE_OBSTACLE,
-                shared_targets=common, episode_wall_s=episode_wall_s)
+                shared_targets=common, release_hold_steps=release_hold_steps,
+                episode_wall_s=episode_wall_s)
             direct = matched.run_layout_expert(
                 layout, margin_m=MARGIN_M, role=matched.ROLE_POSITIVE_DIRECT,
-                shared_targets=common, episode_wall_s=episode_wall_s)
+                shared_targets=common, release_hold_steps=release_hold_steps,
+                episode_wall_s=episode_wall_s)
     replay = matched.replay_direct_terminal(layout, direct, episode_wall_s=episode_wall_s)
     negative = matched.run_layout_expert(
         layout, margin_m=MARGIN_M, role=matched.ROLE_NEGATIVE_DIRECT,
@@ -450,10 +458,12 @@ def run_collection(registration_path, dataset_dir, experiment_dir, *, target_dir
             tried.add(key)
             attempt_count += 1
             if is_pair_layout:
-                direct, obstacle, replay, negative, common, admission = _pair(layout, episode_wall_s)
+                direct, obstacle, replay, negative, common, admission = _pair(
+                    layout, episode_wall_s, int(registration["terminal"]["release_hold_steps"]))
             else:
                 direct = matched.run_layout_expert(
                     layout, margin_m=MARGIN_M, role=matched.ROLE_POSITIVE_DIRECT,
+                    release_hold_steps=int(registration["terminal"]["release_hold_steps"]),
                     episode_wall_s=episode_wall_s)
                 admission = {"collection_ready": bool(matched.positive_direct_accepted(direct)),
                              "reasons": [] if matched.positive_direct_accepted(direct) else ["positive_direct_rejected"]}
@@ -613,9 +623,11 @@ def main(argv=None):
     parser.add_argument("--max-attempts", type=int, default=MAX_ATTEMPTS)
     parser.add_argument("--direct", type=int, default=DIRECT_TARGET)
     parser.add_argument("--obstacle", type=int, default=OBSTACLE_TARGET)
+    parser.add_argument("--release-hold-steps", type=int, choices=matched.RELEASE_HOLD_STEPS_CANDIDATES,
+                        default=HOLD_STEPS)
     args = parser.parse_args(argv)
     if args.command == "preregister":
-        preregister(args.registration)
+        preregister(args.registration, release_hold_steps=args.release_hold_steps)
         return
     if not args.dataset_dir or not args.experiment_dir:
         parser.error("pilot/collect require --dataset-dir and --experiment-dir")
