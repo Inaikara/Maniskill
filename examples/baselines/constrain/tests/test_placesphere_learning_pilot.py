@@ -28,6 +28,7 @@ from examples.baselines.constrain.placesphere_learning_pilot import (
     expected_base_updates,
     expansion_id_plan,
     expansion_transitions,
+    executed_action_count,
     layouts_conflict,
     load_expansion_addendum,
     load_preregistration,
@@ -1069,3 +1070,20 @@ def test_train_constrain_refuses_phase_balance_identity_mismatch(tmp_path):
             "--demo-dir", str(tmp_path), "--base-checkpoint", str(tmp_path / "missing.pt"),
             "--run-dir", str(tmp_path / "run"), "--checkpoint-dir", str(tmp_path / "ckpt"),
         ])
+def test_execution_stride_limits_only_queue_consumption():
+    # The original [1:9] execution slice from the 16-action prediction is intact.
+    prediction = list(range(16))
+    adapter_slice = prediction[1:9]
+    assert len(adapter_slice) == 8
+    assert adapter_slice[:executed_action_count(8, 200)] == list(range(1, 9))
+    assert adapter_slice[:executed_action_count(2, 200)] == [1, 2]
+    assert executed_action_count(2, 1) == 1
+
+
+def test_execution_stride_rejects_invalid_or_negative_budget():
+    import pytest
+
+    with pytest.raises(ValueError, match="replan_stride"):
+        executed_action_count(9, 20)
+    with pytest.raises(ValueError, match="remaining_steps"):
+        executed_action_count(2, -1)

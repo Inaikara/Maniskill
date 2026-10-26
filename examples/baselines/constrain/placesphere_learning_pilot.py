@@ -949,6 +949,16 @@ class EpisodeDeadline(TimeoutError):
     pass
 
 
+def executed_action_count(replan_stride, remaining_steps):
+    stride = int(replan_stride)
+    remaining = int(remaining_steps)
+    if not 1 <= stride <= 8:
+        raise ValueError("replan_stride must be in [1, 8]")
+    if remaining < 0:
+        raise ValueError("remaining_steps must be nonnegative")
+    return min(stride, remaining)
+
+
 def _episode_deadline(_signum, _frame):
     raise EpisodeDeadline("episode wall exceeded")
 
@@ -963,8 +973,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
     from examples.baselines.constrain.placesphere_pilot import PlaceSpherePilotConfig, make_env
 
     scene = scene_set.load(index)
-    if not 1 <= int(replan_stride) <= 8:
-        raise ValueError("replan_stride must be in [1, 8]")
+    executed_action_count(replan_stride, max_steps)
     geometry = scene["metadata"]["cylinder"]
     env = make_env(config=PlaceSpherePilotConfig(
         max_steps=max_steps, obstacle_radius=geometry["radius"], obstacle_height=geometry["height"]))
@@ -1007,7 +1016,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
             native = PlaceSphereBaseDPAdapter.map_action_ee_delta_pose(prediction)
             if native.ndim != 3 or native.shape[-1] != 7:
                 raise ValueError(f"mapped action is not (batch, horizon, 7): {tuple(native.shape)}")
-            queued_count = min(int(replan_stride), max_steps - elapsed)
+            queued_count = executed_action_count(replan_stride, max_steps - elapsed)
             for queue_index, action in enumerate(native[0][:queued_count]):
                 action_cpu = action.detach().cpu().numpy().reshape(7)
                 before = None
@@ -1045,10 +1054,14 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
                 if trace_callback is not None:
                     tcp = base.agent.tcp.pose.p[0].detach().cpu().numpy()
                     sphere_position = base.obj.pose.p[0].detach().cpu().numpy()
+                    sphere_quaternion = base.obj.pose.q[0].detach().cpu().numpy()
+                    tcp_quaternion = base.agent.tcp.pose.q[0].detach().cpu().numpy()
                     trace_callback({
                         **before, "step": elapsed, "phase": phase,
                         "tcp_xyz": tcp.astype(float).tolist(),
+                        "tcp_quaternion_wxyz": tcp_quaternion.astype(float).tolist(),
                         "sphere_xyz": sphere_position.astype(float).tolist(),
+                        "sphere_quaternion_wxyz": sphere_quaternion.astype(float).tolist(),
                         "sphere_linear_velocity_m_s": base.obj.linear_velocity[0].detach().cpu().numpy().astype(float).tolist(),
                         "sphere_angular_velocity_rad_s": base.obj.angular_velocity[0].detach().cpu().numpy().astype(float).tolist(),
                         "sphere_linear_speed_m_s": float(torch.linalg.norm(base.obj.linear_velocity, dim=1)[0].item()),
@@ -1057,6 +1070,7 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
                         "obstacle_contact": step_collision, "obstacle_crossing": step_crossing,
                         "failure_transition": bool((step_collision and not collision_before) or new_crossing),
                         "native_success": step_success,
+                        "control_timestep_s": float(base.control_timestep),
                     })
                 if first_contact is None and step_collision and not collision_before:
                     try:

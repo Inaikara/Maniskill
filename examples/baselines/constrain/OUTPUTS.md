@@ -830,3 +830,99 @@ evaluation, diagnostic and collection processes exited; no leftover `.tmp`
 checkpoints or experiment processes were present. Ticket 08 remains blocked. The
 next data-backed seam is current angular release/stability under the 200-step
 policy budget; no additional R23 factor or formal evaluation was started.
+
+## Round 24 — indexed release mechanics and exploratory execution stride 2
+
+User-authorized single-developer continuation on
+`goal/transport-detour-optimization`, starting at base
+`9f190f80665810d55e35c3436710a0aeb2b2d95b` (integration branch `dev`). No
+checkout, branch change, commit, or push. ManiSkill source, training data, and
+checkpoint bytes were not changed. No training, data collection, formal
+evaluation, or PickCube work was run.
+
+### Release-mechanics evidence
+
+Native Base DP and Constrain episodes were instrumented with full per-step
+seven-channel actions, observation/replan step, queue index, TCP xyz/quaternion,
+sphere xyz/quaternion and linear/angular velocity, grasp/open state, obstacle
+contact/crossing flags, control timestep, and termination flags. The Constrain
+trace reproduces all five R23 failures (scenes 5, 10, 24, 11, 17) and includes
+the preregistered matched-success controls (0–4). Full traces remain inside
+`paired_eval/{base_dp,constrain_dp}/episode_*.json`; indexed open-command and
+physical `is_grasped: true→false` event joins are in
+`release_causal_measurements.json`.
+
+The training-expert audit reads the regenerated R23 hold-8 300-OBSTACLE HDF5,
+not the older R22 expert. It verifies 48,982 action/state pairs: action index
+`t` is compared to the T+1 native state `t+1`, and each of the saved linear and
+angular speed values matches that same post-action state. The 300 open-action /
+ungrasped transitions have pre-open linear speed median/p90 0.00549/0.00678 m/s
+and angular speed 0.02665/0.03084 rad/s; same-index post-action medians/p90 are
+0.36818/0.37391 m/s and 0.40389/0.43830 rad/s. This is a synchronized
+before/after kinematic association, not an impulse or proof of cause. Expert
+per-action timestep is absent, so expert `g·dt` is not calculated.
+
+The five Constrain failure replays show pre-open motion ranging from 0.0030 to
+0.0223 m/s linear and 0.0247 to 0.3560 rad/s angular. At the physical
+ungrasped transition, downward linear velocity magnitude is about 0.364–0.378
+m/s. The following 0.05 s displacement is about −0.0329 to −0.0336 m, compared
+with −0.0123 m under the zero-initial-velocity `½g·dt²` comparison; observed
+`dz/dt` and `g·dt` are recorded per event. This does not isolate release
+actuation, contact, gravity, or pre-existing motion. Per-step sphere/robot
+contact is not exposed in saved native step info (obstacle contact is); joint
+torque and impulse are not measured. Do not infer a dynamic impulse from these
+records.
+
+### Preregistered stride-2 trial
+
+Before evaluation, registration
+`examples/baselines/constrain/placesphere_stride2_preregistration.json` pinned
+the 30-scene manifest, exact source hashes, Base EMA
+`92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c`, and
+Constrain EMA
+`c8d1404f68cf153176035c8d7d95d032517838f9df877b295bbefd5102f57ada`. One
+factor changed: each policy call still predicts its original 16×7 sequence and
+selects the original `[1:9]` actions; execution consumes two actions, appends
+the latest two observations, and replans. Observation history remains 2, all 7
+action dimensions, weights, sampler, scene seeds, clamps and safety behavior
+are unchanged. More calls naturally consume more sequential diffusion RNG
+draws; this coupled sampler-noise change is disclosed. This is explicitly
+**EXPLORATORY**: more frequent feedback may help release errors, but R23 did not
+establish that stale queued actions caused them.
+
+Both policies ran all 30 scenes with the same restored state/controller/seed,
+200 control steps, native first-success termination, a 300 s episode wall cap,
+and a fixed 30 denominator. The 18,000 s outer timeout is compute-only; no
+scene was dropped and no result-based stopping/selection occurred. The exact
+command and exit/cleanup details are in `execution_record.json`.
+
+| Policy | Task | Safe | Contact | XY crossing | Runtime errors | Successful steps median/p90/max |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Base DP stride 2 | 8/30 | 0/30 | 30/30 | 25/30 | 0 | 160.5/185.5/189 |
+| Constrain stride 2 | 26/30 | 26/30 | 1/30 | 1/30 | 0 | 135.5/158.5/171 |
+
+Against primary R23 Constrain stride 8 (25/25/0/0), stride 2 has task/safe
+transitions improved/regressed/both/neither = 4/3/22/1, and contact and XY
+cleared/introduced/both/neither = 0/1/0/29 for each. Four of the five former
+release/stability failures (5, 10, 24, 11) now succeed; scene 17 remains a
+release/stability timeout at step 200. The one new contact/XY episode is scene
+25. Against secondary R22 matched hold-0 Constrain (26/25/1/0), transitions are
+task 4/4/22/0, safe 5/4/21/0, contact 1/1/0/28, and XY 0/1/0/29. R22 is
+secondary and not a one-factor comparison.
+
+The frozen gate remains **pause/fail**: task 26/30 is below 27; safe 26/30,
+contact 1/30 and XY 1/30 meet their thresholds. The remaining scene-17 failure
+and single introduced contact/crossing are retained; no rerun or additional
+stride trial was started. New result directory:
+`outputs/exp/20261026_235900_placesphere_stride2_r24/` (registration,
+`paired_eval/`, per-episode full traces, `release_causal_measurements.json`, and
+`execution_record.json`). Paired summary SHA
+`3c537c1ba646e5d483e2fd4075524ba36bc0ea08eae4356cc4e0231276c2b0cd`; expert
+HDF5 SHA `2bd725179ed61c8c32b97cdc9b89ce348add0bbf6b4d7a912cfa8bad30b9a5a1`.
+
+Verification: constrain suite **502 passed, 28 warnings, 83.65 s**; `git
+diff --check` passed. Full evaluation exited 0 with 60/60 episodes and no
+runtime errors; model/evaluation child processes exited. Next minimal slice is
+parent review of the indexed event traces, especially scene 17 and why the
+post-action expert velocity jump appears in the matching T+1 record. Do not
+claim causality or launch further trials in this round.

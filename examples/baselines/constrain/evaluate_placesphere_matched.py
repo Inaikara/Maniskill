@@ -64,6 +64,7 @@ def main(argv=None):
     parser.add_argument("--primary-baseline", type=Path, required=True)
     parser.add_argument("--secondary-baseline", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--replan-stride", type=int, choices=(2, 8), default=8)
     args = parser.parse_args(argv)
     if args.output_dir.exists():
         raise FileExistsError(args.output_dir)
@@ -85,7 +86,10 @@ def main(argv=None):
                               "constrain_dp": {"path": str(args.constrain_checkpoint), "sha256": sha256_file(args.constrain_checkpoint)}},
               "primary_baseline": str(args.primary_baseline),
               "secondary_baseline": str(args.secondary_baseline),
-              "device": args.device, "max_steps": 200, "episode_wall_seconds": 120,
+               "device": args.device, "max_steps": 200, "episode_wall_seconds": 300,
+               "execution_stride": args.replan_stride,
+               "prediction_horizon": 16, "executed_action_slice": [1, 9],
+               "noise_sampling": "sequential diffusion RNG per scene; more replans draw more noise",
               "selected_weights": "final EMA fixed before results", "runtime_errors_remain_in_denominator": True}
     (args.output_dir / "frozen_config.json").write_text(json.dumps(frozen, indent=2) + "\n")
     rows_by_policy = {}
@@ -95,19 +99,24 @@ def main(argv=None):
         rows = []
         for index in range(30):
             previous = signal.signal(signal.SIGALRM, _episode_deadline)
-            signal.setitimer(signal.ITIMER_REAL, 120)
+            signal.setitimer(signal.ITIMER_REAL, 300)
             started = time.monotonic()
+            trace = []
             try:
-                row = run_pilot_episode(adapter, catalog, index, args.device, max_steps=200)
+                row = run_pilot_episode(adapter, catalog, index, args.device, max_steps=200,
+                                        replan_stride=args.replan_stride,
+                                        trace_callback=trace.append)
             except Exception as exc:
                 row = {"scene_index": index, "status": "runtime_error",
                        "error_kind": "wall_timeout" if isinstance(exc, EpisodeDeadline) else "unexpected",
-                       "error": f"{type(exc).__name__}: {exc}",
-                       "checkpoint_sha256": adapter.metadata["checkpoint_sha256"]}
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "closed_loop_trace": trace,
+                        "checkpoint_sha256": adapter.metadata["checkpoint_sha256"]}
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous)
             row["wall_seconds"] = time.monotonic() - started
+            row["closed_loop_trace"] = trace
             (out / f"episode_{index:03d}.json").write_text(json.dumps(row, indent=2) + "\n")
             rows.append(row)
         rows_by_policy[name] = rows

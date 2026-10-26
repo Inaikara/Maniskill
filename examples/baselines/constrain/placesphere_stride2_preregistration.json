@@ -1,0 +1,89 @@
+{
+  "kind": "EXPLORATORY_fixed_checkpoint_receding_execution_stride_trial",
+  "round": 24,
+  "hypothesis": "More frequent feedback may reduce release/stability errors; this is an engineering hypothesis and does not establish that stale queued actions caused the failures.",
+  "single_factor": {
+    "execution_stride_baseline": 8,
+    "execution_stride_trial": 2,
+    "prediction_horizon": 16,
+    "executed_prediction_slice": [1, 9],
+    "observation_history": 2,
+    "action_dimensions": 7,
+    "pose_and_gripper_clamps_changed": false,
+    "collision_or_hand_shield": false,
+    "checkpoint_weights_changed": false
+  },
+  "policies": {
+    "base_dp": {
+      "checkpoint": "outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt",
+      "sha256": "92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c"
+    },
+    "constrain_dp": {
+      "checkpoint": "outputs/ckpt/20261026_195000_placesphere_hold8_constrain_90k_r23/final.pt",
+      "sha256": "c8d1404f68cf153176035c8d7d95d032517838f9df877b295bbefd5102f57ada"
+    }
+  },
+  "fixed_scenes": {
+    "directory": "outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes",
+    "count": 30,
+    "scene_manifest_sha256": "9e1d8ee4786d2336f01e07d664ca37c3dcc7ca455e7876176def65c18b63c119",
+    "seed_rule": "reset independently from the same frozen scene seed for each policy"
+  },
+  "sampler": {
+    "weights": "final EMA",
+    "diffusion_prediction_horizon": 16,
+    "sampled_action_slice": [1, 9],
+    "scheduler": "100-step squared-cosine DDPM, unchanged",
+    "noise_draws": "sequential per-scene RNG; stride 2 makes more policy calls and thus changes subsequent noise draws; inherent disclosure, not an independently controlled factor"
+  },
+  "evaluation": {
+    "both_policies": true,
+    "episodes_per_policy": 30,
+    "max_control_steps_per_episode": 200,
+    "episode_wall_seconds": 300,
+    "overall_wall_seconds": 18000,
+    "runtime_errors_remain_in_fixed_denominator": true,
+    "native_first_success_termination": true,
+    "record_terminated_and_truncated": true,
+    "trial_continues_after_release_failures": true
+  },
+  "comparisons": {
+    "primary": "Round-23 matched hold-8 paired evaluation",
+    "secondary": "Round-22 matched no-hold paired evaluation; explicitly not a one-factor comparison",
+    "metrics": ["task_success", "safe_success", "contact", "XY_crossing", "successful_control_steps", "release/pre-release motion", "first_contact_phase", "wall_seconds"],
+    "contact_transitions": ["cleared", "introduced", "both", "neither"],
+    "XY_transitions": ["cleared", "introduced", "both", "neither"]
+  },
+  "release_causal_measurement": {
+    "failure_scenes": [5, 10, 24, 11, 17],
+    "matched_success_controls": "predeclared successful Round-23 Constrain scenes 0, 1, 2, 3, 4",
+    "fields": ["sphere position/quaternion/linear and angular velocity before open, after open and at first is_grasped=false transition", "controller step, queue index, seven-channel action", "TCP position/quaternion", "post-release dz and expected g*dt comparison", "sphere/robot contact flags", "full per-step trace"],
+    "impulse_claim": "none without a direct dynamic impulse measurement",
+    "training_expert_join": "HDF5 action index t joined to T+1 native state t+1; verify saved speed metadata at the same index"
+  },
+  "outcomes": {
+    "output_directory": "outputs/exp/20261026_235900_placesphere_stride2_r24",
+    "source_files": [
+      "examples/baselines/constrain/evaluate_placesphere_matched.py",
+      "examples/baselines/constrain/placesphere_learning_pilot.py",
+      "examples/baselines/constrain/placesphere_base_dp.py",
+      "examples/baselines/constrain/placesphere_constrain.py",
+      "examples/baselines/constrain/placesphere_transport_detour.py",
+      "examples/baselines/constrain/placesphere_pilot.py"
+    ],
+    "selection": "no checkpoint or seed selection; report all 30 scene outcomes per policy"
+  },
+  "source_identity": {
+    "basis": "source bytes frozen before native stride-2 evaluation",
+    "files": {
+      "examples/baselines/constrain/evaluate_placesphere_matched.py": "3ef69786db14defca0081fcf1a6a3fdcf2f8c0b74d52d1dccecdff194a764235",
+      "examples/baselines/constrain/placesphere_learning_pilot.py": "24353c3e3911bb2098ac3ca9b95fa280e184e5aae292bb0e0a303b5824fa502a",
+      "examples/baselines/constrain/placesphere_base_dp.py": "e655dcbcf14e84c668cea1e616aa35e870d470a21de67330e6fb2d7c7a0680e0",
+      "examples/baselines/constrain/placesphere_constrain.py": "9c5b6d1bd6ba8ad2060d6f63b4bb7ded6981a4d5b06e7762e09b8b28abc8f6d8",
+      "examples/baselines/constrain/placesphere_transport_detour.py": "0680b39a604942c5d0fb6cf0f453d5191021ab0717ba5c44702f37d5806c5304",
+      "examples/baselines/constrain/placesphere_pilot.py": "ed6bfb1cf99db77769aa120bc325ee49e4718b6a398dce7580e85ac66b383a26",
+      "examples/baselines/constrain/placesphere_release_causal.py": "19ff4bf1fbadfc44a7472d2d390673e06abe54cf892f7aedd7017ffbd9ce6975"
+    },
+    "files_sha256": "db06484f4b4f0dbcbfe6aa252d5d11900f653442f82d9f530350ece739d9683f"
+  }
+}

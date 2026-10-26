@@ -11,6 +11,8 @@ See [OUTPUTS.md](OUTPUTS.md) for the current `demos/`, `outputs/ckpt/`, `outputs
 artifact relocation map, and current training/evaluation commands. The sections
 below include historical experiments whose original paths may have been moved
 or removed. Current wristcam results are in [WRISTCAM_EVALUATION.md](WRISTCAM_EVALUATION.md).
+The latest Ticket 06 matched PlaceSphere work, including the Round-24 release
+measurement and exploratory stride-2 result, is indexed in [OUTPUTS.md](OUTPUTS.md).
 The completed PickCube and PlaceSphere extension results are in
 [MULTITASK_OBSTACLE_RESULTS.md](MULTITASK_OBSTACLE_RESULTS.md), with detailed
 paired results in [PICKCUBE_EVALUATION.md](PICKCUBE_EVALUATION.md) and
