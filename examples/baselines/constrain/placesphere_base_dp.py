@@ -14,6 +14,10 @@ from examples.baselines.constrain.base_dp import BasePolicyArgs, _PolicyEnvStub
 from examples.baselines.constrain.placesphere_inference_sampler import (
     build_inference_scheduler, sample_actions, sample_action_ensemble,
 )
+from examples.baselines.constrain.placesphere_action_codec import (
+    IDENTITY as IDENTITY_ACTION_ENCODING,
+    decode_to_native, profile_sha256, validate_profile,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 OFFICIAL_DP = ROOT / "examples/baselines/diffusion_policy"
@@ -39,6 +43,12 @@ NAMED_FIELDS = [
 FORMAT = "placesphere_base_dp_v1"
 MATCHED_VERSION = "placesphere_matched_terminal_r21b_v1"
 MATCHED_HOLD8_VERSION = "placesphere_matched_terminal_r23_hold8_v1"
+MATCHED_HOLD8_OBSTACLE1000_VERSION = "placesphere_matched_terminal_r25_hold8_obstacle1000_v1"
+MATCHED_HOLD8_OBSTACLE500_VERSION = "placesphere_matched_terminal_r26_hold8_obstacle500_v1"
+R26_MATCHED_H5_SHA256 = "796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961"
+R26_MATCHED_MANIFEST_SHA256 = "aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9"
+R26_MATCHED_IDENTITY_SHA256 = "648f59863a747d603ec8dc6ccf056995e60a93f35b1875bf0b230a261f28fe78"
+R26_DIRECT_IDS = [*range(0, 600, 2), *range(600, 1300)]
 
 
 def sha256_file(path):
@@ -49,7 +59,8 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
-def contract():
+def contract(action_encoding=IDENTITY_ACTION_ENCODING):
+    validate_profile(action_encoding)
     return {
         "policy": {"robot": "panda", **MODEL_CONFIG, "control_mode": "pd_ee_delta_pose",
                    "observation_mode": "state", "observation_fields": NAMED_FIELDS,
@@ -60,8 +71,12 @@ def contract():
                    "rotation_scale": "signed controller XYZ Euler range [-0.35,0.35] rad",
                    "action_bounds": [-1.0, 1.0], "gripper_open": 1.0,
                    "gripper_closed": -1.0},
-        "normalization": {"observation": "identity (native state)",
-                          "action": "identity; native controller coordinates"},
+         "normalization": ({"observation": "identity (native state)",
+                            "action": "identity; native controller coordinates"}
+                           if action_encoding == IDENTITY_ACTION_ENCODING else
+                           {"observation": "identity (native state)",
+                            "action": action_encoding["name"],
+                            "action_encoding_sha256": profile_sha256(action_encoding)}),
         "diffusion": {"prediction_type": "epsilon", "scheduler": "DDPMScheduler",
                       "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
                       "num_train_timesteps": 100},
@@ -184,14 +199,21 @@ class PlaceSphereBaseDPAdapter:
     """Strict PlaceSphere checkpoint loader and base-condition/action interface."""
 
     @staticmethod
-    def validate_checkpoint(checkpoint, expected_episode_ids=None, trusted_h5_sha256=None):
+    def validate_checkpoint(checkpoint, expected_episode_ids=None, trusted_h5_sha256=None,
+                            expected_action_encoding=None):
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
         data, schema = ck.get("data_identity", {}), ck.get("named_state_schema", {})
+        encoding = ck.get("action_encoding", IDENTITY_ACTION_ENCODING)
+        validate_profile(encoding)
+        if expected_action_encoding is not None and encoding != expected_action_encoding:
+            raise ValueError("PlaceSphere action encoding profile mismatch")
         version = data.get("dataset_version")
-        matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION)
+        matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+                              MATCHED_HOLD8_OBSTACLE1000_VERSION,
+                              MATCHED_HOLD8_OBSTACLE500_VERSION)
         expected_ids = data.get("selected_episode_ids") if matched else list(range(1000))
         matched_ids_valid = (not matched or expected_ids == list(range(0, 600, 2)) + list(range(600, 1300)))
-        if (ck.get("format") != FORMAT or ck.get("contract") != contract()
+        if (ck.get("format") != FORMAT or ck.get("contract") != contract(encoding)
                 or schema.get("base_dim") != 39 or schema.get("flat_dim") != 42
                 or schema.get("obstacle_field") != "extra/placesphere_obstacle"
                 or schema.get("field_order") != [field[0] for field in NAMED_FIELDS]
@@ -205,7 +227,13 @@ class PlaceSphereBaseDPAdapter:
                                                     or data.get("manifest_sha256") != "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"))
                 or (version == MATCHED_HOLD8_VERSION and (data.get("release_hold_steps") != 8
                                                           or len(data.get("h5_sha256", "")) != 64
-                                                          or len(data.get("manifest_sha256", "")) != 64))):
+                                                          or len(data.get("manifest_sha256", "")) != 64))
+                or (version == MATCHED_HOLD8_OBSTACLE500_VERSION and (
+                    data.get("release_hold_steps") != 8
+                    or data.get("h5_sha256") != R26_MATCHED_H5_SHA256
+                    or data.get("manifest_sha256") != R26_MATCHED_MANIFEST_SHA256
+                    or data.get("training_identity_sha256") != R26_MATCHED_IDENTITY_SHA256
+                    or expected_ids != R26_DIRECT_IDS))):
             raise ValueError("PlaceSphere checkpoint contract mismatch")
         if expected_episode_ids is not None and data["selected_episode_ids"] != list(expected_episode_ids):
             raise ValueError("PlaceSphere checkpoint selected episode IDs mismatch")
@@ -224,6 +252,7 @@ class PlaceSphereBaseDPAdapter:
         if ensemble_size not in (1, 4) or (ensemble_size == 4 and sampler != "ddim"):
             raise ValueError("ensemble_size must be 1, or 4 with DDIM")
         ck = self.validate_checkpoint(checkpoint)
+        self.action_encoding = ck.get("action_encoding", IDENTITY_ACTION_ENCODING)
         self.agent = build_agent(device)
         self.agent.load_state_dict(ck["weights"][weights], strict=True)
         self.agent.eval()
@@ -238,7 +267,8 @@ class PlaceSphereBaseDPAdapter:
                          "contract": ck["contract"], "checkpoint_sha256": sha256_file(checkpoint),
                          "native_execution_action_bounds": {"pose_channels": [-0.35, 0.35],
                                                              "gripper": [-1.0, 1.0]},
-                         "sampler": sampler, "eta": eta, "ensemble_size": ensemble_size}
+                          "sampler": sampler, "eta": eta, "ensemble_size": ensemble_size,
+                          "action_encoding": self.action_encoding}
 
     def base_cond(self, queued_obs):
         x = torch.as_tensor(queued_obs)
@@ -258,17 +288,18 @@ class PlaceSphereBaseDPAdapter:
                     if len(obs) != 1:
                         raise ValueError("four-plan ensemble requires batch size one")
                     initial = torch.randn((1, 4, 16, 7), device=self.device)
-                    return sample_action_ensemble(
+                    return decode_to_native(sample_action_ensemble(
                         scheduler,
                         lambda sample, timestep, repeated: self.agent.noise_pred_net(
                             sample=sample, timestep=timestep, global_cond=repeated),
-                        initial, condition, eta=self.eta)
+                        initial, condition, eta=self.eta), self.action_encoding)
                 initial = torch.randn((len(obs), 16, 7), device=self.device)
                 prediction = lambda sample, timestep: self.agent.noise_pred_net(
                     sample=sample, timestep=timestep, global_cond=condition)
                 sample = sample_actions(scheduler, prediction, initial, eta=self.eta)
-                return sample[:, self.obs_horizon - 1:self.obs_horizon - 1 + 8]
-            return self.agent.get_action(obs)
+                return decode_to_native(sample[:, self.obs_horizon - 1:self.obs_horizon - 1 + 8],
+                                        self.action_encoding)
+            return decode_to_native(self.agent.get_action(obs), self.action_encoding)
 
     def initialize_constrain_base(self, denoiser):
         target = getattr(denoiser, "base_net", None)

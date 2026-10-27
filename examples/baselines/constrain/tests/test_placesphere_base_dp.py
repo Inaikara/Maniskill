@@ -8,6 +8,10 @@ import torch
 from examples.baselines.constrain.placesphere_base_dp import (
     FORMAT,
     MATCHED_HOLD8_VERSION,
+    MATCHED_HOLD8_OBSTACLE500_VERSION,
+    R26_MATCHED_H5_SHA256,
+    R26_MATCHED_MANIFEST_SHA256,
+    R26_MATCHED_IDENTITY_SHA256,
     NAMED_FIELDS,
     PlaceSphereBaseDPAdapter,
     PlaceSphereBaseDataset,
@@ -139,6 +143,29 @@ def test_checkpoint_loader_accepts_only_versioned_hold8_matched_direct_identity(
                     {**data, "dataset_version": "unregistered"},
                     {**data, "episodes": 999},
                     {**data, "selected_episode_ids": direct_ids[:-1] + [1300]}):
+        torch.save({**valid, "data_identity": changed}, checkpoint)
+        with pytest.raises(ValueError, match="contract"):
+            PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)
+
+
+def test_checkpoint_loader_pins_r26_direct_identity_ids_and_frozen_data(tmp_path):
+    checkpoint = tmp_path / "r26_direct.pt"
+    direct_ids = list(range(0, 600, 2)) + list(range(600, 1300))
+    data = {"dataset_version": MATCHED_HOLD8_OBSTACLE500_VERSION,
+            "release_hold_steps": 8, "selected_class": "direct",
+            "selected_episode_ids": direct_ids, "episodes": 1000,
+            "h5_sha256": R26_MATCHED_H5_SHA256,
+            "manifest_sha256": R26_MATCHED_MANIFEST_SHA256,
+            "training_identity_sha256": R26_MATCHED_IDENTITY_SHA256}
+    schema = {"base_dim": 39, "flat_dim": 42,
+              "obstacle_field": "extra/placesphere_obstacle",
+              "field_order": [field[0] for field in NAMED_FIELDS]}
+    valid = {"format": FORMAT, "contract": contract(), "data_identity": data,
+             "named_state_schema": schema}
+    torch.save(valid, checkpoint)
+    assert PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)["data_identity"] == data
+    for changed in ({**data, "selected_episode_ids": direct_ids[:-1] + [1300]},
+                    {**data, "training_identity_sha256": "0" * 64}):
         torch.save({**valid, "data_identity": changed}, checkpoint)
         with pytest.raises(ValueError, match="contract"):
             PlaceSphereBaseDPAdapter.validate_checkpoint(checkpoint)

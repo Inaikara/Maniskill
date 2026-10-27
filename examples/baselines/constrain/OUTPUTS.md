@@ -1511,3 +1511,144 @@ reference loop. `git diff --check` passed. No
 training, replay, or additional native episode was started after the registered
 trial. Execution record SHA
 `44ee060c7a29be94c9ab52007809a6c31be377634c49f071b831e3025dce4637`.
+
+## Round 30 — fixed-range action representation optimization
+
+Continued serially on `goal/transport-detour-optimization`, starting at
+`60ccdf0572016d9d1090bb1382d54de9c80e11d9`; integration branch remains `dev`.
+No branch switch, commit, or push occurred. This round used only the immutable
+R26 dataset with exactly **1,000 DIRECT / 500 OBSTACLE** episodes; it generated
+no demonstrations, candidate layouts, or seeds. ManiSkill and other baseline
+source files were not changed. Experiment artifacts are under
+`outputs/exp/20261027_224727_placesphere_action_codec_r30/` and the new model
+weights are under `outputs/ckpt/20261027_224727_placesphere_action_codec_r30*/`.
+
+### Full-data action audit and codec contract
+
+Before registration, a full read-only audit checked the frozen HDF5 and
+manifest-selected class IDs. Its output is `action_range_audit.json` (SHA
+`961915a1193fa60fa01e31b97e25a5e919f1ecb0682cdff2812de173966dc01f`). The data
+identity remains HDF5
+`796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961`, manifest
+`aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9`, and training
+identity `648f59863a747d603ec8dc6ccf056995e60a93f35b1875bf0b230a261f28fe78`.
+All 136,417 DIRECT and 80,651 OBSTACLE native actions fit pose `[-0.35,0.35]`
+and gripper `[-1,1]`; no value was clipped or changed. The pose cap is in the
+native normalized `pd_ee_delta_pose` controller coordinates, **not meters or
+radians**. Selected audit values:
+
+| Class | Channel | Native RMS | Exact zero fraction | Absolute q90 | Absolute q99 | Absolute max |
+|---|---|---:|---:|---:|---:|---:|
+| DIRECT | delta_x | 0.12710 | 0.33796 | 0.20000 | 0.35000 | 0.35000 |
+| DIRECT | delta_y | 0.08169 | 0.33766 | 0.12983 | 0.35000 | 0.35000 |
+| DIRECT | delta_z | 0.12814 | 0.33773 | 0.34092 | 0.35000 | 0.35000 |
+| DIRECT | delta_euler_x/y/z | 0.02889 / 0.04644 / 0.19305 | 0.55026 each | 0.01249 / 0.05737 / 0.35000 | 0.14666 / 0.23929 / 0.35000 | 0.35000 each |
+| DIRECT | gripper | 1.00000 | 0 | 1.00000 | 1.00000 | 1.00000 |
+| OBSTACLE | delta_x | 0.11137 | 0.30602 | 0.20000 | 0.35000 | 0.35000 |
+| OBSTACLE | delta_y | 0.12018 | 0.30575 | 0.20000 | 0.35000 | 0.35000 |
+| OBSTACLE | delta_z | 0.11811 | 0.30577 | 0.29482 | 0.35000 | 0.35000 |
+| OBSTACLE | delta_euler_x/y/z | 0.02663 / 0.04248 / 0.17738 | 0.61863 each | 0.01044 / 0.04851 / 0.35000 | 0.13141 / 0.20760 / 0.35000 | 0.35000 each |
+| OBSTACLE | gripper | 1.00000 | 0 | 1.00000 | 1.00000 | 1.00000 |
+
+For each class, the audit also records signed min/max, encoded RMS/variance,
+zero fractions, and channel-wise forward-diffusion SNR at timesteps 0/10/25/50/
+75/99. The SNR is descriptive per-channel variance under the standard noising
+process, not a causal claim. At timestep 50, encoded pose-channel SNR ranges
+from 0.0053–0.1903 DIRECT and 0.0053–0.1725 OBSTACLE, while the gripper is
+0.8593 / 0.9075; this exposes a substantial scale imbalance motivating the
+fixed controller-range encoding.
+
+The opt-in, versioned profile is
+`placesphere_controller_range_v1`, scale `[.35,.35,.35,.35,.35,.35,1]`, zero
+offset. It encodes native action targets before the unchanged epsilon/DDPM
+objective and decodes model outputs to native seven-channel controller actions
+before the existing action map/clamp. Observation identity normalization,
+39-D base observation, 42-D hint input and hint normalization, model channels,
+sampling schedule, padding, gripper behavior and environment scaling are
+unchanged. Native HDF5 arrays remain untouched. Identity-profile historical
+checkpoints and their default inference path remain strict/bit-exact.
+
+Training registration
+`training_preregistration.json` (SHA
+`eb4a824224f649881a3511dc229d751d38c926255820d16c2016839e14f549a5`) pins the
+frozen IDs/hashes, codec profile, exact 30k Base + 150k Constrain final-EMA
+models, source hashes, preflight outputs, budgets, R27 reference and 27/26/3/3
+gate before long training. Two-update CUDA preflights passed for Base and
+Constrain; disabled-control epsilon and 100-step sampler matched the new Base
+exactly (max difference 0). The control branch moved, all losses were finite,
+all recorded gradient families were nonzero, and the frozen Base stayed
+unchanged.
+
+### Matched training and metadata correction
+
+Base trained for 30,000 DIRECT updates in **900.52 s**: loss 1.160607 →
+0.003348 (min 0.002550, max 1.160881). Initial final-EMA checkpoint
+`outputs/ckpt/20261027_224727_placesphere_action_codec_r30_base/final.pt`, SHA
+`08879f41d1524a30f5aba9bfaaf2f107a5417b5fdc4d7463c8e274c7edda41cc`.
+Constrain trained for 150,000 OBSTACLE updates from this matched Base EMA in
+**4,217.93 s**: loss 0.082727 → 0.002647 (min 0.001801, max 0.115430). Initial
+Constrain final EMA
+`outputs/ckpt/20261027_224727_placesphere_action_codec_r30_constrain_150k/final.pt`,
+SHA `476d582a5993d55a80382dffec24fe7059bf3621b0ed2bede9a2f74166c345ff`.
+
+The first evaluation stopped before creating an environment or running any
+scene because strict validation caught a Base checkpoint metadata defect: its
+actual R26 HDF5/manifest/training identity and selected 1,000 DIRECT IDs were
+correct, but its `dataset_version` field retained the older R23 constant. Both
+original checkpoints were preserved. A hash-guarded correction created
+metadata-only copies after verifying the Base EMA, Constrain model and Constrain
+EMA tensors remained unchanged. The correction record is
+`checkpoint_metadata_correction.json` (SHA
+`bf6942e8771ef53de6edac66dac295f7c4810b44c07c1e8227a135f0c218457c`). Corrected
+Base EMA SHA `491970382f3ed8dac7ed88ad1ab3f5cd23fb2d29065291a507ff766c75a6f071`;
+corrected Constrain SHA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`. The
+trainer now records the matched identity's dataset version directly, and runtime
+loaders pin the full R26 data identity and exact direct/obstacle ID lists.
+
+### One R27-paired DDIM evaluation and authoritative gate
+
+Evaluation preregistration `evaluation_preregistration_r3.json` (SHA
+`a0ec9488355b68912b04aa18e620bb360ceffaaf019865bf0ae8e95d5be70075`) registered
+the corrected checkpoints before any native episode. The sole evaluation ran
+DDIM100 eta 0, single plan, stride 2, slice `[1:9]`, 200 control steps, 300 s per
+episode, 30 fixed canonical scenes per policy; elapsed time was approximately
+612 s. It completed 60/60 episodes with 0 runtime errors, drops or retries and
+bit-exact scene restores. The primary was the immutable R27 DDIM100 single-plan
+run at `outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval/`; scene
+IDs, seeds and initial 42-D observations matched per policy. The comparison is
+end-to-end because both policies' weights changed to the new codec; it does not
+isolate Constrain-only attribution.
+
+| Policy | Task | Safe | Contact | XY crossing | Runtime errors | Successful steps median / p90 / max |
+|---|---:|---:|---:|---:|---:|---:|
+| Base DP | 4/30 | 0/30 | 29/30 | 27/30 | 0 | 124.5 / 137 / 137 |
+| Constrain | 29/30 | 29/30 | 1/30 | 1/30 | 0 | 106 / 154 / 170 |
+
+Constrain failed only scene index **3** (`placesphere-003`), a 200-step timeout
+with release/stabilization contact; its full release/contact/crossing trace is
+in the episode record. Against R27 Constrain 26/26/0/0, task and safe
+improved/regressed/both/neither are **4/1/25/0**; contact and XY
+cleared/introduced/both/neither are **0/1/0/29**. The fixed gate passes:
+**29 task, 29 safe, 1 contact, 1 XY** against thresholds 27/26/3/3. The new
+Base result is 4/0/29/27 task/safe/contact/XY. Paired channel-wise encoded and
+predicted-native actions were captured on every executed trace action and
+round-trip verified (3,542 Constrain and 5,700 Base actions).
+
+The raw paired summary uses the explicit protocol
+`placesphere_action_codec_r30_primary_r27_v1` and labels R27 as the primary; it
+does not reuse R29's legacy R24 comparison or gate. The separately registered
+authoritative analysis has immutable byte-for-byte R27 and R30 evaluation
+snapshots at `analysis_inputs/`, registration
+`analysis_registration_r2.json` (SHA
+`dabd5a8d7900961f04ff9647615aa2350e2d115a1a615774bc9326bb72466b06`), and result
+`primary_analysis_r2.json` (SHA
+`45e54c4f921893c29314148d22523c2904ba87415fa1be2ac8f8d21afe059342`). The
+machine-readable command, budgets, attempt history, checkpoint provenance,
+results and cleanup status are in `round30_execution_record.json`.
+
+Final constrain suite: **537 passed, 28 warnings**; `compileall` and
+`git diff --check` passed. GPU returned idle and experiment processes exited.
+This is a repeated-development-set result, not formal/generalization evidence.
+The gate permits **parent review before formal08 preparation only**; no formal
+08 evaluation or new scene/data run was started.

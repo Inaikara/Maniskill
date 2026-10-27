@@ -43,6 +43,24 @@ def _validate_primary_baseline(directory, base_sha, constrain_sha):
             "all_restored_bit_exact": True, "observation_dimension": 42}
 
 
+def _validate_primary_scene_pairing(directory):
+    base = _read_rows(Path(directory) / "base_dp")
+    constrain = _read_rows(Path(directory) / "constrain_dp")
+    for index, (left, right) in enumerate(zip(base, constrain)):
+        if (left.get("scene_index") != index or right.get("scene_index") != index
+                or left.get("scene_id") != right.get("scene_id")
+                or left.get("seed") != right.get("seed")
+                or not left.get("restored_bit_exact") or not right.get("restored_bit_exact")):
+            raise ValueError(f"primary scene identity/restore mismatch at scene {index}")
+        left_trace, right_trace = left.get("closed_loop_trace", []), right.get("closed_loop_trace", [])
+        if (not left_trace or not right_trace
+                or len(left_trace[0].get("policy_observation", [])) != 42
+                or left_trace[0]["policy_observation"] != right_trace[0]["policy_observation"]):
+            raise ValueError(f"primary initial observation mismatch at scene {index}")
+    return {"episodes_per_policy": 30, "matching_scene_ids_seeds_and_initial_observations": True,
+            "all_restored_bit_exact": True, "checkpoint_comparison": "new codec checkpoints intentionally differ"}
+
+
 def _sha(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -93,7 +111,8 @@ class _BasePolicy:
 class _ConstrainPolicy:
     def __init__(self, adapter, checkpoint_path):
         self.adapter = adapter
-        self.metadata = {"checkpoint_sha256": sha256_file(checkpoint_path)}
+        self.metadata = dict(adapter.metadata)
+        self.metadata["checkpoint_sha256"] = sha256_file(checkpoint_path)
         self.inference_calls = 0
         self.max_inference_wall_seconds = 0.0
 
@@ -153,8 +172,64 @@ def main(argv=None):
             "diagnose_placesphere_failure.py": Path(__file__).with_name("diagnose_placesphere_failure.py"),
             "constrain_denoiser.py": Path(__file__).with_name("constrain_denoiser.py"),
             "constrain_ckpt.py": Path(__file__).with_name("constrain_ckpt.py"),
+            "placesphere_action_codec.py": Path(__file__).with_name("placesphere_action_codec.py"),
         }
         actual_sources = {name: _sha(path) for name, path in source_paths.items()}
+        registration_format = preregistration.get("format")
+        if registration_format == "placesphere_r30_action_codec_ddim100_preregistration_v1":
+            required_paths = {
+                "scene_dir": "outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes",
+                "base_checkpoint": "outputs/ckpt/20261027_224727_placesphere_action_codec_r30_base_verified/final.pt",
+                "constrain_checkpoint": "outputs/ckpt/20261027_224727_placesphere_action_codec_r30_constrain_verified_150k/final.pt",
+                "primary_baseline": "outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval",
+                "output_dir": "outputs/exp/20261027_224727_placesphere_action_codec_r30/paired_eval",
+                "dataset": "demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3",
+            }
+            data_dir = Path(preregistration["data"]["dataset"])
+            expected = preregistration["inputs"]
+            base_payload = torch.load(args.base_checkpoint, map_location="cpu", weights_only=False)
+            constrain_payload = torch.load(args.constrain_checkpoint, map_location="cpu", weights_only=False)
+            base_profile = base_payload.get("action_encoding")
+            control_profile = constrain_payload.get("config", {}).get("action_encoding")
+            if (str(args.scene_dir) != required_paths["scene_dir"]
+                    or str(args.base_checkpoint) != required_paths["base_checkpoint"]
+                    or str(args.constrain_checkpoint) != required_paths["constrain_checkpoint"]
+                    or str(args.primary_baseline) != required_paths["primary_baseline"]
+                    or str(args.output_dir) != required_paths["output_dir"]
+                    or str(data_dir) != required_paths["dataset"]
+                    or args.replan_stride != 2 or preregistration.get("protocol", {}).get("ensemble_size") != 1
+                    or preregistration.get("protocol", {}).get("sampler") != "DDIMScheduler eta=0; 100 steps"
+                    or preregistration.get("protocol", {}).get("primary_gate") != {"task_min": 27, "safe_min": 26, "contact_max": 3, "xy_max": 3}
+                    or preregistration.get("source_sha256") != actual_sources
+                    or sha256_file(preregistration.get("checkpoint_metadata_correction", {}).get("path", "")) != preregistration.get("checkpoint_metadata_correction", {}).get("sha256")
+                    or _sha(args.base_checkpoint) != expected.get("base_checkpoint_sha256")
+                    or _sha(args.constrain_checkpoint) != expected.get("constrain_checkpoint_sha256")
+                    or base_profile != preregistration.get("action_encoding")
+                    or control_profile != base_profile
+                    or constrain_payload.get("config", {}).get("data_identity", {}).get("h5_sha256") != expected.get("data_h5_sha256")
+                    or constrain_payload.get("config", {}).get("data_identity", {}).get("manifest_sha256") != expected.get("data_manifest_sha256")
+                    or constrain_payload.get("config", {}).get("data_identity", {}).get("training_identity_sha256") != expected.get("training_identity_sha256")
+                    or sha256_file(data_dir / "trajectory.h5") != expected.get("data_h5_sha256")
+                    or sha256_file(data_dir / "trajectory.json") != expected.get("data_manifest_sha256")
+                    or sha256_file(data_dir / "training_identity.json") != expected.get("training_identity_sha256")
+                    or sha256_file(args.scene_dir / "manifest.json") != expected.get("scene_manifest_sha256")
+                    or sha256_file(args.scene_dir / "scenes.h5") != expected.get("scene_h5_sha256")
+                    or sha256_file(args.primary_baseline / "paired_summary.json") != expected.get("primary_summary_sha256")):
+                raise ValueError("R30 action-codec evaluation preregistration identity mismatch")
+            primary_pairing = _validate_primary_scene_pairing(args.primary_baseline)
+            if (args.sampler != "ddim" or args.ensemble_size != 1
+                    or preregistration.get("protocol", {}).get("stride") != 2
+                    or preregistration.get("protocol", {}).get("max_control_steps") != 200
+                    or preregistration.get("protocol", {}).get("episode_wall_seconds") != 300
+                    or preregistration.get("protocol", {}).get("fixed_denominator_per_policy") != 30
+                    or preregistration.get("budgets", {}).get("outer_wall_seconds") != 18000):
+                raise ValueError("R30 evaluation protocol differs from the fixed registration")
+            preregistration_sha = _sha(args.inference_preregistration)
+            # Continue through the common strict checkpoint adapters and episode runner.
+            inference_sampler, eta = "ddim", 0.0
+            ddim_r30_registered = True
+        else:
+            ddim_r30_registered = False
         frozen_inputs = {
             "base_checkpoint": "92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c",
             "constrain_checkpoint": "ff388efb87e4fde6acaaf21778aaee25b93883af990b99ad510fa82f97ccbf71",
@@ -175,7 +250,7 @@ def main(argv=None):
                                  "outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval"),
         }
         registered_sampler = preregistration.get("sampler", {})
-        if (preregistration.get("format") != "placesphere_frozen_ddim100_eta0_v1"
+        if not ddim_r30_registered and (preregistration.get("format") != "placesphere_frozen_ddim100_eta0_v1"
                 or registered_sampler.get("name") != "DDIMScheduler"
                 or registered_sampler.get("inference_steps") != 100
                 or registered_sampler.get("eta") != 0.0
@@ -192,7 +267,7 @@ def main(argv=None):
                 or preregistration.get("source_sha256") != actual_sources
                 or preregistration.get("protocol", {}).get("primary_baseline_summary_sha256") != _sha(args.primary_baseline / "paired_summary.json")):
             raise ValueError("DDIM preregistration identity mismatch")
-        if (str(args.scene_dir) != preregistration.get("scenes", {}).get("path")
+        if not ddim_r30_registered and (str(args.scene_dir) != preregistration.get("scenes", {}).get("path")
                 or str(args.base_checkpoint) != expected_paths["base_checkpoint"]
                 or str(args.constrain_checkpoint) != expected_paths["constrain_checkpoint"]
                 or str(args.primary_baseline) != preregistration.get("protocol", {}).get("primary_baseline")
@@ -218,24 +293,26 @@ def main(argv=None):
                 or preregistration.get("scenes", {}).get("manifest_sha256") != frozen_inputs["scene_manifest"]
                 or preregistration.get("protocol", {}).get("primary_baseline_summary_sha256") != frozen_inputs["primary_summary"]):
             raise ValueError("DDIM trial does not match the frozen r26 artifacts")
-        primary_pairing = _validate_primary_baseline(
-            args.primary_baseline, frozen_inputs["base_checkpoint"],
-            frozen_inputs["constrain_checkpoint"])
+        if not ddim_r30_registered:
+            primary_pairing = _validate_primary_baseline(
+                args.primary_baseline, frozen_inputs["base_checkpoint"],
+                frozen_inputs["constrain_checkpoint"])
         registered_ensemble = preregistration.get("protocol", {}).get("ensemble_size", 1)
-        if registered_ensemble != args.ensemble_size:
+        if not ddim_r30_registered and registered_ensemble != args.ensemble_size:
             raise ValueError("DDIM ensemble size does not match preregistration")
-        constrain_ck = torch.load(args.constrain_checkpoint, map_location="cpu", weights_only=False)
-        data = constrain_ck["config"]["data_identity"]
-        frozen_data_dir = Path(preregistration["data"]["dataset"])
-        actual_data_identity = _sha(frozen_data_dir / "training_identity.json")
-        if (data.get("h5_sha256") != preregistration.get("data", {}).get("h5_sha256")
-                or data.get("manifest_sha256") != preregistration.get("data", {}).get("manifest_sha256")
-                or data.get("training_identity_sha256") != preregistration.get("data", {}).get("training_identity_sha256")
-                or _sha(frozen_data_dir / "trajectory.h5") != preregistration["data"]["h5_sha256"]
-                or _sha(frozen_data_dir / "trajectory.json") != preregistration["data"]["manifest_sha256"]
-                or actual_data_identity != preregistration["data"]["training_identity_sha256"]
-                or str(frozen_data_dir) != "demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3"):
-            raise ValueError("frozen training data identity mismatch")
+        if not ddim_r30_registered:
+            constrain_ck = torch.load(args.constrain_checkpoint, map_location="cpu", weights_only=False)
+            data = constrain_ck["config"]["data_identity"]
+            frozen_data_dir = Path(preregistration["data"]["dataset"])
+            actual_data_identity = _sha(frozen_data_dir / "training_identity.json")
+            if (data.get("h5_sha256") != preregistration.get("data", {}).get("h5_sha256")
+                    or data.get("manifest_sha256") != preregistration.get("data", {}).get("manifest_sha256")
+                    or data.get("training_identity_sha256") != preregistration.get("data", {}).get("training_identity_sha256")
+                    or _sha(frozen_data_dir / "trajectory.h5") != preregistration["data"]["h5_sha256"]
+                    or _sha(frozen_data_dir / "trajectory.json") != preregistration["data"]["manifest_sha256"]
+                    or actual_data_identity != preregistration["data"]["training_identity_sha256"]
+                    or str(frozen_data_dir) != "demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3"):
+                raise ValueError("frozen training data identity mismatch")
     inference_sampler = args.sampler
     eta = 0.0 if inference_sampler == "ddim" else None
     base_adapter = PlaceSphereBaseDPAdapter(args.base_checkpoint, args.device, weights="ema",
@@ -257,7 +334,9 @@ def main(argv=None):
                "device": args.device, "max_steps": 200, "episode_wall_seconds": 300,
                "execution_stride": args.replan_stride,
                  "prediction_horizon": 16, "executed_action_slice": [1, 9],
-                 "ensemble_size": args.ensemble_size,
+               "ensemble_size": args.ensemble_size,
+                "action_encoding": {"base_dp": base_adapter.metadata.get("action_encoding"),
+                                    "constrain_dp": constrain_adapter.metadata.get("action_encoding")},
                 "sampler": {"training": "DDPMScheduler squaredcos_cap_v2 epsilon clip_sample=True; 100 train timesteps",
                             "inference": "DDIMScheduler eta=0; 100 timesteps" if inference_sampler == "ddim" else
                                          "DDPMScheduler squaredcos_cap_v2; 100 timesteps",
@@ -304,8 +383,13 @@ def main(argv=None):
 
     metric_map = {"task": "native_success", "safe": "safe_success",
                   "contact": "obstacle_contact", "xy": "xy_forbidden_crossing"}
-    comparisons = [("primary_constrain_vs_stride2_r24", args.primary_baseline / "constrain_dp", "constrain_dp"),
-                   ("base_vs_stride2_r24_base", args.primary_baseline / "base_dp", "base_dp")]
+    primary_label = ("r27_primary_constrain" if args.inference_preregistration is not None
+                     and preregistration.get("format") == "placesphere_r30_action_codec_ddim100_preregistration_v1"
+                     else "primary_constrain_vs_stride2_r24")
+    base_label = ("r27_primary_base" if primary_label == "r27_primary_constrain"
+                  else "base_vs_stride2_r24_base")
+    comparisons = [(primary_label, args.primary_baseline / "constrain_dp", "constrain_dp"),
+                   (base_label, args.primary_baseline / "base_dp", "base_dp")]
     if args.secondary_baseline is not None:
         comparisons.append(("secondary_constrain_vs_100_obstacle", args.secondary_baseline / "constrain_dp", "constrain_dp"))
     comparison = {}
@@ -316,7 +400,9 @@ def main(argv=None):
             raise ValueError(f"scene pairing mismatch for {name}")
         comparison[name] = {metric: _transitions(old, rows_by_policy[new_name], field)
                             for metric, field in metric_map.items()}
-    report = {"complete": all(summarize_pilot(rows, 30)["complete"] for rows in rows_by_policy.values()),
+    report = {"protocol_version": "placesphere_action_codec_r30_primary_r27_v1" if primary_label == "r27_primary_constrain" else None,
+              "primary_baseline_role": "immutable R27 DDIM100 single-plan reference; different weights are expected" if primary_label == "r27_primary_constrain" else None,
+              "complete": all(summarize_pilot(rows, 30)["complete"] for rows in rows_by_policy.values()),
               "denominator": 30,
               "summaries": {name: summarize_pilot(rows, 30) for name, rows in rows_by_policy.items()},
               "comparisons": comparison,

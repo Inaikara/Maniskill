@@ -20,6 +20,9 @@ import torch
 from examples.baselines.constrain.placesphere_base_dp import (
     PlaceSphereBaseDPAdapter, build_agent, contract, sha256_file,
 )
+from examples.baselines.constrain.placesphere_action_codec import (
+    IDENTITY as IDENTITY_ACTION_ENCODING, encode_native,
+)
 
 LAYOUT_TOLERANCE_M = 0.02
 OBSTACLE_PLAN_CAP = 100
@@ -1013,12 +1016,16 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
         while elapsed < max_steps:
             prediction_step = elapsed
             prediction = coerce_action_sequence(adapter.get_action(history))
+            action_encoding = getattr(adapter, "metadata", {}).get(
+                "action_encoding", IDENTITY_ACTION_ENCODING)
+            encoded_prediction = encode_native(prediction, action_encoding)
             native = PlaceSphereBaseDPAdapter.map_action_ee_delta_pose(prediction)
             if native.ndim != 3 or native.shape[-1] != 7:
                 raise ValueError(f"mapped action is not (batch, horizon, 7): {tuple(native.shape)}")
             queued_count = executed_action_count(replan_stride, max_steps - elapsed)
             for queue_index, action in enumerate(native[0][:queued_count]):
                 action_cpu = action.detach().cpu().numpy().reshape(7)
+                encoded_action = encoded_prediction[0, queue_index]
                 before = None
                 if trace_callback is not None:
                     before = {
@@ -1026,6 +1033,12 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=MAX_STEPS,
                         "queue": native[0][:queued_count].detach().cpu().numpy().astype(float).tolist(),
                         "queue_index": queue_index, "replan_step": prediction_step,
                         "action": action_cpu.tolist(),
+                        "predicted_native_action": prediction[0, queue_index].detach().cpu().tolist(),
+                        "encoded_action": encoded_action.detach().cpu().numpy().tolist(),
+                        "action_encoding_profile": action_encoding["name"],
+                        "native_queue_mean": prediction[0][:queued_count].mean(0).detach().cpu().tolist(),
+                        "encoded_queue_mean": encoded_prediction[0][:queued_count].mean(0).detach().cpu().tolist(),
+                        "executed_native_queue_mean": native[0][:queued_count].mean(0).detach().cpu().tolist(),
                     }
                 _obs, _, step_terminated, step_truncated, info = env.step(action_cpu[None])
                 elapsed += 1
