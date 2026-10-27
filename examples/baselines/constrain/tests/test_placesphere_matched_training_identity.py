@@ -5,6 +5,8 @@ import pytest
 
 from examples.baselines.constrain.placesphere_manifest_dataset import (
     MATCHED_HOLD8_VERSION,
+    MATCHED_HOLD8_OBSTACLE500_VERSION,
+    _counts_for_version,
     load_matched_training_identity,
 )
 
@@ -47,6 +49,13 @@ def test_hold8_training_identity_binds_validated_artifact_hashes_and_protocol(tm
     identity.write_text(json.dumps(payload))
     assert load_matched_training_identity(
         identity, h5, manifest, expected_version=MATCHED_HOLD8_VERSION) == payload
+
+
+def test_r26_profile_is_exactly_1500_episodes_and_preserves_historical_count_profiles():
+    assert _counts_for_version(MATCHED_HOLD8_OBSTACLE500_VERSION) == (
+        {"direct": 1000, "obstacle": 500}, 1500)
+    assert _counts_for_version(MATCHED_HOLD8_VERSION) == (
+        {"direct": 1000, "obstacle": 300}, 1300)
 
 
 @pytest.mark.parametrize("change", [

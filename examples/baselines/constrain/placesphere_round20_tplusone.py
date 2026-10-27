@@ -65,16 +65,25 @@ def _restore_one_step(layout, record):
     )
 
     raw = record["_raw"]
-    scene = TransportDetourSceneSet(layout["catalog"])
-    manifest = json.loads((Path(layout["catalog"]) / "manifest.json").read_text())
-    item = manifest["scenes"][int(layout["index"])]
-    env = make_env(config=PlaceSpherePilotConfig(
-        max_steps=EXPERT_MAX_STEPS, obstacle_radius=float(item["cylinder"]["radius"]),
-        obstacle_height=float(item["cylinder"]["height"])))
+    env = None
+    if "candidate_h5" in layout:
+        from examples.baselines.constrain.placesphere_matched_terminal import _open_scene
+        item = layout["candidate_scene"]
+        scene = None
+    else:
+        scene = TransportDetourSceneSet(layout["catalog"])
+        manifest = json.loads((Path(layout["catalog"]) / "manifest.json").read_text())
+        item = manifest["scenes"][int(layout["index"])]
     try:
-        env, restored = scene.restore(int(layout["index"]), env)
-        if not restored.get("bit_exact"):
-            raise RuntimeError("catalog restore was not bit-exact")
+        if scene is None:
+            env, _item, _ = _open_scene(layout, max_steps=EXPERT_MAX_STEPS)
+        else:
+            env = make_env(config=PlaceSpherePilotConfig(
+                max_steps=EXPERT_MAX_STEPS, obstacle_radius=float(item["cylinder"]["radius"]),
+                obstacle_height=float(item["cylinder"]["height"])))
+            env, restored = scene.restore(int(layout["index"]), env)
+            if not restored.get("bit_exact"):
+                raise RuntimeError("catalog restore was not bit-exact")
         restore_execution_state(env, (raw["initial_state"], raw["initial_controller"]))
         actual_initial = snapshot_execution_state(env)
         initial_exact = (_tree_hash(actual_initial[0]) == _tree_hash(raw["initial_state"])

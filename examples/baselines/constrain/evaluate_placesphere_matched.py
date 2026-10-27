@@ -62,7 +62,7 @@ def main(argv=None):
     parser.add_argument("--constrain-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--primary-baseline", type=Path, required=True)
-    parser.add_argument("--secondary-baseline", type=Path, required=True)
+    parser.add_argument("--secondary-baseline", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--replan-stride", type=int, choices=(2, 8), default=8)
     args = parser.parse_args(argv)
@@ -122,18 +122,15 @@ def main(argv=None):
         rows_by_policy[name] = rows
         (out / "summary.json").write_text(json.dumps(summarize_pilot(rows, 30), indent=2) + "\n")
 
-    comparison = {"primary_constrain_vs_300_90k": {}, "secondary_constrain_vs_100_obstacle": {},
-                  "base_vs_primary_base": {}}
-    for name, baseline, metric_map in (
-        ("primary_constrain_vs_300_90k", args.primary_baseline / "constrain_dp",
-         {"task": "native_success", "safe": "safe_success", "contact": "obstacle_contact", "xy": "xy_forbidden_crossing"}),
-        ("secondary_constrain_vs_100_obstacle", args.secondary_baseline / "constrain_dp",
-         {"task": "native_success", "safe": "safe_success", "contact": "obstacle_contact", "xy": "xy_forbidden_crossing"}),
-        ("base_vs_primary_base", args.primary_baseline / "base_dp",
-         {"task": "native_success", "safe": "safe_success", "contact": "obstacle_contact", "xy": "xy_forbidden_crossing"}),
-    ):
+    metric_map = {"task": "native_success", "safe": "safe_success",
+                  "contact": "obstacle_contact", "xy": "xy_forbidden_crossing"}
+    comparisons = [("primary_constrain_vs_stride2_r24", args.primary_baseline / "constrain_dp", "constrain_dp"),
+                   ("base_vs_stride2_r24_base", args.primary_baseline / "base_dp", "base_dp")]
+    if args.secondary_baseline is not None:
+        comparisons.append(("secondary_constrain_vs_100_obstacle", args.secondary_baseline / "constrain_dp", "constrain_dp"))
+    comparison = {}
+    for name, baseline, new_name in comparisons:
         old = _read_rows(baseline)
-        new_name = "base_dp" if name == "base_vs_primary_base" else "constrain_dp"
         if any(a.get("seed") != b.get("seed") or a.get("scene_id") != b.get("scene_id")
                for a, b in zip(old, rows_by_policy[new_name])):
             raise ValueError(f"scene pairing mismatch for {name}")

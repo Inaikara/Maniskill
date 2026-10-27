@@ -111,6 +111,7 @@ def _greedy_task_identity(rows):
 def select_role_candidates(rows, *, obstacle_target=OBSTACLE_TARGET):
     paired = [row for row in rows if row["catalog"].endswith("pair_scenes/merged")]
     paired.extend(row for row in rows if row["catalog"].endswith("catalog_full"))
+    paired.extend(row for row in rows if row["catalog"].endswith("expansion_catalog"))
     direct = [row for row in rows if row["catalog"].endswith("direct_scenes/assembled")]
     if len(paired) != int(obstacle_target) or _greedy_task_identity(paired)["conflicts"]:
         raise ValueError("paired obstacle role candidates must be task-unique and match the obstacle target")
@@ -167,15 +168,16 @@ def _runtime_contract():
 
 
 def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621,
-                release_hold_steps=HOLD_STEPS):
+                release_hold_steps=HOLD_STEPS, direct_target=DIRECT_TARGET,
+                obstacle_target=OBSTACLE_TARGET):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
     if int(release_hold_steps) not in matched.RELEASE_HOLD_STEPS_CANDIDATES:
         raise ValueError("release_hold_steps must use a preregistered value (0, 8, or 16)")
     rows = layout_rows(catalogs)
-    if len(rows) < DIRECT_TARGET:
-        raise ValueError(f"frozen catalogs provide only {len(rows)} layouts; need {DIRECT_TARGET}")
+    if len(rows) < direct_target:
+        raise ValueError(f"frozen catalogs provide only {len(rows)} layouts; need {direct_target}")
     external = []
     external_records = []
     for catalog in EXTERNAL_DEDUP_CATALOGS:
@@ -189,7 +191,7 @@ def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621,
         raise ValueError(f"frozen training catalogs conflict with dev/Ticket04: {len(external_conflicts)}")
     legacy_direct_order = [row for row in rows if row["catalog"].endswith("pair_scenes/merged")]
     legacy_direct_order.extend(row for row in rows if row["catalog"].endswith("direct_scenes/assembled"))
-    role_candidates = select_role_candidates(rows)
+    role_candidates = select_role_candidates(rows, obstacle_target=obstacle_target)
     payload = {
         "kind": "placesphere_matched_shared_terminal_training_dataset",
         "version": "r21_matched_expert_1000_direct_300_obstacle",
@@ -207,8 +209,8 @@ def preregister(path, *, catalogs=SOURCE_LAYOUTS, seed=2026102621,
             "original_1000_direct_order_pair100_then_direct900": _greedy_task_identity(legacy_direct_order),
             "cylinder_proximity_is_not_identity": True,
         },
-        "targets": {"direct": DIRECT_TARGET, "obstacle": OBSTACLE_TARGET,
-                    "paired_layouts": LAYOUT_OVERLAP_TARGET},
+        "targets": {"direct": int(direct_target), "obstacle": int(obstacle_target),
+                    "paired_layouts": int(obstacle_target)},
         "pilot": {"planned_direct": 80, "planned_obstacle": 25,
                   "planned_paired_layouts": 25, "paired_candidate_prefix": 30,
                   "direct_only_candidate_prefix": 100,
@@ -278,8 +280,8 @@ def assert_preregistration(path):
     for role in ("paired_primary", "direct_only", "obstacle_replacements"):
         if any(current_by_key.get(_layout_key(row)) != row for row in candidates[role]):
             raise RuntimeError(f"frozen {role} selection differs from the source catalog")
-    if len(candidates["paired_primary"]) != OBSTACLE_TARGET:
-        raise RuntimeError("the frozen primary obstacle layout cohort is not exactly 300")
+    if len(candidates["paired_primary"]) != int(registration.get("targets", {}).get("obstacle", OBSTACLE_TARGET)):
+        raise RuntimeError("the frozen primary obstacle layout cohort does not match its preregistered target")
     paired = candidates["paired_primary"]
     backups = candidates["obstacle_replacements"]
     if (_greedy_task_identity(paired)["conflicts"]
@@ -625,9 +627,14 @@ def main(argv=None):
     parser.add_argument("--obstacle", type=int, default=OBSTACLE_TARGET)
     parser.add_argument("--release-hold-steps", type=int, choices=matched.RELEASE_HOLD_STEPS_CANDIDATES,
                         default=HOLD_STEPS)
+    parser.add_argument("--direct-target", type=int, default=DIRECT_TARGET)
+    parser.add_argument("--obstacle-target", type=int, default=OBSTACLE_TARGET)
+    parser.add_argument("--catalog", action="append")
     args = parser.parse_args(argv)
     if args.command == "preregister":
-        preregister(args.registration, release_hold_steps=args.release_hold_steps)
+        preregister(args.registration, catalogs=tuple(args.catalog) if args.catalog else SOURCE_LAYOUTS,
+                    release_hold_steps=args.release_hold_steps, direct_target=args.direct_target,
+                    obstacle_target=args.obstacle_target)
         return
     if not args.dataset_dir or not args.experiment_dir:
         parser.error("pilot/collect require --dataset-dir and --experiment-dir")

@@ -926,3 +926,304 @@ runtime errors; model/evaluation child processes exited. Next minimal slice is
 parent review of the indexed event traces, especially scene 17 and why the
 post-action expert velocity jump appears in the matching T+1 record. Do not
 claim causality or launch further trials in this round.
+
+## Round 25 — candidate-collector interruption diagnosis and bounded resume canary
+
+The obstacle1000 collection did **not** reach matched demonstration collection,
+training, or paired evaluation. The checked-out branch remains
+`goal/transport-detour-optimization` at HEAD
+`6aeee1ecf559aa9e247e3348ff11f308595e94fe`; no branch operation, commit, push,
+or ManiSkill source edit occurred. All native commands ran after activating
+`maniskill` and had finite outer/per-attempt timeouts.
+
+### Exact stall and retained work
+
+The before-collection plan is
+`outputs/exp/20261026_231800_placesphere_obstacle1000_r25/preregistration_collection.json`
+(SHA `34d0b21272b34fefb7a5f0b5a4fc2469d73541877c57ca84455d2e87dc8e1cbe`). The
+first geometry-candidate run in
+`outputs/exp/20261026_231800_placesphere_obstacle1000_r25/candidate_source/`
+requested 700 layouts under a 21,600 s wall / 10,000-attempt cap. It stopped
+after 21,648.57 s: 2,941 attempts, 223 accepted safe geometry layouts (7.58%),
+and 2,718 retained rejections. These are scene/layout proposals, not the new
+hold-8 matched training episodes. Its seed interval was 2026102712–2026105652.
+HDF5 SHA `cc92ddcc86faf5ebb6a2c2ac1b21fe30a55975bc6072ada81a55b9dbc477a2d4`,
+manifest SHA `910cb1c8db1d5bd675624e7854c0f9f0c4f0f73ccd9bd0e05192a67175946fca`,
+attempt journal SHA `6676d01ac0752b040a25f053fb8952127f214bf68b5c7fcad83d05426b4720d5`.
+Rejection counts: 1,036 task-layout duplicate; 638 direct-template
+unsuccessful; 552 side-detour column infeasible; 262 direct block at endpoint;
+160 direct container unsuccessful; 27 waypoint out of bounds; 15 obstacle
+native unsuccessful; 15 side-template unsuccessful; 13 obstacle contact or
+crossing.
+
+The next run reused the initial seed argument rather than starting after the
+last journaled seed. Its 3,197 attempts were 2026102713–2026105909, overlapping
+2,940 of the first run’s seeds and replaying those expensive physics searches.
+It consumed a further 24,114.62 s, retained 16 accepted scenes and all 3,197
+journal rows, but was interrupted before its final report/manifest write. The
+root cause was the resume cursor, not training or GPU capacity. The incomplete
+continuation HDF5 SHA is
+`4a7394345c576994eb7709c3d6696ab8c42689ca6881ab6aa018966886ee45a9`; journal
+SHA `4c81fdbfbdbdd08baa883930da6e79dfab037a35947c285dc95c91ecacc47db6`.
+Those 16 journal-accepted scenes are at IDs `placesphere-000..015`; each has
+matching seed metadata, finite 7-D expert actions, T/T+1 39/42 observations,
+native success, and full-prefix safe-success flags. They were task-unique against
+the first 223 and the preregistered exclusion catalogs. They are retained as
+candidate-scene provenance only, not as training demonstrations. Total valid
+candidate-layout records recovered: **239/700**, not 223+16 discarded or
+recollected.
+
+Recovery manifest
+`outputs/exp/20261027_100700_placesphere_obstacle1000_r25/recovered_candidates_239/manifest.json`
+(SHA `89b180a4d2cd6e3685d4b7b1eec4a76b0312bf4c7917b5d3ed530251af246ba3`)
+joins the 223 complete first-run records and 16 safely recovered continuation
+groups without editing either source directory. All 239 pass the frozen
+seed-or-both-endpoints-within-0.02-m identity rule. Their native source arrays
+remain in the two original candidate HDF5s.
+
+### Bounded resume repair and canary
+
+The repaired cursor scans every prior attempt journal, including rejected
+attempts, rejects overlapping seed histories, and resumes strictly at
+`max(attempted_seed)+1`. For the two long-run journals this is seed
+2026105910; the canary then consumed seeds 2026105910–2026105917, so the next
+full-batch first seed is **2026105918**. A cheap preregistered proposal replay
+uses the same `default_rng(seed)` start/goal draws and geometry checks before
+opening PhysX. It skips only geometry-exhausted or task-identity duplicate
+proposals; all other proposals continue through the unchanged expert physics
+and post-execution safety predicate. The candidate generator now atomically
+writes `recovery_checkpoint.json` each attempt with accepted scene IDs/layouts,
+last/next seed, attempted count, wall, source identity and journal byte count.
+Forensic reconciliation checks accepted journal rows against recovered HDF5
+groups and fails closed on a count/identity mismatch.
+
+The resume/canary registration is
+`outputs/exp/20261027_100700_placesphere_obstacle1000_r25/candidate_resume_canary_preregistration_r2.json`
+(SHA `a6a7cd357d6aaa214a6b75b30f2f8e1e4558209a1a35cbf6f5a4b380172e8ba8`). It
+records the 2,940-seed overlap, all source/artifact hashes and the exact cursor.
+The 8-proposal / 300-s canary ran 20.67 s: 5 known duplicates were rejected
+before environment construction, 3 new proposals reached physics, 0 were
+accepted (one direct-template failure and two side-column failures), and all 8
+attempts were durably recorded. This proves fresh-seed progression and the
+preflight/progress path; it does not establish a new expert acceptance rate.
+Canary journal SHA
+`bcdffec1bb21b7be66f3a4dd8f815a1b1900f423978ed46bf62a1699d4f58499`, report SHA
+`e7ca605d33c6f16c854fe5f8dc9c806bc31262efd84b5773493a03bf716a05db`, recovery
+checkpoint SHA `3f5f4bbfd0ec98f14642a8ffa19153a5f2198b7a311625ba1a4f41612f6b464b`.
+
+The next bounded continuation plan is frozen at
+`outputs/exp/20261027_100700_placesphere_obstacle1000_r25/full_candidate_continuation_preregistration_r3.json`
+(SHA `3895c80446ee163fc0c32ef599944145b20487acc7565a35ee2eebfaac64dd67`). It
+uses first seed 2026105918, targets the remaining 461 candidate layouts, and
+has an 8,836-attempt / 65,000-s budget derived from 16 accepts in 265 unseen
+continuation+canary seeds, plus a fixed 1,200-attempt buffer. There was **no
+full continuation, matched 700-pair collection, dataset assembly, training,
+checkpoint verification, or R25 paired evaluation** in this bounded repair
+round. The original 1,000 DIRECT + 300 OBSTACLE hold-8 dataset and both R23
+checkpoints remain unchanged. R25 gate status is therefore not evaluated; the
+fixed R24 stride-2 gate remains the last measured result.
+
+The above R25 continuation is **superseded** by the user's newer fixed 1,000
+DIRECT / 500 OBSTACLE limit. No 461-layout continuation, candidate expansion,
+or 1,000-obstacle training was launched. The following R26 section records the
+active frozen-data continuation and its final development result.
+
+Verification after the resume fix: focused recovery/profile suite **5 passed**;
+full constrain suite **507 passed, 28 warnings, 617.70 s**; `compileall` and
+`git diff --check` passed. The canary and test child processes exited; no
+collector, trainer or evaluator process remained. No episode was selected using
+policy metrics. Detailed source edits are confined to
+`examples/baselines/constrain/`; hashes are in the preregistrations and
+canary/checkpoint records above.
+
+## Round 26 — frozen 1,000/500 matched-data continuation
+
+The user's newest constraint is fixed at **1,000 DIRECT / 500 OBSTACLE** and
+prohibits adding layout candidates. This supersedes the historical 1,000-obstacle
+target and the R25 461-candidate continuation plan above. No layout proposal was
+sampled in R26; only layouts in the recovered, immutable 239-candidate pool were
+replayed. The branch remained `goal/transport-detour-optimization` at
+`6aeee1ecf559aa9e247e3348ff11f308595e94fe`. No checkout, branch change,
+commit, push, or ManiSkill-source edit occurred. The existing Lightnav process
+was left untouched.
+
+### Frozen candidate replay, external-identity correction, and final data
+
+The frozen-pool replay registration is
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/frozen_replay_selection_r5.json`
+(SHA `42eba7cd617cc7d47b8fc31d3f9fdaf4a35f48a8b2b2877a091748fe562f96a6`). It
+pins the recovered pool manifest (`89b180a4d2cd6e3685d4b7b1eec4a76b0312bf4c7917b5d3ed530251af246ba3`),
+both candidate-source HDF5 hashes, replay code hashes, deterministic
+`(seed, original_id)` ordering, margin 0.015 m, hold-8 terminal contract, and a
+one-pass maximum of 239 existing layouts. The ordered first 200 candidates were
+replayed serially in 1,289.89 s; all 200 matched direct/obstacle/negative/suffix
+admissions and both positive T+1 restore audits passed. No expert/restore
+rejection or timeout occurred. The separate candidate-obstacle staging HDF5 SHA
+is `dd5de15459201edb275ada9002c557d84474e95acd0ad718d1ec3a58a86cbd8a`; its
+manifest SHA is `35652421107ec68a5f62b800f59c24e63217404ae047354e123c95f5616c569a`.
+The complete first-pass ledger SHA is
+`4ac08310aa66cf82c1b01d852ebbf70f07349baa320452019a03f1facdd28721`.
+
+An independent external task-identity audit then found four of those admitted
+layouts conflicted with Ticket 04: candidate IDs **1, 80, 84, 159**. They were
+excluded from training regardless of their positive expert outcome. Their prior
+package and hashes remain preserved as non-training history; the correction
+sidecar explicitly supersedes its stale admission claim. Before replay, a second
+registration
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/replacement_replay_preregistration_r2.json`
+(SHA `f97a60c43ca7893596f82987cbf81e0182927925b610ec9f08755fe02a236392`)
+froze only the remaining existing pool IDs, external manifests, replacement
+order, code hashes, and four-replacement target. Existing candidates **200–203**
+were replayed in order in 46.92 s; all four passed. Candidate IDs **204–238**
+remain unused and are not training data. No new layout was sampled. An initial
+standalone candidate-0 state-restore smoke was retained separately as
+`first_candidate_attempt.{json,h5}` and is not a second training demonstration.
+
+The active audited package is
+`demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/`.
+The four Ticket-04-conflicting candidates are absent. The new OBSTACLE class
+uses source candidate IDs 0–199 excluding 1/80/84/159, plus 200–203, mapped to
+final HDF5 IDs **1300–1499**. Its final HDF5 SHA is
+`796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961`, manifest
+SHA `aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9`, and
+training-identity SHA
+`648f59863a747d603ec8dc6ccf056995e60a93f35b1875bf0b230a261f28fe78`. The
+independent saved-artifact audit
+`independent_r26_audit.json` (SHA
+`35bd68b10bd4139e0e2033394e69f936fa1a568e40a89897bf5088d7dbb7e4e3`)
+verified 1,500 total episodes, 1,000/500 class counts, exact original IDs
+0–1299 HDF5 group-value preservation, all 200 new T/T+1 native 7-D / 39-D / 42-D
+contracts, first-native-success and no-truncation evidence, 400 positive role
+T+1 restore proofs, 200 negative transport-block proofs, 200 actual-cylinder
+terminal-suffix proofs, and full-prefix obstacle contact/crossing safety.
+Final task-identity intersections are **0** against the original obstacle-300,
+frozen dev30, and Ticket 04 sets. OBSTACLE layouts are **500 unique / 0 repeats**.
+The retained DIRECT class has **474 greedy-unique / 526 repeated** layouts;
+these repeats are historical DIRECT content, not new unique-layout claims.
+
+The initial r2 assembled package remains unchanged but is **not** an active
+training input because of the four Ticket 04 overlaps. Its correction record is
+`training_package_r3/external_task_identity_correction.json` (SHA
+`4d5b987011bbd3130c17da57cfb8766fb3d129ed8f88ab31da4d21a94d8abbc3`). Neither
+the historical HDF5 nor its original manifest/training-identity hashes were
+rewritten.
+
+### Before-training window audit and control-only training
+
+Before the training registration, the active 500-OBSTACLE identity reader loaded
+exactly 500 IDs and **80,151 official windows**. The matched R23 300-OBSTACLE
+source has 48,682 windows; the ratio is 1.646. Training uses the preregistered
+150,000 updates (`90,000 × 500/300`), yielding 1,916.38 cohort-equivalent window
+passes versus 1,893.10 for the old 90k/300 run (about 1.2% higher). Data volume
+and update budget change together; this is not a separated causal data-volume
+effect.
+
+The final package's complete, non-truncated action/window audit is in
+`dataset_validation.json` (SHA
+`edd744337e4ee1cdc0a6d1a29788ec7277f9196e08dd972293d966f5b0182e89`). DIRECT /
+OBSTACLE episodes longer than 200 actions: **64/1,000** and **44/500**; action
+volume beyond step 200: **17.83% / 17.59%**. Open near-zero actions: **27.17%
+/ 24.97%** of action volume. Fixed stride-8 open/near-zero action-only windows:
+DIRECT **3,739/16,610**, OBSTACLE **2,055/9,859**. Separate linear-static counts
+are **3,647/3,739** and **2,012/2,055**; angular-static counts are **0/3,739**
+and **0/2,055**; both-native-static counts are zero. Uniform official-window
+sampling was retained; no phase weighting, trajectory weighting, tail
+truncation, policy-performance filter, or artificial neutral window was used.
+
+The before-training registration is
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/training_preregistration_r1.json`
+(SHA `08f361e950586758283ebd7f472d264fbb77b2a1e5ea29e55047feffcebb7a7a`). It
+pins all dataset/source/EMA/dev/baseline hashes, the exact 150,000-update
+training and single stride-2 evaluation plan, exposure calculations, budgets,
+and gate. The two-update CUDA preflight record is
+`training_preflight.json`: finite losses, moved zero-convolution weights,
+nonzero zero-convolution gradients, moved trainable control, bit-unchanged
+Base, and zero disabled-control epsilon/sampler difference. No preflight
+checkpoint was selected or used.
+
+Exact training command (9000-s timeout):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s 9000s \
+  python -u -m examples.baselines.constrain.placesphere_constrain \
+  --demo-path demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.h5 \
+  --manifest demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.json \
+  --base-checkpoint outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt \
+  --run-dir outputs/exp/20261027_140000_placesphere_hold8_500_r26/training_control_150k \
+  --checkpoint-dir outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k \
+  --device cuda --total-iters 150000 --batch-size 1024 --seed 1 --lr 1e-4 \
+  --warmup 500 --ema-power 0.75 \
+  --matched-data-identity demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/training_identity.json
+```
+
+Training completed 150,000 updates in **4,316.23 s**. Losses were finite
+(0.02049344 → 0.00134501); frozen Base unchanged; control parameters and all
+control-down/mid/hint gradient families moved; disabled-control epsilon and
+100-step sampler maximum difference were both 0.0. Final EMA:
+`outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k/final.pt`,
+SHA `ff388efb87e4fde6acaaf21778aaee25b93883af990b99ad510fa82f97ccbf71`.
+Run-config SHA `a560490d198d7b62ab790556a05a243ba739beae4fe98a41518ccd29ea744489`;
+training-summary SHA `7dd5ba8bc1ca5bcfc7440fd1256028d47dffe798be29bdbceeba43e3218365bc`.
+
+### One paired stride-2 dev run
+
+The sole evaluation was preregistered in
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/evaluation_preregistration.json`
+(SHA `1b304218b462e6cde8ff63dab1463e8a2da51cb73920d7a3a19839fdb6513a81`). It
+reuses the current frozen 30-scene dev states/controllers/observations/seeds,
+stride 2, prediction horizon 16, executed action slice [1,9], 200 control steps,
+300 s per episode, fixed denominator 30, and the R24 stride-2 baseline. No
+stride grid, scene addition, checkpoint selection, or second paired run occurred.
+
+Exact evaluation command (18,000-s outer timeout):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s 18000s \
+  python -u -m examples.baselines.constrain.evaluate_placesphere_matched \
+  --scene-dir outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes \
+  --base-checkpoint outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt \
+  --constrain-checkpoint outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k/final.pt \
+  --output-dir outputs/exp/20261027_140000_placesphere_hold8_500_r26/paired_eval_stride2 \
+  --primary-baseline outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval \
+  --device cuda --replan-stride 2
+```
+
+Both policies completed **30/30** with zero runtime errors. Base: **8 task / 0
+safe / 30 contact / 25 XY**. Constrain: **25 task / 25 safe / 0 contact / 0
+XY**. Against R24 stride-2 Constrain (26/26/1/1), task improved/regressed/both/
+neither = **2/3/23/2**, safe = **2/3/23/2**, contact cleared/introduced/both/
+neither = **1/0/0/29**, XY = **1/0/0/29**. The five new failures are release/
+stability timeouts, with no contact or crossing: scenes 8 (release step 155,
+0.3740 m/s, 0.3204 rad/s, off-bin), 13 (109, 0.3341 m/s, 1.2531 rad/s,
+off-bin), 15 (106, 0.3717 m/s, 0.2945 rad/s, off-bin; terminal on-bin but
+spinning at 3.6033 rad/s), 17 (73, 0.3892 m/s, 0.3047 rad/s, off-bin), and 25
+(117, 0.3183 m/s, 0.9206 rad/s, off-bin). Successful native steps were median
+114, p90 173, max 179. Episode-level release/contact/terminal records and file
+hashes are indexed in `paired_eval_index.json` (SHA
+`e860a8e8721b4392e0ac18be708f85c0d19a3d8f4495d654e9ede75e428f48cd`). Paired
+summary SHA `cac80011768efd2f94ed823cfcdef6646f4c01d0e1348abd9747f0fc95cef07e`;
+frozen config SHA `e82bc5df0e70e4ca7bf9286d1cfe36fbfcedbe81f1d864020c1b00c7abb97d9d`.
+
+**Gate: pause/fail.** The fixed requirements are task ≥27/30 and safe ≥26/30;
+observed 25/30 for each. Contact and XY are 0/30 and pass. This is repeated
+development-set evidence only, not a formal/generalization claim. No new-data
+collection is authorized by this result. Continue only with optimization on the
+frozen 1,000/500 data and the same dev set after parent review.
+
+Final constrain suite: **512 passed, 28 warnings, 346.62 s**. `git diff --check`
+passed. Training, replay, and evaluation children exited; the RTX 5070 returned
+idle. Machine-readable command/budget/outcome and input/output hashes are in
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/round26_execution_record.json`
+(SHA `acee5cade32864ac2af672fa72877117e63e85711c34d69cdf0147070b56ec97`).
+
+After the data/training/evaluation run, all old R25 expansion/canary/461-layout
+planning and execution entry points in `placesphere_obstacle1000_expansion.py`
+were made fail-closed under the active freeze. No data, training, or evaluation
+was rerun after that guard-only change. The R26 replay and replacement
+registrations retain the exact source hashes used at those stages; the
+post-run source transition and final verification are recorded in
+`postrun_obsolete_candidate_guard_audit.json` (SHA
+`deeea2e823295cecd9121f2e2d616fd8eec56adceb42870c140d8eab601ff1a8`). The final
+post-guard test run is **512 passed, 28 warnings, 309.59 s**.

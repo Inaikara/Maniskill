@@ -19,9 +19,22 @@ MATCHED_H5_SHA256 = "eecfcdac7e357334eb68921c1e784e6858c3ccdd11d69c17e4e79b5cbf4
 MATCHED_MANIFEST_SHA256 = "ff971fb2b9278126c20d37a7b43a3f9ad74d0a86adc5ce926922b0ad9f796e86"
 MATCHED_VERSION = "placesphere_matched_terminal_r21b_v1"
 MATCHED_HOLD8_VERSION = "placesphere_matched_terminal_r23_hold8_v1"
+MATCHED_HOLD8_OBSTACLE1000_VERSION = "placesphere_matched_terminal_r25_hold8_obstacle1000_v1"
+MATCHED_HOLD8_OBSTACLE500_VERSION = "placesphere_matched_terminal_r26_hold8_obstacle500_v1"
+
+
+def _counts_for_version(expected_version):
+    if expected_version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION):
+        return {"direct": 1000, "obstacle": 300}, 1300
+    if expected_version == MATCHED_HOLD8_OBSTACLE1000_VERSION:
+        return {"direct": 1000, "obstacle": 1000}, 2000
+    if expected_version == MATCHED_HOLD8_OBSTACLE500_VERSION:
+        return {"direct": 1000, "obstacle": 500}, 1500
+    raise ValueError(f"unsupported matched dataset version {expected_version!r}")
 
 
 def load_matched_training_identity(path, data_path, manifest_path, *, expected_version):
+    expected_counts, episode_total = _counts_for_version(expected_version)
     identity = json.loads(Path(path).read_text())
     manifest = json.loads(Path(manifest_path).read_text())
     episodes = manifest.get("episodes", [])
@@ -33,10 +46,10 @@ def load_matched_training_identity(path, data_path, manifest_path, *, expected_v
             or identity.get("release_hold_steps") != 8
             or identity.get("h5_sha256") != sha256_file(data_path)
             or identity.get("manifest_sha256") != sha256_file(manifest_path)
-            or identity.get("class_counts") != {"direct": 1000, "obstacle": 300}
+            or identity.get("class_counts") != expected_counts
             or identity.get("episode_ids") != {"direct": direct_ids, "obstacle": obstacle_ids}
-            or len(set(direct_ids + obstacle_ids)) != 1300
-            or set(direct_ids + obstacle_ids) != set(range(1300))
+            or len(set(direct_ids + obstacle_ids)) != episode_total
+            or set(direct_ids + obstacle_ids) != set(range(episode_total))
             or identity.get("validation_complete") is not True
             or identity.get("admitted_for_training") is not True
             or identity.get("native_thresholds_changed") is not False
@@ -52,9 +65,9 @@ class PlaceSphereManifestDataset(Dataset):
 
     def __init__(self, data_path, manifest_path, selected_class, *,
                  expected_h5_sha256=MATCHED_H5_SHA256,
-                 expected_manifest_sha256=MATCHED_MANIFEST_SHA256,
-                 obs_horizon=2, pred_horizon=16, expected_count=None,
-                 max_release_hold_steps=None):
+                  expected_manifest_sha256=MATCHED_MANIFEST_SHA256,
+                  obs_horizon=2, pred_horizon=16, expected_count=None,
+                  max_release_hold_steps=None, expected_version=MATCHED_HOLD8_VERSION):
         if selected_class not in ("direct", "obstacle"):
             raise ValueError(f"unsupported PlaceSphere class {selected_class!r}")
         self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
@@ -78,25 +91,26 @@ class PlaceSphereManifestDataset(Dataset):
             if episode_id in by_id:
                 raise ValueError(f"duplicate manifest episode_id {episode_id}")
             by_id[episode_id] = record
-        if set(by_id) != set(range(1300)):
-            raise ValueError("matched manifest must cover episode IDs 0..1299 exactly")
+        class_counts, episode_total = _counts_for_version(expected_version)
+        if set(by_id) != set(range(episode_total)):
+            raise ValueError(f"matched manifest must cover episode IDs 0..{episode_total - 1} exactly")
         selected = [eid for eid, record in by_id.items()
                     if record["kind"] == selected_class]
         other = "obstacle" if selected_class == "direct" else "direct"
         if any(record["kind"] not in ("direct", "obstacle") for record in records):
             raise ValueError("matched manifest contains an unknown class label")
-        if len(selected) != (expected_count or (1000 if selected_class == "direct" else 300)):
+        if len(selected) != (expected_count or class_counts[selected_class]):
             raise ValueError(f"matched manifest has wrong {selected_class} episode count")
-        if len([r for r in records if r["kind"] == other]) != (300 if selected_class == "direct" else 1000):
-            raise ValueError("matched manifest class counts do not cover 1,000/300")
+        if len([r for r in records if r["kind"] == other]) != class_counts[other]:
+            raise ValueError(f"matched manifest class counts do not cover {class_counts}")
 
         self.trajectory_ids = selected
         self.trajectories_obs, self.trajectories_raw, self.trajectories_act = [], [], []
         self.trajectory_lengths, self.slices = [], []
         with h5py.File(self.data_path, "r") as handle:
             ids = {int(key.removeprefix("traj_")) for key in handle.keys()}
-            if ids != set(range(1300)) or len(handle) != 1300:
-                raise ValueError("matched HDF5 must contain traj_0..traj_1299 exactly")
+            if ids != set(range(episode_total)) or len(handle) != episode_total:
+                raise ValueError(f"matched HDF5 must contain traj_0..traj_{episode_total - 1} exactly")
             for trajectory_index, episode_id in enumerate(selected):
                 record, group = by_id[episode_id], handle[f"traj_{episode_id}"]
                 if record["kind"] != selected_class or group.attrs.get("kind") != selected_class:

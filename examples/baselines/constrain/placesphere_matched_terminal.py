@@ -797,6 +797,8 @@ def _kill_new_children(before):
 
 
 def _scene_row(layout):
+    if "candidate_scene" in layout:
+        return layout["candidate_scene"]
     manifest = json.loads((Path(layout["catalog"]) / "manifest.json").read_text())
     scene = manifest["scenes"][int(layout["index"])]
     if int(scene["seed"]) != int(layout["seed"]):
@@ -810,12 +812,48 @@ def _open_scene(layout, *, max_steps=400):
     from examples.baselines.constrain.pickcube_expert import snapshot_execution_state
 
     scene = _scene_row(layout)
-    catalog = TransportDetourSceneSet(layout["catalog"])
     env = make_env(config=PlaceSpherePilotConfig(
         max_steps=int(max_steps), obstacle_radius=float(scene["cylinder"]["radius"]),
         obstacle_height=float(scene["cylinder"]["height"])))
     try:
-        env, restored = catalog.restore(int(layout["index"]), env)
+        if "candidate_h5" in layout:
+            import h5py
+            import torch
+            from examples.baselines.constrain.pickcube_expert import _reset_elapsed_steps, _set_state_dict_exact
+            from examples.baselines.constrain.placesphere_scenes import _controller_to_runtime
+            from examples.baselines.constrain.placesphere_transport_detour import _read_tree
+            from examples.baselines.constrain.placesphere_pilot import _obs_vector, _policy_observation
+
+            with h5py.File(layout["candidate_h5"], "r") as h5:
+                group = h5[layout["candidate_group"]]
+                saved_state, saved_controller = _read_tree(group["state"]), _read_tree(group["controller"])
+                expected_raw = np.asarray(group["initial_raw_observation"])
+                expected_policy = np.asarray(group["initial_policy_observation"])
+            options = {"obstacle_enabled": True, "obstacle_center": scene["cylinder"]["center_xy"],
+                       "sphere_xy": scene["start_xy"], "container_xy": scene["container_xy"]}
+            _obs, info = env.reset(seed=int(scene["seed"]), options=options)
+            base = env.unwrapped
+
+            def convert(saved, like):
+                if isinstance(like, dict):
+                    return {key: convert(saved[key], like[key]) for key in like}
+                value = torch.as_tensor(saved, dtype=like.dtype, device=like.device)
+                if value.shape != like.shape:
+                    raise ValueError("frozen candidate state shape differs from runtime")
+                return value
+
+            _set_state_dict_exact(base, convert(saved_state, base.get_state_dict()))
+            base.agent.controller.set_state(_controller_to_runtime(saved_controller, base.agent.controller.get_state()))
+            _reset_elapsed_steps(env, base)
+            info = base.evaluate()
+            raw = _obs_vector(base.get_obs(info=info, unflattened=True))
+            policy = _policy_observation(base, info)
+            if (not np.array_equal(raw, expected_raw) or not np.array_equal(policy, expected_policy)):
+                raise RuntimeError("frozen candidate initial native state/observation restore mismatch")
+            restored = {"bit_exact": True}
+        else:
+            catalog = TransportDetourSceneSet(layout["catalog"])
+            env, restored = catalog.restore(int(layout["index"]), env)
     except BaseException:
         env.close()
         raise

@@ -226,7 +226,7 @@ def classify_direct_block(contact):
 
 def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1.0,
              per_attempt_deadline=1.0, worker_argv_fn=None, demo_dir=None,
-             reject_metadata=None, note_accepted=None):
+             reject_metadata=None, note_accepted=None, preflight_reject=None):
     """Finite attempt loop. Every invocation counts, including deadlines."""
     if (target < 1 or max_attempts < 1 or per_attempt_deadline <= 0
             or not np.isfinite(per_attempt_deadline)
@@ -247,11 +247,42 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
     attempts = 0
     failures = {}
     phase_elapsed = {}
+    def persist_progress(status):
+        payload = {
+            "status": status, "generation_seed": int(seed), "target": int(target),
+            "attempt_budget": int(max_attempts), "wall_budget_seconds": float(max_wall_seconds),
+            "attempts": attempts, "accepted": len(accepted_rows),
+            "last_attempt_seed": int(seed) + attempts if attempts else None,
+            "next_attempt_seed": int(seed) + attempts + 1,
+            "elapsed_seconds": time.monotonic() - started,
+            "accepted_scenes": [{"scene_id": row["scene_id"], "seed": int(row["seed"]),
+                                  "start_xy": row["start_xy"], "container_xy": row["container_xy"],
+                                  "cylinder": row["cylinder"]} for row in accepted_rows],
+            "source_identity_sha256": hashlib.sha256((output / "source_identity.json").read_bytes()).hexdigest(),
+            "attempt_journal_bytes": journal.stat().st_size if journal.exists() else 0,
+        }
+        temp = output / "recovery_checkpoint.json.tmp"
+        temp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        temp.replace(output / "recovery_checkpoint.json")
+
+    persist_progress("running")
     while len(accepted_rows) < target and attempts < max_attempts and (time.monotonic() - started) < max_wall_seconds:
         attempts += 1
+        attempt_seed = int(seed) + attempts
+        if preflight_reject is not None:
+            preflight_reason = preflight_reject(attempt_seed)
+            if preflight_reason:
+                record = {"attempt": attempts, "seed": attempt_seed, "accepted": False,
+                          "failure": str(preflight_reason), "elapsed_seconds": 0.0,
+                          "timed_out": False, "returncode": None, "preflight": True,
+                          "counters": {}, "phase_timings": {}, "diagnostics": {}}
+                with journal.open("a") as stream:
+                    stream.write(json.dumps(record, sort_keys=True) + "\n")
+                failures[str(preflight_reason)] = failures.get(str(preflight_reason), 0) + 1
+                persist_progress("running")
+                continue
         result_dir = output / "workers" / f"{attempts:04d}"
         result_dir.mkdir(parents=True)
-        attempt_seed = int(seed) + attempts
         argv = (worker_argv_fn(attempt_seed, result_dir) if worker_argv_fn is not None
                 else _default_worker_argv(attempt_seed, result_dir, per_attempt_deadline))
         at = time.monotonic()
@@ -308,6 +339,7 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
                 record["stderr_tail"] = tail
         with journal.open("a") as stream:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
+        persist_progress("running")
     _write_manifest(output, accepted_rows, seed)
     audit_ok = True
     if accepted_rows and worker_argv_fn is None:
@@ -325,6 +357,7 @@ def generate(output_dir, *, seed=1, target=1, max_attempts=1, max_wall_seconds=1
     report["source_identity_sha256"] = hashlib.sha256(identity_bytes).hexdigest()
     report["git_head_is_code_identity"] = False
     (output / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    persist_progress("complete" if report["complete"] else "incomplete")
     _write_artifact_hashes(output)
     return report
 

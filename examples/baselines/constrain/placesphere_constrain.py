@@ -23,6 +23,7 @@ from examples.baselines.constrain.placesphere_base_dp import (
 )
 from examples.baselines.constrain.placesphere_manifest_dataset import (
     MATCHED_H5_SHA256, MATCHED_MANIFEST_SHA256, MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+    MATCHED_HOLD8_OBSTACLE1000_VERSION, MATCHED_HOLD8_OBSTACLE500_VERSION,
     PlaceSphereManifestDataset, load_matched_training_identity,
 )
 
@@ -88,16 +89,18 @@ class PlaceSphereObstacleDataset(Dataset):
             if matched_r21b and matched_identity is not None:
                 raise ValueError("choose one matched dataset identity mode")
             identity = (load_matched_training_identity(
-                matched_identity, data_path, manifest_path, expected_version=MATCHED_HOLD8_VERSION)
+                matched_identity, data_path, manifest_path,
+                expected_version=json.loads(Path(matched_identity).read_text()).get("dataset_version"))
                 if matched_identity is not None else None)
             self.matched = PlaceSphereManifestDataset(
                 data_path, manifest_path, "obstacle",
                 expected_h5_sha256=identity["h5_sha256"] if identity else MATCHED_H5_SHA256,
                 expected_manifest_sha256=identity["manifest_sha256"] if identity else MATCHED_MANIFEST_SHA256,
-                max_release_hold_steps=8 if identity else None)
+                max_release_hold_steps=8 if identity else None,
+                expected_version=identity["dataset_version"] if identity else MATCHED_HOLD8_VERSION)
             self.trajectory_ids = self.matched.trajectory_ids
             self.h5_sha256, self.manifest_sha256 = self.matched.h5_sha256, self.matched.manifest_sha256
-            self.dataset_version = MATCHED_HOLD8_VERSION if identity else MATCHED_VERSION
+            self.dataset_version = identity["dataset_version"] if identity else MATCHED_VERSION
             self.release_hold_steps = 8 if identity else 0
             self.training_identity_sha256 = sha256_file(matched_identity) if identity else None
             return
@@ -168,7 +171,8 @@ def _base_checkpoint(path):
                 (data.get("release_hold_steps") != 8 or len(data.get("h5_sha256", "")) != 64
                  or len(data.get("manifest_sha256", "")) != 64)):
             raise ValueError("matched hold-8 base dataset identity mismatch")
-        if (version not in (MATCHED_VERSION, MATCHED_HOLD8_VERSION) or ck.get("step") != 30000
+        if (version not in (MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+                            MATCHED_HOLD8_OBSTACLE1000_VERSION, MATCHED_HOLD8_OBSTACLE500_VERSION) or ck.get("step") != 30000
                 or data.get("selected_class") != "direct" or data.get("episodes") != 1000
                 or len(data.get("selected_episode_ids", [])) != 1000):
             raise ValueError("base checkpoint is not a trusted matched 30000-step EMA")
@@ -190,8 +194,11 @@ def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_che
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False); cfg = ck.get("config", {})
     data, base, training = cfg.get("data_identity", {}), cfg.get("base_weights", {}), cfg.get("training", {})
     version = data.get("dataset_version")
-    matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION)
-    expected_updates = 90000 if matched else 30000
+    matched = version in (MATCHED_VERSION, MATCHED_HOLD8_VERSION,
+                          MATCHED_HOLD8_OBSTACLE1000_VERSION, MATCHED_HOLD8_OBSTACLE500_VERSION)
+    expected_updates = (150000 if version == MATCHED_HOLD8_OBSTACLE500_VERSION else
+                        300000 if version == MATCHED_HOLD8_OBSTACLE1000_VERSION else
+                        90000 if matched else 30000)
     model_invalid = (ck.get("format") != FORMAT or cfg.get("model") != MODEL
                      or cfg.get("policy") != POLICY or cfg.get("diffusion") != _diffusion()
                      or cfg.get("normalization") != NORM or ck.get("step") != expected_updates)
@@ -202,6 +209,11 @@ def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_che
         data_invalid = (data.get("release_hold_steps") != 8
                         or len(data.get("h5_sha256", "")) != 64
                         or len(data.get("manifest_sha256", "")) != 64)
+    elif version in (MATCHED_HOLD8_OBSTACLE1000_VERSION, MATCHED_HOLD8_OBSTACLE500_VERSION):
+        data_invalid = (data.get("release_hold_steps") != 8
+                        or len(data.get("h5_sha256", "")) != 64
+                        or len(data.get("manifest_sha256", "")) != 64
+                        or len(data.get("training_identity_sha256", "")) != 64)
     else:
         data_invalid = (data.get("h5_sha256") != TRUSTED_H5_SHA256
                         or data.get("manifest_sha256") != TRUSTED_MANIFEST_SHA256
@@ -210,8 +222,13 @@ def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_che
                         or data.get("selected_episode_ids") != list(range(1000, 1100))
                         or data.get("episodes") != 100)
     class_invalid = (data.get("selected_class") != "obstacle"
-                     or data.get("episodes") != (300 if matched else 100)
-                     or (matched and data.get("selected_episode_ids") != list(range(1, 600, 2)))
+                      or data.get("episodes") != (1000 if version == MATCHED_HOLD8_OBSTACLE1000_VERSION else
+                                                     500 if version == MATCHED_HOLD8_OBSTACLE500_VERSION else
+                                                     300 if matched else 100)
+                     or (version == MATCHED_VERSION and data.get("selected_episode_ids") != list(range(1, 600, 2)))
+                     or (version == MATCHED_HOLD8_VERSION and len(data.get("selected_episode_ids", [])) != 300)
+                      or (version == MATCHED_HOLD8_OBSTACLE1000_VERSION and len(data.get("selected_episode_ids", [])) != 1000)
+                      or (version == MATCHED_HOLD8_OBSTACLE500_VERSION and len(data.get("selected_episode_ids", [])) != 500)
                      or (not matched and data.get("selected_episode_ids") != list(range(1000, 1100))))
     base_invalid = (base.get("subkey") != "weights.ema" or base.get("updates") != 30000
                     or (not matched and base.get("sha256") != TRUSTED_BASE_SHA256))
@@ -229,10 +246,22 @@ def load_placesphere_constrain(checkpoint, device="cpu", weights="ema", base_che
     if base_checkpoint is not None:
         base_ck = _base_checkpoint(base_checkpoint); agent = build_agent("cpu"); agent.load_state_dict(base_ck["weights"]["ema"], strict=True)
         base_identity = base_ck.get("data_identity", {})
-        if matched and any(base_identity.get(key) != data.get(key)
+        if matched and version not in (MATCHED_HOLD8_OBSTACLE1000_VERSION, MATCHED_HOLD8_OBSTACLE500_VERSION) and any(base_identity.get(key) != data.get(key)
                            for key in ("dataset_version", "h5_sha256", "manifest_sha256",
-                                       "release_hold_steps", "training_identity_sha256")):
+                                        "release_hold_steps", "training_identity_sha256")):
             raise ValueError("Base and Constrain matched dataset identities differ")
+        if version == MATCHED_HOLD8_OBSTACLE1000_VERSION and (
+                base_identity.get("dataset_version") != MATCHED_HOLD8_VERSION
+                or base_identity.get("release_hold_steps") != 8
+                or base_identity.get("selected_class") != "direct"
+                or base_identity.get("episodes") != 1000):
+            raise ValueError("expanded Constrain requires the qualified hold-8 matched direct Base EMA")
+        if version == MATCHED_HOLD8_OBSTACLE500_VERSION and (
+                base_identity.get("dataset_version") != MATCHED_HOLD8_VERSION
+                or base_identity.get("release_hold_steps") != 8
+                or base_identity.get("selected_class") != "direct"
+                or base_identity.get("episodes") != 1000):
+            raise ValueError("frozen 500-obstacle Constrain requires the qualified hold-8 matched direct Base EMA")
         if _state_sha(agent.noise_pred_net.state_dict()) != cfg["base_weights"]["state_sha256"]:
             raise ValueError("embedded base differs from independent trusted EMA")
     return denoiser, ck
@@ -327,7 +356,8 @@ def main(argv=None):
     if a.matched_r21b and a.matched_data_identity: raise ValueError("choose one matched dataset identity mode")
     if a.matched_r21b and (sha256_file(a.demo_path) != MATCHED_H5_SHA256 or sha256_file(a.manifest) != MATCHED_MANIFEST_SHA256): raise ValueError("matched PlaceSphere r21b data identity mismatch")
     if a.matched_data_identity:
-        load_matched_training_identity(a.matched_data_identity,a.demo_path,a.manifest,expected_version=MATCHED_HOLD8_VERSION)
+        load_matched_training_identity(a.matched_data_identity,a.demo_path,a.manifest,
+            expected_version=json.loads(a.matched_data_identity.read_text()).get("dataset_version"))
     trainer=PlaceSphereConstrainTrainer(a.demo_path,a.manifest,a.base_checkpoint,a.device,a.batch_size,a.total_iters,a.lr,a.warmup,a.ema_power,a.seed,a.run_dir,a.matched_r21b,a.matched_data_identity);trainer.setup()
     start=time.monotonic();pre=equivalence_evidence(trainer.denoiser,a.base_checkpoint,a.device)
     if not pre["epsilon_matches"] or not pre["sampling_matches"]: raise RuntimeError(f"pretraining equivalence failed: {pre}")
