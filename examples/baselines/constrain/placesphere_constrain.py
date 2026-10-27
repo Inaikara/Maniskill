@@ -16,7 +16,7 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 from examples.baselines.constrain.constrain_denoiser import build_constrain_denoiser
 from examples.baselines.constrain.constrain_ckpt import save_constrain_checkpoint
 from examples.baselines.constrain.placesphere_inference_sampler import (
-    build_inference_scheduler, sample_actions,
+    build_inference_scheduler, sample_actions, sample_action_ensemble,
 )
 from examples.baselines.constrain.placesphere_base_dp import (
     FORMAL_DIR, FORMAL_H5, FORMAL_MANIFEST, TRUSTED_H5_SHA256,
@@ -293,10 +293,15 @@ def equivalence_evidence(denoiser, base_checkpoint=BASE_CKPT, device="cpu", seed
 
 class PlaceSphereConstrainAdapter:
     def __init__(self, checkpoint, device="cpu", weights="ema", control_enabled=True,
-                 base_checkpoint=None, sampler="ddpm", eta=None):
+                 base_checkpoint=None, sampler="ddpm", eta=None, ensemble_size=1):
+        if ensemble_size not in (1, 4) or (ensemble_size == 4 and sampler != "ddim"):
+            raise ValueError("ensemble_size must be 1, or 4 with DDIM")
         self.denoiser,self.checkpoint=load_placesphere_constrain(checkpoint,device,weights,base_checkpoint)
         self.denoiser.eval(); self.device=torch.device(device); self.control_enabled=control_enabled
         self.sampler,self.eta=sampler,eta
+        self.ensemble_size=ensemble_size
+        self.metadata={"checkpoint_sha256":sha256_file(checkpoint),
+                       "sampler":sampler,"eta":eta,"ensemble_size":ensemble_size}
         self.obs_horizon,self.pred_horizon,self.act_horizon=2,16,8; self.latest=None
         from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
         training_scheduler=DDPMScheduler(num_train_timesteps=100,beta_schedule="squaredcos_cap_v2",
@@ -312,11 +317,21 @@ class PlaceSphereConstrainAdapter:
         if self.latest is None: raise RuntimeError("base_cond must capture latest observation first")
         c=torch.as_tensor(condition,dtype=torch.float32,device=self.device); hint=placesphere_hint(self.latest)
         if hint.ndim==1: hint=hint[None]
-        hint=hint[:,None,:].expand(-1,16,-1); sample=torch.randn(c.shape[0],16,7,device=self.device)
+        hint=hint[:,None,:].expand(-1,16,-1)
         if self.sampler == "ddim":
+            if self.ensemble_size == 4:
+                if c.shape[0] != 1:
+                    raise ValueError("four-plan ensemble requires batch size one")
+                sample=torch.randn((1,4,16,7),device=self.device)
+                return sample_action_ensemble(self.scheduler,
+                    lambda x,t,repeated: self.denoiser(x,t,global_cond=repeated,
+                        hint=hint.expand(4,-1,-1),enabled=self.control_enabled),
+                    sample,c,eta=self.eta)
+            sample=torch.randn(c.shape[0],16,7,device=self.device)
             return sample_actions(self.scheduler,
                 lambda x,t: self.denoiser(x,t,global_cond=c,hint=hint,enabled=self.control_enabled),
                 sample,eta=self.eta)[:,1:9]
+        sample=torch.randn(c.shape[0],16,7,device=self.device)
         self.scheduler.set_timesteps(100)
         with torch.no_grad():
             for t in self.scheduler.timesteps:

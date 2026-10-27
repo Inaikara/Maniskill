@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 
 from examples.baselines.constrain.base_dp import BasePolicyArgs, _PolicyEnvStub
 from examples.baselines.constrain.placesphere_inference_sampler import (
-    build_inference_scheduler, sample_actions,
+    build_inference_scheduler, sample_actions, sample_action_ensemble,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -219,13 +219,17 @@ class PlaceSphereBaseDPAdapter:
             raise ValueError("PlaceSphere checkpoint collection report identity mismatch")
         return ck
 
-    def __init__(self, checkpoint, device="cpu", weights="ema", sampler="ddpm", eta=None):
+    def __init__(self, checkpoint, device="cpu", weights="ema", sampler="ddpm", eta=None,
+                 ensemble_size=1):
+        if ensemble_size not in (1, 4) or (ensemble_size == 4 and sampler != "ddim"):
+            raise ValueError("ensemble_size must be 1, or 4 with DDIM")
         ck = self.validate_checkpoint(checkpoint)
         self.agent = build_agent(device)
         self.agent.load_state_dict(ck["weights"][weights], strict=True)
         self.agent.eval()
         self.device, self.obs_horizon, self.obs_dim, self.raw_obs_dim = torch.device(device), 2, 39, 42
         self.sampler = sampler
+        self.ensemble_size = ensemble_size
         self.eta = eta
         self.inference_scheduler = (build_inference_scheduler(
             self.agent.noise_scheduler, sampler, eta)
@@ -234,7 +238,7 @@ class PlaceSphereBaseDPAdapter:
                          "contract": ck["contract"], "checkpoint_sha256": sha256_file(checkpoint),
                          "native_execution_action_bounds": {"pose_channels": [-0.35, 0.35],
                                                              "gripper": [-1.0, 1.0]},
-                         "sampler": sampler, "eta": eta}
+                         "sampler": sampler, "eta": eta, "ensemble_size": ensemble_size}
 
     def base_cond(self, queued_obs):
         x = torch.as_tensor(queued_obs)
@@ -249,8 +253,17 @@ class PlaceSphereBaseDPAdapter:
         with torch.no_grad():
             if self.sampler == "ddim":
                 scheduler = self.inference_scheduler
-                initial = torch.randn((len(obs), 16, 7), device=self.device)
                 condition = obs.flatten(start_dim=1)
+                if self.ensemble_size == 4:
+                    if len(obs) != 1:
+                        raise ValueError("four-plan ensemble requires batch size one")
+                    initial = torch.randn((1, 4, 16, 7), device=self.device)
+                    return sample_action_ensemble(
+                        scheduler,
+                        lambda sample, timestep, repeated: self.agent.noise_pred_net(
+                            sample=sample, timestep=timestep, global_cond=repeated),
+                        initial, condition, eta=self.eta)
+                initial = torch.randn((len(obs), 16, 7), device=self.device)
                 prediction = lambda sample, timestep: self.agent.noise_pred_net(
                     sample=sample, timestep=timestep, global_cond=condition)
                 sample = sample_actions(scheduler, prediction, initial, eta=self.eta)

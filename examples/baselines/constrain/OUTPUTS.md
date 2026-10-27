@@ -1426,3 +1426,88 @@ tests passed **4/4**, including reproducing the retained stale-pin failure,
 accepting the real frozen snapshot, and rejecting post-freeze mutation. No
 native episodes, replay, training, data, checkpoint, or scene were created or
 changed.
+
+## Round 29 — fixed four-plan DDIM ensemble (inference-only)
+
+Continued on `goal/transport-detour-optimization`, HEAD/base
+`a1dcc014fe38976e384610df1f933719672256de`; no checkout, commit, or push.
+Training remains frozen at **1,000 DIRECT / 500 OBSTACLE**. No new demos, layouts,
+weights, or ManiSkill source edits. One registered inference change was used for
+both policies: four independent Gaussian `(16,7)` initial plans, identical latest
+two-frame condition, 100-step DDIM eta 0 denoising in one batch, arithmetic mean
+of all seven channels after denoising over `[1:9]`, then the existing action map
+and first-two-action execution/replan. No sample ranking, clamping changes, or
+route selection. Defaults remain one plan and existing DDPM call paths.
+
+Registration: `outputs/exp/20261027_230000_placesphere_ensemble4_r29/`
+`inference_preregistration_r2.json` (SHA
+`25b4a8d1e34d52b7dd410f7546a4fd807182321f4592c31b5192744ca531ae49`). The
+initial registration was retained at `inference_preregistration.json`; its first
+launch stopped before output creation or any scene execution because the
+ensemble-size guard expected the field under `protocol`. The corrected r2
+registration moved that same fixed value there; the failed preflight log remains
+at `evaluation_command.log` (SHA
+`14aa56cb8b6341ca4ae48d62459a534bbe6733ab530723f21c883c60f33498ef`). The one
+native trial then ran with the fixed 18,000 s outer limit, 300 s/episode, 200
+control steps, serial CUDA inference and 30-scene denominator per policy. Exact
+command and complete input/source identities are in `round29_execution_record.json`.
+
+The immutable primary is R27 DDIM100 eta0 single-plan at
+`outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval/`, with identical
+weights and frozen scenes. The evaluator preflight checked all 30 scene IDs,
+seeds, bit-exact restore flags, checkpoint hashes, and equal initial 42-D policy
+observations. After the run, all 30 initial observations per policy matched R27
+again. All 60 episodes completed; 0 runtime errors, dropped episodes, or retries.
+Elapsed wall time was approximately 1,260 s (22:02:59–22:23:59 local). Maximum
+single synchronized ensemble inference time was 0.3745 s for Constrain and 0.4712
+s for Base. The GPU returned idle after execution.
+
+| Policy | Task | Safe | Contact | XY | Runtime errors |
+|---|---:|---:|---:|---:|---:|
+| Base | 3/30 | 0/30 | 24/30 | 23/30 | 0 |
+| Constrain | 25/30 | 25/30 | 0/30 | 0/30 | 0 |
+
+R27 Constrain was 26/26/0/0. R29 vs R27 transitions (task and safe are
+improved/regressed/both/neither; contact and XY are cleared/introduced/both/neither)
+were task **4/5/21/0**, safe **4/5/21/0**, contact **0/0/0/30**, XY **0/0/0/30**.
+The five current Constrain failures are scenes 2, 12, 16, 19, 29: four
+`incorrect_release` (2/12/16/29), one `not_stabilized` (19). The four incorrect
+releases were off-bin; scene 19 released with 0.484 m/s linear speed and remained
+unstabilized. There were no contacts or XY crossings. Base vs R27 was task
+1/4/2/23, safe 0/0/0/30, contact 6/0/24/0, XY 5/4/19/2.
+
+**Gate: fail/pause.** Task 25/30 is below 27 and safe 25/30 is below 26;
+contact and XY ceilings pass at 0. No formal evaluation follows from this
+repeated-development-set result. Keep the dataset frozen and diagnose the actual
+release/stabilization regressions before selecting a next optimization slice.
+This trial changes ensemble size, random draw consumption, and compute together;
+it does not establish that stochastic dispersion caused the earlier XY release
+errors or that action averaging preserves route topology.
+
+The evaluator's unmodified raw `paired_summary.json` has legacy R24 comparison
+labels and an old 90% gate even though the supplied primary directory was R27.
+Those episode outcomes were not edited. The separately registered read-only
+`primary_analysis.json` is authoritative for R27 transitions and the 27/26/3/3
+gate. Analysis registration SHA
+`55c1a454f4c5e8c6e0f72069f80d453d0f11fed1f598c7b4c41c2466b6c94e2d`; analysis SHA
+`33fa28df35422b703c2880eb2980273cbec7dee3ef765109e70663023a7ee846`. R29 paired
+summary SHA `459d169f4e22317a9056a8304302f212c98ddace90cd8da48c5abac85f204c09`.
+The Base EMA, Constrain EMA, HDF5, manifest and training-identity hashes were
+recomputed after the run and remain the registered R26 identities. The complete
+run, failure list, paired transitions, hashes and cleanup record are in
+`round29_execution_record.json`.
+
+Verification after the changes:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s \
+  python -m pytest examples/baselines/constrain/tests -q --tb=line
+```
+
+Result: **528 passed, 28 warnings, 82.59 s**. This includes a bitwise equality
+check of the existing single-plan DDIM path against the pre-ensemble known-latent
+reference loop. `git diff --check` passed. No
+training, replay, or additional native episode was started after the registered
+trial. Execution record SHA
+`44ee060c7a29be94c9ab52007809a6c31be377634c49f071b831e3025dce4637`.

@@ -22,12 +22,38 @@ def _read_rows(directory, count=30):
     return [json.loads((directory / f"episode_{i:03d}.json").read_text()) for i in range(count)]
 
 
+def _validate_primary_baseline(directory, base_sha, constrain_sha):
+    base = _read_rows(Path(directory) / "base_dp")
+    constrain = _read_rows(Path(directory) / "constrain_dp")
+    for index, (left, right) in enumerate(zip(base, constrain)):
+        if (left.get("scene_index") != index or right.get("scene_index") != index
+                or left.get("scene_id") != right.get("scene_id")
+                or left.get("seed") != right.get("seed")
+                or not left.get("restored_bit_exact") or not right.get("restored_bit_exact")
+                or left.get("checkpoint_sha256") != base_sha
+                or right.get("checkpoint_sha256") != constrain_sha):
+            raise ValueError(f"primary baseline identity/restore mismatch at scene {index}")
+        left_trace, right_trace = left.get("closed_loop_trace", []), right.get("closed_loop_trace", [])
+        if (not left_trace or not right_trace
+                or len(left_trace[0].get("policy_observation", [])) != 42
+                or len(right_trace[0].get("policy_observation", [])) != 42
+                or left_trace[0]["policy_observation"] != right_trace[0]["policy_observation"]):
+            raise ValueError(f"primary baseline initial observation mismatch at scene {index}")
+    return {"episodes_per_policy": 30, "matching_scene_ids_seeds_and_initial_observations": True,
+            "all_restored_bit_exact": True, "observation_dimension": 42}
+
+
 def _sha(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _synchronize(adapter):
+    if str(getattr(adapter, "device", "cpu")).startswith("cuda"):
+        torch.cuda.synchronize(adapter.device)
 
 
 def _transitions(old, new, metric):
@@ -48,20 +74,40 @@ class _BasePolicy:
     def __init__(self, adapter):
         self.adapter = adapter
         self.metadata = adapter.metadata
+        self.inference_calls = 0
+        self.max_inference_wall_seconds = 0.0
 
     def get_action(self, history):
         queued = torch.as_tensor(history, dtype=torch.float32, device=self.adapter.device)[None]
-        return self.adapter.get_action(queued[..., :39])
+        _synchronize(self.adapter)
+        started = time.perf_counter()
+        try:
+            return self.adapter.get_action(queued[..., :39])
+        finally:
+            _synchronize(self.adapter)
+            elapsed = time.perf_counter() - started
+            self.inference_calls += 1
+            self.max_inference_wall_seconds = max(self.max_inference_wall_seconds, elapsed)
 
 
 class _ConstrainPolicy:
     def __init__(self, adapter, checkpoint_path):
         self.adapter = adapter
         self.metadata = {"checkpoint_sha256": sha256_file(checkpoint_path)}
+        self.inference_calls = 0
+        self.max_inference_wall_seconds = 0.0
 
     def get_action(self, history):
         queued = torch.as_tensor(history, dtype=torch.float32, device=self.adapter.device)[None]
-        return self.adapter.get_action(self.adapter.base_cond(queued))
+        _synchronize(self.adapter)
+        started = time.perf_counter()
+        try:
+            return self.adapter.get_action(self.adapter.base_cond(queued))
+        finally:
+            _synchronize(self.adapter)
+            elapsed = time.perf_counter() - started
+            self.inference_calls += 1
+            self.max_inference_wall_seconds = max(self.max_inference_wall_seconds, elapsed)
 
 
 def main(argv=None):
@@ -73,6 +119,7 @@ def main(argv=None):
     parser.add_argument("--primary-baseline", type=Path, required=True)
     parser.add_argument("--secondary-baseline", type=Path)
     parser.add_argument("--sampler", choices=("ddpm", "ddim"), default="ddpm")
+    parser.add_argument("--ensemble-size", type=int, choices=(1, 4), default=1)
     parser.add_argument("--inference-preregistration", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--replan-stride", type=int, choices=(2, 8), default=8)
@@ -81,6 +128,8 @@ def main(argv=None):
         raise FileExistsError(args.output_dir)
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
+    if args.ensemble_size == 4 and args.sampler != "ddim":
+        raise ValueError("ensemble size 4 is registered only for DDIM")
     catalog = TransportDetourSceneSet(args.scene_dir)
     if len(catalog) != 30:
         raise ValueError(f"expected frozen 30-scene development set, found {len(catalog)}")
@@ -113,13 +162,17 @@ def main(argv=None):
             "data_manifest": "aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9",
             "training_identity": "648f59863a747d603ec8dc6ccf056995e60a93f35b1875bf0b230a261f28fe78",
             "scene_manifest": "9e1d8ee4786d2336f01e07d664ca37c3dcc7ca455e7876176def65c18b63c119",
-            "primary_summary": "3c537c1ba646e5d483e2fd4075524ba36bc0ea08eae4356cc4e0231276c2b0cd",
+            "primary_summary": ("ef24daa752f99ce31d5063325397c1276f3e6bc3d085dcaeafa824904378346e"
+                                if args.ensemble_size == 4 else
+                                "3c537c1ba646e5d483e2fd4075524ba36bc0ea08eae4356cc4e0231276c2b0cd"),
         }
         expected_paths = {
             "scene_dir": "outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes",
             "base_checkpoint": "outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt",
             "constrain_checkpoint": "outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k/final.pt",
-            "primary_baseline": "outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval",
+            "primary_baseline": ("outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval"
+                                 if args.ensemble_size == 4 else
+                                 "outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval"),
         }
         registered_sampler = preregistration.get("sampler", {})
         if (preregistration.get("format") != "placesphere_frozen_ddim100_eta0_v1"
@@ -143,6 +196,7 @@ def main(argv=None):
                 or str(args.base_checkpoint) != expected_paths["base_checkpoint"]
                 or str(args.constrain_checkpoint) != expected_paths["constrain_checkpoint"]
                 or str(args.primary_baseline) != preregistration.get("protocol", {}).get("primary_baseline")
+                or str(args.output_dir) != preregistration.get("protocol", {}).get("output_dir")
                 or expected_paths["scene_dir"] != preregistration.get("scenes", {}).get("path")
                 or args.replan_stride != 2
                 or preregistration.get("protocol", {}).get("stride") != 2
@@ -164,6 +218,12 @@ def main(argv=None):
                 or preregistration.get("scenes", {}).get("manifest_sha256") != frozen_inputs["scene_manifest"]
                 or preregistration.get("protocol", {}).get("primary_baseline_summary_sha256") != frozen_inputs["primary_summary"]):
             raise ValueError("DDIM trial does not match the frozen r26 artifacts")
+        primary_pairing = _validate_primary_baseline(
+            args.primary_baseline, frozen_inputs["base_checkpoint"],
+            frozen_inputs["constrain_checkpoint"])
+        registered_ensemble = preregistration.get("protocol", {}).get("ensemble_size", 1)
+        if registered_ensemble != args.ensemble_size:
+            raise ValueError("DDIM ensemble size does not match preregistration")
         constrain_ck = torch.load(args.constrain_checkpoint, map_location="cpu", weights_only=False)
         data = constrain_ck["config"]["data_identity"]
         frozen_data_dir = Path(preregistration["data"]["dataset"])
@@ -179,10 +239,11 @@ def main(argv=None):
     inference_sampler = args.sampler
     eta = 0.0 if inference_sampler == "ddim" else None
     base_adapter = PlaceSphereBaseDPAdapter(args.base_checkpoint, args.device, weights="ema",
-                                            sampler=inference_sampler, eta=eta)
+                                            sampler=inference_sampler, eta=eta,
+                                            ensemble_size=args.ensemble_size)
     constrain_adapter = PlaceSphereConstrainAdapter(
         args.constrain_checkpoint, args.device, base_checkpoint=str(args.base_checkpoint),
-        sampler=inference_sampler, eta=eta)
+        sampler=inference_sampler, eta=eta, ensemble_size=args.ensemble_size)
     policies = {"base_dp": _BasePolicy(base_adapter),
                 "constrain_dp": _ConstrainPolicy(constrain_adapter, args.constrain_checkpoint)}
     args.output_dir.mkdir(parents=True)
@@ -195,14 +256,16 @@ def main(argv=None):
               "secondary_baseline": str(args.secondary_baseline),
                "device": args.device, "max_steps": 200, "episode_wall_seconds": 300,
                "execution_stride": args.replan_stride,
-                "prediction_horizon": 16, "executed_action_slice": [1, 9],
+                 "prediction_horizon": 16, "executed_action_slice": [1, 9],
+                 "ensemble_size": args.ensemble_size,
                 "sampler": {"training": "DDPMScheduler squaredcos_cap_v2 epsilon clip_sample=True; 100 train timesteps",
                             "inference": "DDIMScheduler eta=0; 100 timesteps" if inference_sampler == "ddim" else
                                          "DDPMScheduler squaredcos_cap_v2; 100 timesteps",
                             "reverse_variance_draws": "removed for DDIM; subsequent initial-noise RNG positions therefore differ" if inference_sampler == "ddim" else "DDPM reverse variance draws retained",
                             "weights_shared_across_policies": True},
-                "noise_sampling": "same torch.manual_seed(scene seed) reset per policy; DDIM eta=0 removes reverse variance draws",
-                "inference_preregistration_sha256": preregistration_sha,
+                 "noise_sampling": "same torch.manual_seed(scene seed) reset per policy; independent initial plans per ensemble member" if args.ensemble_size == 4 else "same torch.manual_seed(scene seed) reset per policy; DDIM eta=0 removes reverse variance draws",
+               "inference_preregistration_sha256": preregistration_sha,
+               "primary_baseline_pairing_audit": primary_pairing if args.sampler == "ddim" else None,
               "selected_weights": "final EMA fixed before results", "runtime_errors_remain_in_denominator": True}
     (args.output_dir / "frozen_config.json").write_text(json.dumps(frozen, indent=2) + "\n")
     rows_by_policy = {}
@@ -211,6 +274,8 @@ def main(argv=None):
         out.mkdir()
         rows = []
         for index in range(30):
+            call_start = adapter.inference_calls
+            adapter.max_inference_wall_seconds = 0.0
             previous = signal.signal(signal.SIGALRM, _episode_deadline)
             signal.setitimer(signal.ITIMER_REAL, 300)
             started = time.monotonic()
@@ -229,6 +294,8 @@ def main(argv=None):
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous)
             row["wall_seconds"] = time.monotonic() - started
+            row["inference_calls"] = adapter.inference_calls - call_start
+            row["max_single_inference_wall_seconds"] = adapter.max_inference_wall_seconds
             row["closed_loop_trace"] = trace
             (out / f"episode_{index:03d}.json").write_text(json.dumps(row, indent=2) + "\n")
             rows.append(row)
