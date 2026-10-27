@@ -2,6 +2,89 @@
 
 ## Cleanup status
 
+## Round 31 — PickCube existing-pool audit (2026-10-28)
+
+Read-only audit at `outputs/exp/20261028_110000_pickcube_existing_pool_audit/`
+using `examples/baselines/constrain/audit_pickcube_existing_pool.py`. It did
+not initialize an environment, sample a layout, or replay an action. The
+inventory records the exact source-file hashes, every packaged episode ID,
+task identities (same seed or componentwise start/goal within 0.02 m), per-episode T/action/observation shape and
+termination counts, aggregate seven-channel action ranges/RMS, and whether the
+previously recorded source catalogs still exist. Reproduction (after activating
+`maniskill`):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 300s \
+  python -m examples.baselines.constrain.audit_pickcube_existing_pool \
+  --output outputs/exp/20261028_110000_pickcube_existing_pool_audit/inventory.json
+```
+
+| Existing source | Packaged counts | Obstacle layout findings |
+| --- | ---: | --- |
+| `demos/PickCube-transport-detour/20261024_104348_expansion/` | 1,000 direct / 100 obstacle | 100 task-unique; all 100 also occur in the 300 package |
+| `demos/PickCube-transport-detour/20261024_213325_obstacle300/` | 1,000 direct / 300 obstacle | 300 task-unique; source-qualified cohort remains unchanged |
+
+The expansion package HDF5 SHA-256 remains
+`2af959e3d3ebeba8bb046db6d9583d300e1533fc638c7d36eb6393dd28024dff`; its
+manifest SHA-256 is
+`26cb2b3f8c371315805cb6219e0a4314dce3461bac3aaa872d35ce2e5ca7fd45`. The
+300 package HDF5 SHA-256 remains
+`3c15f50993b5ab5967b1a40695e53288b0f9464f4b61504a93d9989499ded7e6`; its
+manifest SHA-256 is
+`3be137138176a4c243684c081ceda62f08c5792a3f3778a07460a3c2fa2642f5`.
+The retained source catalogs contain 900 expansion direct-scene records, 64
+expansion pair-scene records, and 127 + 200 obstacle-increment records. Their
+catalog manifests and HDF5 identities are pinned in `inventory.json`. The
+increment catalog manifests prove 103 geometrically unique candidates remain
+after the old 300 obstacle cohort, frozen dev30, Ticket 03, and earlier
+source-catalog identities are excluded under the seed-or-componentwise-2-cm
+rule. The 900-record direct-scene source contributes 103 of these; the other
+catalogs contribute none. Each is marked native-safe in its original scene
+metadata with the fixed 0.03 m radius and full seven-channel `expert_actions`,
+but catalog entries preserve only the initial native state (not T+1 native
+states/controller/info records), so they require bounded original-layout
+replay before packaging. With at most 103 additional candidates, the frozen
+pool cannot supply the required 200; the maximum possible cohort is 403 and
+the remaining gap is 97. No replay or package materialization was started,
+because it cannot meet the requested 500 count. No new layouts were sampled,
+and no existing data/checkpoint/configuration was changed. Ticket 05 has no
+local `.scratch` issue file in this checkout, so this execution note is the
+current decision record pending parent direction.
+
+Catalog-aware audit JSON SHA-256:
+`d5fd75829c14b266a8e0d1664eaba609a5b374671cb19255474f8fe4eb57b27d`.
+External layout exclusions were pinned before candidate counting:
+frozen dev30 manifest
+`ffb2b54b6bf4f389d8bd81b0d5f282d833a297c6375ae2189c44b8359a9ee676`
+(30 scenes) and Ticket 03 manifest
+`82dc69a6f0e8581e96c25e677a9f812bc20e92ea757295b9b336a61891b2c0b1`
+(8 scenes). The ordered 103 candidate IDs and each catalog manifest/HDF5 hash
+are enumerated in the audit report. They were not preregistered for materializing
+because this finite pool is short of the 200-episode increment prerequisite.
+All retained actions are finite 7-D; raw observations are 45-D with T+1
+rows. In the unchanged 300 obstacle cohort, lengths are min/median/p90/p95/max
+`67/90/114.1/119/125`; each of the first six action channels reaches both
+±0.35 and the gripper reaches ±1. The 1,000 direct class has 337 task-unique
+identities by the same seed-or-componentwise-2-cm rule; these repeats are not
+misrepresented as unique. Per-channel min/max and episode-RMS distributions for
+both source classes, plus every individual length/shape/finite result, are in
+the audit JSON. These existing action values do not authorize action
+normalization or retraining in this round.
+
+The audit’s 2-cm rounded key is an inventory/dedup diagnostic, not a substitute
+for the original source acceptance contract. The original 300-package
+qualification and array identity remain authoritative. The direct 1,000 class
+is not reselected or represented as 1,000 unique task layouts. A future learning
+slice must use the existing frozen package unless a compliant path to the 200
+missing obstacle trajectories is explicitly resolved without generating new
+layouts.
+
+Focused audit tests in `tests/test_audit_pickcube_existing_pool.py` passed 4/4.
+The complete constrain suite passed 541 tests (28 warnings) in 83.60 s;
+`git diff --check` passed. No audit/replay worker processes remained after
+verification.
+
 The 2026-10-23 cleanup retains one final valid paired experiment per task,
 the six selected Base DP / ConstrainNet weights, and the formal data, training
 records, fixed scenes and verification needed to reproduce those experiments.
