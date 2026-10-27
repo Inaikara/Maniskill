@@ -15,6 +15,9 @@ from torch.utils.data.sampler import BatchSampler, RandomSampler
 
 from examples.baselines.constrain.constrain_denoiser import build_constrain_denoiser
 from examples.baselines.constrain.constrain_ckpt import save_constrain_checkpoint
+from examples.baselines.constrain.placesphere_inference_sampler import (
+    build_inference_scheduler, sample_actions,
+)
 from examples.baselines.constrain.placesphere_base_dp import (
     FORMAL_DIR, FORMAL_H5, FORMAL_MANIFEST, TRUSTED_H5_SHA256,
     TRUSTED_MANIFEST_SHA256, TRUSTED_CONTRACT_SHA256, TRUSTED_REPORT_SHA256,
@@ -289,12 +292,18 @@ def equivalence_evidence(denoiser, base_checkpoint=BASE_CKPT, device="cpu", seed
 
 
 class PlaceSphereConstrainAdapter:
-    def __init__(self, checkpoint, device="cpu", weights="ema", control_enabled=True, base_checkpoint=None):
+    def __init__(self, checkpoint, device="cpu", weights="ema", control_enabled=True,
+                 base_checkpoint=None, sampler="ddpm", eta=None):
         self.denoiser,self.checkpoint=load_placesphere_constrain(checkpoint,device,weights,base_checkpoint)
         self.denoiser.eval(); self.device=torch.device(device); self.control_enabled=control_enabled
+        self.sampler,self.eta=sampler,eta
         self.obs_horizon,self.pred_horizon,self.act_horizon=2,16,8; self.latest=None
         from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
-        self.scheduler=DDPMScheduler(num_train_timesteps=100,beta_schedule="squaredcos_cap_v2",clip_sample=True,prediction_type="epsilon")
+        training_scheduler=DDPMScheduler(num_train_timesteps=100,beta_schedule="squaredcos_cap_v2",
+            clip_sample=True,prediction_type="epsilon")
+        self.scheduler=(build_inference_scheduler(training_scheduler,sampler,eta)
+                        if sampler == "ddim" or sampler != "ddpm" or eta is not None
+                        else training_scheduler)
     def base_cond(self, queued):
         x=torch.as_tensor(queued,dtype=torch.float32,device=self.device)
         if x.shape[-2:] != (2,42): raise ValueError("expected queued PlaceSphere raw observations (2,42)")
@@ -304,6 +313,10 @@ class PlaceSphereConstrainAdapter:
         c=torch.as_tensor(condition,dtype=torch.float32,device=self.device); hint=placesphere_hint(self.latest)
         if hint.ndim==1: hint=hint[None]
         hint=hint[:,None,:].expand(-1,16,-1); sample=torch.randn(c.shape[0],16,7,device=self.device)
+        if self.sampler == "ddim":
+            return sample_actions(self.scheduler,
+                lambda x,t: self.denoiser(x,t,global_cond=c,hint=hint,enabled=self.control_enabled),
+                sample,eta=self.eta)[:,1:9]
         self.scheduler.set_timesteps(100)
         with torch.no_grad():
             for t in self.scheduler.timesteps:

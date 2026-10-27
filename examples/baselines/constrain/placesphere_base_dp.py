@@ -11,6 +11,9 @@ import torch
 from torch.utils.data import Dataset
 
 from examples.baselines.constrain.base_dp import BasePolicyArgs, _PolicyEnvStub
+from examples.baselines.constrain.placesphere_inference_sampler import (
+    build_inference_scheduler, sample_actions,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 OFFICIAL_DP = ROOT / "examples/baselines/diffusion_policy"
@@ -216,16 +219,22 @@ class PlaceSphereBaseDPAdapter:
             raise ValueError("PlaceSphere checkpoint collection report identity mismatch")
         return ck
 
-    def __init__(self, checkpoint, device="cpu", weights="ema"):
+    def __init__(self, checkpoint, device="cpu", weights="ema", sampler="ddpm", eta=None):
         ck = self.validate_checkpoint(checkpoint)
         self.agent = build_agent(device)
         self.agent.load_state_dict(ck["weights"][weights], strict=True)
         self.agent.eval()
         self.device, self.obs_horizon, self.obs_dim, self.raw_obs_dim = torch.device(device), 2, 39, 42
+        self.sampler = sampler
+        self.eta = eta
+        self.inference_scheduler = (build_inference_scheduler(
+            self.agent.noise_scheduler, sampler, eta)
+            if sampler == "ddim" or sampler != "ddpm" or eta is not None else None)
         self.metadata = {"checkpoint": str(checkpoint), "weights": weights,
                          "contract": ck["contract"], "checkpoint_sha256": sha256_file(checkpoint),
                          "native_execution_action_bounds": {"pose_channels": [-0.35, 0.35],
-                                                             "gripper": [-1.0, 1.0]}}
+                                                             "gripper": [-1.0, 1.0]},
+                         "sampler": sampler, "eta": eta}
 
     def base_cond(self, queued_obs):
         x = torch.as_tensor(queued_obs)
@@ -238,6 +247,14 @@ class PlaceSphereBaseDPAdapter:
         if obs.shape[-2:] != (2, 39):
             raise ValueError(f"expected (batch,2,39) PlaceSphere conditions, got {tuple(obs.shape)}")
         with torch.no_grad():
+            if self.sampler == "ddim":
+                scheduler = self.inference_scheduler
+                initial = torch.randn((len(obs), 16, 7), device=self.device)
+                condition = obs.flatten(start_dim=1)
+                prediction = lambda sample, timestep: self.agent.noise_pred_net(
+                    sample=sample, timestep=timestep, global_cond=condition)
+                sample = sample_actions(scheduler, prediction, initial, eta=self.eta)
+                return sample[:, self.obs_horizon - 1:self.obs_horizon - 1 + 8]
             return self.agent.get_action(obs)
 
     def initialize_constrain_base(self, denoiser):

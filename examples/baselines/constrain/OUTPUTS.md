@@ -1227,3 +1227,202 @@ post-run source transition and final verification are recorded in
 `postrun_obsolete_candidate_guard_audit.json` (SHA
 `deeea2e823295cecd9121f2e2d616fd8eec56adceb42870c140d8eab601ff1a8`). The final
 post-guard test run is **512 passed, 28 warnings, 309.59 s**.
+
+## Round 27 — frozen-data DDIM inference trial (preregistered)
+
+The active authorization remains fixed at **1,000 DIRECT / 500 OBSTACLE**; no
+new data, layouts, or trajectory collection is included. Round 27 registers
+exactly one inference-only change for both already-trained policies: runtime
+`DDIMScheduler`, 100 inference steps, `eta=0`, created from the loaded
+training-time DDPM scheduler config (squared-cosine betas, epsilon prediction,
+sample clipping). The training checkpoint contract remains DDPM. Reverse
+variance draws are removed, so later global RNG positions also differ; this is
+one sampler-configuration comparison, not an isolated variance-only causal
+effect. Default DDPM adapter call paths remain unchanged.
+
+The preregistration is
+`outputs/exp/20261027_204500_placesphere_ddim100_r27/inference_preregistration.json`.
+It pins the exact r26 HDF5/manifest/training-identity, Base EMA and final
+Constrain EMA hashes and paths, all 30 frozen dev scenes, R24 stride-2 baseline,
+runtime source hashes, one 60-policy-episode paired budget, per-episode limits,
+and the gate. Both policies retain stride 2, prediction horizon 16, executed
+slice `[1,9]`, same saved state/controller/observation/seed reset, native 7-D
+actions, and existing action mapping/clamps. Runtime errors remain in the fixed
+denominator. The evaluator fails closed on any preregistered artifact/source
+identity mismatch before creating an evaluation output or executing a scene.
+
+The sole allowed command is:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=60s 18000s \
+  python -u -m examples.baselines.constrain.evaluate_placesphere_matched \
+  --scene-dir outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes \
+  --base-checkpoint outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt \
+  --constrain-checkpoint outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k/final.pt \
+  --output-dir outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval \
+  --primary-baseline outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval \
+  --device cuda --replan-stride 2 --sampler ddim \
+  --inference-preregistration outputs/exp/20261027_204500_placesphere_ddim100_r27/inference_preregistration.json
+```
+
+Registration-time checks: focused sampler/PlaceSphere/pilot tests **64 passed**;
+full constrain suite **517 passed, 28 warnings, 328.18 s**; CLI import/help and
+`git diff --check` passed.
+
+### Single paired run and result
+
+The sole registered command completed normally from **2026-10-27 21:00:48.570
+to 21:22:35.919 +08:00** (1,307.348 s, below the 18,000 s cap). It evaluated
+**30/30 episodes for each policy**, retained zero runtime errors, and had 60/60
+bit-exact scene restores with matching paired scene IDs/seeds. No episode was
+dropped/retried. The RTX 5070 returned idle; no unrelated compute process was
+started or stopped. The frozen data, training identity, and both checkpoint
+hashes were identical before and after.
+
+DDIM Base achieved **6 task / 0 safe / 30 contact / 24 XY**. DDIM Constrain
+achieved **26 task / 26 safe / 0 contact / 0 XY**. Its 26 successful native
+episodes had median / p90 / max success step **125 / 171 / 171**. Against R24
+stride-2 Constrain (**26/26/1/1**), task and safe transitions were
+improved/regressed/both/neither **3/3/23/1**; contact and XY were each
+cleared/introduced/both/neither **1/0/0/29**. Three R24 failures (indices
+17/23/25) cleared and three prior successes (6/11/14) regressed; index 9 failed
+in both. All four new failures were incorrect releases, with no contact or
+crossing: indices **6, 9, 11, 14**, release steps **136, 161, 78, 82**. Release
+linear speeds were **0.389, 0.405, 0.425, 0.367 m/s**; every release was off-bin
+and high above the bin (relative z **0.151, 0.155, 0.109, 0.140 m**). Per-step
+contact/release/terminal mechanism traces are retained in their episode JSONs.
+
+**Gate: fail/pause.** Task success 26/30 is one short of ≥27; safe 26/30 passes
+≥26; contact 0 and XY 0 pass ≤3. This is frozen-development-set evidence only.
+No formal 08 evaluation or new collection follows. Parent review selects the
+next frozen-data optimization slice before any further experiment.
+
+The machine-readable execution record is
+`outputs/exp/20261027_204500_placesphere_ddim100_r27/round27_execution_record.json`;
+SHA `5a388a8231cb2f1b7bfbc99487abb6d8663182e23304f205c9f5ce0af5335b8f`. It pins
+the exact command/budgets/timestamps, all input and output summary hashes, the
+64-file evaluation-tree digest, resource/cleanup state, comparisons, failure
+indices/mechanisms, and gate transition. The full paired summary is
+`outputs/exp/20261027_204500_placesphere_ddim100_r27/paired_eval/paired_summary.json`
+(SHA `ef24daa752f99ce31d5063325397c1276f3e6bc3d085dcaeafa824904378346e`); the
+evaluation log SHA is `fed54e6d0256e7878b164a32a7fc6e776a0d5c0f5a23ddf999a9d3fb12a989cd`;
+the paired-output tree SHA is
+`6c47aab68cfe5947d0671b491a317e61355b422ee4d02559933fbecb15cd80c5`.
+
+## Round 27 comparison correction — R26 is primary; R24 is secondary
+
+**Correction to the Round 27 interpretation above:** the DDIM trial was compared
+there to R24 as if it were the primary baseline. That was wrong. The required
+primary is the immediately preceding **R26 DDPM100 stride-2** run, which uses
+the exact same Base and Constrain checkpoints, frozen scenes, seeds, and rollout
+limits. R24 has different data/checkpoint generation and is secondary context,
+not evidence for this sampler comparison.
+
+The actual R26 episode path is
+`outputs/exp/20261027_140000_placesphere_hold8_500_r26/paired_eval_stride2/`.
+Its frozen config SHA is
+`e82bc5df0e70e4ca7bf9286d1cfe36fbfcedbe81f1d864020c1b00c7abb97d9d`, paired
+summary SHA `cac80011768efd2f94ed823cfcdef6646f4c01d0e1348abd9747f0fc95cef07e`,
+and its registered R26 evaluation preregistration SHA is
+`1b304218b462e6cde8ff63dab1463e8a2da51cb73920d7a3a19839fdb6513a81`. R26
+records Base **8/0/30/25** and Constrain **25/25/0/0** (task/safe/contact/XY).
+Its original command omitted a sampler override; the registered R26 evaluator,
+Base adapter, and Constrain adapter source hashes establish the original
+DDPM100 path. The R26 and R27 runs pin the same Base EMA SHA
+`92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c`, Constrain
+EMA SHA `ff388efb87e4fde6acaaf21778aaee25b93883af990b99ad510fa82f97ccbf71`,
+scene manifest SHA `9e1d8ee4786d2336f01e07d664ca37c3dcc7ca455e7876176def65c18b63c119`,
+and scene HDF5 SHA `adc7d1b2a16745c459db53d2c8f818ac87d1ffffe21fd44c54509f77cef342d7`.
+Both use 30 scenes, stride 2, prediction horizon 16, executed slice `[1,9]`,
+200 control steps, and 300 s per-episode wall cap. The correction analysis
+verified all per-policy scene IDs/seeds, bit-exact restores, and exact initial
+policy observations across R26 and R27.
+
+Correct primary transitions, ordered improved/regressed/both/neither for
+task/safe and cleared/introduced/both/neither for contact/XY:
+
+| Policy | R26 DDPM100 task/safe/contact/XY | R27 DDIM100 task/safe/contact/XY | Task | Safe | Contact | XY |
+|---|---:|---:|---:|---:|---:|---:|
+| Base | 8/0/30/25 | 6/0/30/24 | 3/5/3/19 | 0/0/0/30 | 0/0/30/0 | 3/2/22/3 |
+| Constrain | 25/25/0/0 | 26/26/0/0 | 5/4/21/0 | 5/4/21/0 | 0/0/0/30 | 0/0/0/30 |
+
+Constrain failures changed from R26 indices **8, 13, 15, 17, 25** to R27
+indices **6, 9, 11, 14**. The corrected comparison therefore shows task and safe
+success each increased by one (25→26), with five R26 failures resolved and four
+previous successes regressed. Contact and XY remained zero in both. The fixed
+gate still fails task ≥27 by one; safe ≥26 and both safety ceilings pass.
+Base failure-index sets and both policies' complete metric transitions are in
+the machine-readable correction result.
+
+R24 remains preserved as secondary comparison: it reports 26/26/1/1 for its
+Constrain checkpoint/data and its old R27 transition counts remain in the
+original execution record, but are confounded for sampler inference. The
+original R27 preregistration still names R24 as primary; it has **not** been
+rewritten or represented as retrospectively corrected.
+
+The read-only correction was preregistered separately at
+`outputs/exp/20261027_213400_placesphere_r27_primary_correction/analysis_registration.json`
+(SHA `5594ff8af2a1831fbb78a8f3d60c1dcfd1699e57b34b1b2a2f43bda5d43ea8e9`). Its
+result is `primary_comparison.json` (SHA
+`b37577c8442f6ee1a1749c3fd2283df5670d6e9dc7710691fadd49f91cf78b26`). The
+timestamped record hashes both 64-file episode trees and all source/input
+registrations. A prior analyzer preflight stopped before computing transitions;
+its log is preserved, and the successful analysis used the superseding
+registration. The correction was analysis-only: no native evaluation, replay,
+training, checkpoint/data mutation, or additional scene execution occurred.
+The Round 27 execution record was appended with this correction, the R24
+reclassification, provenance hashes, and corrected transition table; current
+execution-record SHA is
+`5a388a8231cb2f1b7bfbc99487abb6d8663182e23304f205c9f5ce0af5335b8f`. The
+bounded analysis regression tests passed: **2 passed**.
+
+### R27 correction provenance rerun — immutable registered execution-record input
+
+The first correction registration is retained unchanged at
+`outputs/exp/20261027_213400_placesphere_r27_primary_correction/analysis_registration.json`
+(SHA `5594ff8af2a1831fbb78a8f3d60c1dcfd1699e57b34b1b2a2f43bda5d43ea8e9`), as is
+its result (SHA `b37577c8442f6ee1a1749c3fd2283df5670d6e9dc7710691fadd49f91cf78b26`).
+Its registered R27 execution-record input pinned SHA
+`bc3483a62d0a1496b93d003cd73bb2dcdce1081c08c2d608b6aa90ff3187fd9d`, but the
+same path was later appended with the correction and had SHA
+`5a388a8231cb2f1b7bfbc99487abb6d8663182e23304f205c9f5ce0af5335b8f`. A direct
+rerun therefore failed its registered-input hash gate at
+`r27_original_execution_record`; the earlier registration/result remain honest
+historical records, not silently repaired artifacts.
+
+The superseding registration is
+`outputs/exp/20261027_220000_placesphere_r27_primary_correction_rerun/analysis_registration.json`
+(SHA `7d294ee9876420d5ef9d26bb0dc9575a05c5ab3ae43f63a9287652cb51da4249`). It
+registers a read-only snapshot at
+`outputs/exp/20261027_220000_placesphere_r27_primary_correction_rerun/inputs/round27_execution_record.current.json`
+(SHA `5a388a8231cb2f1b7bfbc99487abb6d8663182e23304f205c9f5ce0af5335b8f`),
+copied byte-for-byte from the R27 record before adding the outputs-only pointer
+to this rerun. The current mutable R27 execution record SHA is now
+`a10abed8c1e96cb66e898397c3e0dfcd25b3654e3ad50e43709c47c814ec3562`; it is not
+an analysis input. All other registered file and 64-file episode-tree hashes,
+including the R26/R27 scenes and checkpoint identities, pass unchanged.
+
+The reproducible CLI, run twice with exit 0 and byte-identical stdout SHA
+`43d56e96dbe930ad98b47397db3117df831777fb00e4b2b58ad50ea24f6cda6b`, was:
+
+```sh
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && timeout --signal=TERM --kill-after=15s 180s python -m examples.baselines.constrain.placesphere_r27_primary_analysis --registration outputs/exp/20261027_220000_placesphere_r27_primary_correction_rerun/analysis_registration.json
+```
+
+The saved result is
+`outputs/exp/20261027_220000_placesphere_r27_primary_correction_rerun/primary_comparison.json`
+(SHA `43d56e96dbe930ad98b47397db3117df831777fb00e4b2b58ad50ea24f6cda6b`). It
+reproduces R26 Base **8/0/30/25** vs R27 Base **6/0/30/24**, and R26 Constrain
+**25/25/0/0** vs R27 Constrain **26/26/0/0** (task/safe/contact/XY), including
+the transition counts above. R24 remains secondary and the original R27
+preregistration's R24-primary deviation is explicitly preserved.
+
+The analyzer source SHA is
+`149035f8fc8715219956f1f15350de96e04498f53f7f1116ed1b5360600012d6`; the
+regression-test source SHA is
+`691d8ae35b7b42fa7cbc60f4ca7f9f5bef81f365179e9515d34e7e8a6fb87ea8`. Focused
+tests passed **4/4**, including reproducing the retained stale-pin failure,
+accepting the real frozen snapshot, and rejecting post-freeze mutation. No
+native episodes, replay, training, data, checkpoint, or scene were created or
+changed.

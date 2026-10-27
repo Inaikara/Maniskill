@@ -1,6 +1,7 @@
 """Evaluate matched-r21b PlaceSphere policies on the frozen 30-scene dev set."""
 
 import argparse
+import hashlib
 import json
 import signal
 import time
@@ -19,6 +20,14 @@ from examples.baselines.constrain.placesphere_transport_detour import TransportD
 def _read_rows(directory, count=30):
     directory = Path(directory)
     return [json.loads((directory / f"episode_{i:03d}.json").read_text()) for i in range(count)]
+
+
+def _sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _transitions(old, new, metric):
@@ -63,6 +72,8 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--primary-baseline", type=Path, required=True)
     parser.add_argument("--secondary-baseline", type=Path)
+    parser.add_argument("--sampler", choices=("ddpm", "ddim"), default="ddpm")
+    parser.add_argument("--inference-preregistration", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--replan-stride", type=int, choices=(2, 8), default=8)
     args = parser.parse_args(argv)
@@ -73,9 +84,105 @@ def main(argv=None):
     catalog = TransportDetourSceneSet(args.scene_dir)
     if len(catalog) != 30:
         raise ValueError(f"expected frozen 30-scene development set, found {len(catalog)}")
-    base_adapter = PlaceSphereBaseDPAdapter(args.base_checkpoint, args.device, weights="ema")
+    preregistration = None
+    preregistration_sha = None
+    if args.sampler == "ddim":
+        if args.inference_preregistration is None:
+            raise ValueError("DDIM requires the frozen inference preregistration")
+        preregistration = json.loads(args.inference_preregistration.read_text())
+        preregistration_sha = _sha(args.inference_preregistration)
+        source_paths = {
+            "evaluate_placesphere_matched.py": Path(__file__),
+            "placesphere_base_dp.py": Path(__file__).with_name("placesphere_base_dp.py"),
+            "placesphere_constrain.py": Path(__file__).with_name("placesphere_constrain.py"),
+            "placesphere_inference_sampler.py": Path(__file__).with_name("placesphere_inference_sampler.py"),
+            "placesphere_learning_pilot.py": Path(__file__).with_name("placesphere_learning_pilot.py"),
+            "placesphere_pilot.py": Path(__file__).with_name("placesphere_pilot.py"),
+            "placesphere_transport_detour.py": Path(__file__).with_name("placesphere_transport_detour.py"),
+            "placesphere_scenes.py": Path(__file__).with_name("placesphere_scenes.py"),
+            "placesphere_obstacle.py": Path(__file__).with_name("placesphere_obstacle.py"),
+            "diagnose_placesphere_failure.py": Path(__file__).with_name("diagnose_placesphere_failure.py"),
+            "constrain_denoiser.py": Path(__file__).with_name("constrain_denoiser.py"),
+            "constrain_ckpt.py": Path(__file__).with_name("constrain_ckpt.py"),
+        }
+        actual_sources = {name: _sha(path) for name, path in source_paths.items()}
+        frozen_inputs = {
+            "base_checkpoint": "92ac831b7dc1b1cdad4ddc9d7003813e174cb329507bdeb019e23f74d3aac19c",
+            "constrain_checkpoint": "ff388efb87e4fde6acaaf21778aaee25b93883af990b99ad510fa82f97ccbf71",
+            "data_h5": "796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961",
+            "data_manifest": "aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9",
+            "training_identity": "648f59863a747d603ec8dc6ccf056995e60a93f35b1875bf0b230a261f28fe78",
+            "scene_manifest": "9e1d8ee4786d2336f01e07d664ca37c3dcc7ca455e7876176def65c18b63c119",
+            "primary_summary": "3c537c1ba646e5d483e2fd4075524ba36bc0ea08eae4356cc4e0231276c2b0cd",
+        }
+        expected_paths = {
+            "scene_dir": "outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes",
+            "base_checkpoint": "outputs/ckpt/20261026_195000_placesphere_hold8_base_dp_r23/final.pt",
+            "constrain_checkpoint": "outputs/ckpt/20261027_140000_placesphere_hold8_500_r26_constrain_150k/final.pt",
+            "primary_baseline": "outputs/exp/20261026_235900_placesphere_stride2_r24/paired_eval",
+        }
+        registered_sampler = preregistration.get("sampler", {})
+        if (preregistration.get("format") != "placesphere_frozen_ddim100_eta0_v1"
+                or registered_sampler.get("name") != "DDIMScheduler"
+                or registered_sampler.get("inference_steps") != 100
+                or registered_sampler.get("eta") != 0.0
+                or registered_sampler.get("source_config") != "each policy's training-time 100-step DDPMScheduler config"
+                or registered_sampler.get("prediction_type") != "epsilon"
+                or registered_sampler.get("beta_schedule") != "squaredcos_cap_v2"
+                or registered_sampler.get("clip_sample") is not True
+                or registered_sampler.get("training_scheduler_unchanged") is not True
+                or {name: preregistration.get("checkpoints", {}).get(name, {}).get("sha256")
+                    for name in ("base_dp", "constrain_dp")} != {
+                    "base_dp": _sha(args.base_checkpoint), "constrain_dp": _sha(args.constrain_checkpoint)}
+                or preregistration.get("scenes", {}).get("manifest_sha256") != _sha(args.scene_dir / "manifest.json")
+                or preregistration.get("scenes", {}).get("scenes_h5_sha256") != _sha(args.scene_dir / "scenes.h5")
+                or preregistration.get("source_sha256") != actual_sources
+                or preregistration.get("protocol", {}).get("primary_baseline_summary_sha256") != _sha(args.primary_baseline / "paired_summary.json")):
+            raise ValueError("DDIM preregistration identity mismatch")
+        if (str(args.scene_dir) != preregistration.get("scenes", {}).get("path")
+                or str(args.base_checkpoint) != expected_paths["base_checkpoint"]
+                or str(args.constrain_checkpoint) != expected_paths["constrain_checkpoint"]
+                or str(args.primary_baseline) != preregistration.get("protocol", {}).get("primary_baseline")
+                or expected_paths["scene_dir"] != preregistration.get("scenes", {}).get("path")
+                or args.replan_stride != 2
+                or preregistration.get("protocol", {}).get("stride") != 2
+                or preregistration.get("protocol", {}).get("prediction_horizon") != 16
+                or preregistration.get("protocol", {}).get("executed_action_slice") != [1, 9]
+                or preregistration.get("protocol", {}).get("max_control_steps") != 200
+                or preregistration.get("protocol", {}).get("episode_wall_seconds") != 300
+                or preregistration.get("protocol", {}).get("fixed_denominator_per_policy") != 30
+                or preregistration.get("budgets", {}).get("outer_wall_seconds") != 18000
+                or preregistration.get("budgets", {}).get("per_policy_episodes") != 30
+                or preregistration.get("budgets", {}).get("total_policy_episodes") != 60
+                or preregistration.get("data", {}).get("direct_episodes") != 1000
+                or preregistration.get("data", {}).get("obstacle_episodes") != 500
+                or _sha(args.base_checkpoint) != frozen_inputs["base_checkpoint"]
+                or _sha(args.constrain_checkpoint) != frozen_inputs["constrain_checkpoint"]
+                or preregistration.get("data", {}).get("h5_sha256") != frozen_inputs["data_h5"]
+                or preregistration.get("data", {}).get("manifest_sha256") != frozen_inputs["data_manifest"]
+                or preregistration.get("data", {}).get("training_identity_sha256") != frozen_inputs["training_identity"]
+                or preregistration.get("scenes", {}).get("manifest_sha256") != frozen_inputs["scene_manifest"]
+                or preregistration.get("protocol", {}).get("primary_baseline_summary_sha256") != frozen_inputs["primary_summary"]):
+            raise ValueError("DDIM trial does not match the frozen r26 artifacts")
+        constrain_ck = torch.load(args.constrain_checkpoint, map_location="cpu", weights_only=False)
+        data = constrain_ck["config"]["data_identity"]
+        frozen_data_dir = Path(preregistration["data"]["dataset"])
+        actual_data_identity = _sha(frozen_data_dir / "training_identity.json")
+        if (data.get("h5_sha256") != preregistration.get("data", {}).get("h5_sha256")
+                or data.get("manifest_sha256") != preregistration.get("data", {}).get("manifest_sha256")
+                or data.get("training_identity_sha256") != preregistration.get("data", {}).get("training_identity_sha256")
+                or _sha(frozen_data_dir / "trajectory.h5") != preregistration["data"]["h5_sha256"]
+                or _sha(frozen_data_dir / "trajectory.json") != preregistration["data"]["manifest_sha256"]
+                or actual_data_identity != preregistration["data"]["training_identity_sha256"]
+                or str(frozen_data_dir) != "demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3"):
+            raise ValueError("frozen training data identity mismatch")
+    inference_sampler = args.sampler
+    eta = 0.0 if inference_sampler == "ddim" else None
+    base_adapter = PlaceSphereBaseDPAdapter(args.base_checkpoint, args.device, weights="ema",
+                                            sampler=inference_sampler, eta=eta)
     constrain_adapter = PlaceSphereConstrainAdapter(
-        args.constrain_checkpoint, args.device, base_checkpoint=str(args.base_checkpoint))
+        args.constrain_checkpoint, args.device, base_checkpoint=str(args.base_checkpoint),
+        sampler=inference_sampler, eta=eta)
     policies = {"base_dp": _BasePolicy(base_adapter),
                 "constrain_dp": _ConstrainPolicy(constrain_adapter, args.constrain_checkpoint)}
     args.output_dir.mkdir(parents=True)
@@ -88,8 +195,14 @@ def main(argv=None):
               "secondary_baseline": str(args.secondary_baseline),
                "device": args.device, "max_steps": 200, "episode_wall_seconds": 300,
                "execution_stride": args.replan_stride,
-               "prediction_horizon": 16, "executed_action_slice": [1, 9],
-               "noise_sampling": "sequential diffusion RNG per scene; more replans draw more noise",
+                "prediction_horizon": 16, "executed_action_slice": [1, 9],
+                "sampler": {"training": "DDPMScheduler squaredcos_cap_v2 epsilon clip_sample=True; 100 train timesteps",
+                            "inference": "DDIMScheduler eta=0; 100 timesteps" if inference_sampler == "ddim" else
+                                         "DDPMScheduler squaredcos_cap_v2; 100 timesteps",
+                            "reverse_variance_draws": "removed for DDIM; subsequent initial-noise RNG positions therefore differ" if inference_sampler == "ddim" else "DDPM reverse variance draws retained",
+                            "weights_shared_across_policies": True},
+                "noise_sampling": "same torch.manual_seed(scene seed) reset per policy; DDIM eta=0 removes reverse variance draws",
+                "inference_preregistration_sha256": preregistration_sha,
               "selected_weights": "final EMA fixed before results", "runtime_errors_remain_in_denominator": True}
     (args.output_dir / "frozen_config.json").write_text(json.dumps(frozen, indent=2) + "\n")
     rows_by_policy = {}
