@@ -1,5 +1,170 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 41 — fixed Panda body-frame PickCube hint (2026-10-29)
+
+R41 completed one 150,000-update Control-only training run on the frozen 500
+obstacle demonstrations and one paired 30-scene development trial (60 native
+episodes total). It reuses the exact R40 gauge-trained Base and its position-unit
+profile. The sole treatment is the Control hint representation: append fixed
+Panda hand and link-7 point coordinates to the unchanged three-value
+obstacle-relative-to-TCP hint. This is exploratory development evidence, not a
+formal performance or generalization claim. No demonstrations, derived HDF5,
+episode labels, layouts, replay materializations, or ManiSkill/PlaceSphere source
+changes were made.
+
+### Artifacts, source chronology, and frozen inputs
+
+The experiment is
+`outputs/exp/20261029_031500_pickcube_bodyhint_r41/`; the Control checkpoint and
+10,000-update recoveries are in
+`outputs/ckpt/20261029_031500_pickcube_bodyhint_r41_constrain/`. The reused Base
+is `outputs/ckpt/20261029_004500_pickcube_xy_gauge_r40_base/final.pt`, SHA-256
+`9cee2f8ce05461c8b3ab75a834db94c2b88cf9c864cb95d79b78c501cd961719`. R41
+registration SHA-256 is
+`45f6f9e0a11c4c414c339b942d31fe47694bb4c453fbfd3ce2c71fd3393b832e`; its
+pre-training correction history and byte-preserved initial registration are
+under the same experiment directory. A post-training strict-loader correction
+is separately recorded there; it changed no weights and occurred before the
+native trial.
+
+The unchanged physical source is
+`demos/PickCube-transport-detour/20261028_164500_frozen500/`: HDF5 SHA-256
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`, manifest
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, validation
+`f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`. Training
+still selects direct IDs 0–999 (83,004 windows) for the retained Base identity
+and obstacle IDs 1000–1499 (45,840 windows) for Control. No Base retraining was
+performed. All three physical-data hashes matched after training and native
+evaluation.
+
+### Fixed-frame calibration and hint contract
+
+Calibration used only existing HDF5 T+1 raw 45-D observations and their saved
+qpos, with read-only native forward kinematics. Nine existing trajectories were
+sampled at four frames each (36 states); there were no `env.step` calls, new
+scene states, data-fitted transforms, or runtime FK/environment queries. The
+URDF is `mani_skill/assets/robots/panda/panda_v2.urdf`, SHA-256
+`524c6986dbbabe244e05801f262862205e880834d01459b06ee273016d0579ba`; robot
+model source `mani_skill/agents/robots/panda/panda.py`, SHA-256
+`bf85577be75b7513802e676decb5543e3e65f2a3dfbc26175dd8b77ae57691f3`.
+`panda_hand_tcp` quaternion order in the raw observation is `wxyz`.
+
+| Fixed transform | Matrix (meters, row-major) | Native-FK validation |
+| --- | --- | --- |
+| `T_tcp_hand` | `[[1,0,0,0],[0,1,0,0],[0,0,1,-0.1034],[0,0,0,1]]` | relation spread `2.38e-7`; constant/native max `2.29e-8` |
+| `T_tcp_link7` | `[[.70710678,-.70710678,0,0],[.70710678,.70710678,0,0],[0,0,1,-.2104],[0,0,0,1]]` | relation spread `3.58e-7`; constant/native max `1.19e-7` |
+
+The maximum saved TCP pose versus restored-qpos FK difference was `1.83e-7`
+(tolerance `1e-5`). Full details are in `frame_calibration.json` and in the
+registered `body_hint` metadata.
+
+Hint-9 order is:
+
+1. Original `[obstacle_x-tcp_x, obstacle_y-tcp_y, radius]` (unchanged raw
+   meter-valued calculation, scales `[0.5, 0.5, 0.08]`, clip `[-1,1]`).
+2. `[obstacle_x-hand_x, obstacle_y-hand_y, hand_world_z]`.
+3. `[obstacle_x-link7_x, obstacle_y-link7_y, link7_world_z]`.
+
+The added six values are world-axis meters divided by `0.5` and clipped to
+`[-1,1]`. Z is a derived world-height feature; it is **not** obstacle surface
+clearance or a crossing oracle. Every feature uses only the latest raw 45-D
+observation and fixed profile constants at runtime. No additional observation,
+privileged pose/state query, cylinder-height feature, action filter, cost,
+shield, or grip heuristic is used. The raw observation stays 45-D and the global
+state encoder remains 42-D / 84-D history.
+
+The R40 training-only common XY-origin augmentation and dedicated seed `424243`
+are unchanged. It applies to the global condition; R41's relative/body hint is
+computed from the original raw observation. A scan of all 45,840 obstacle
+windows found finite, nondegenerate hint values; common-XY gauge invariance max
+error was `5.96e-8`. All profile/frame metadata is standalone in the checkpoint,
+and the typed format `pickcube_body_hint9_constrain_v1` strictly rejects legacy
+three-channel checkpoints. The original default 3-channel PickCube condition
+and PlaceSphere profiles remain unchanged.
+
+### Control-only training
+
+R41 trained exactly once for 150,000 updates from the frozen R40 Base final EMA;
+the Base was bit-identical before and after training (embedded state hash
+`5e5e7e9ebd007bd1b9319825e537aa922943e25d4844787e0e3ebd148b848b2d`). The sole
+model dimension change is `cond_dim: 3 -> 9` in the Control hint encoder; global
+condition `84`, actions `7`, and copied down/mid channels `[64,128,256]` remain
+fixed. Training remains native identity `pd_ee_delta_pose`, unweighted epsilon
+DDPM-100 loss, batch 1,024, seed 1, AdamW `1e-4`, warmup 500, cosine schedule,
+EMA power 0.75, and final EMA selected before training. There is no new action
+clamp, codec, decoder, or runtime augmentation.
+
+| Evidence | Result |
+| --- | --- |
+| Updates / wall budget | 150,000 / 9,000 s; completed in 4,413.55 s |
+| Loss | first `0.03867678`, final `0.00173361`; all finite |
+| Augmentation draws | 153,600,000 window draws (in-memory calls, not episodes) |
+| Frozen Base | exact R40 EMA; unchanged |
+| Control learning | copied encoder and zero-residual weights moved; EMA strict load passed |
+| Final EMA | `outputs/ckpt/20261029_031500_pickcube_bodyhint_r41_constrain/final.pt`, SHA-256 `838745ceb9437fa9db9c5c289a88a032cdf8a12dca42145e896d3c7ac3529642` |
+| GPU | RTX 5070; peak allocated `520,562,688` bytes |
+
+Atomic complete-state recovery checkpoints exist every 10,000 updates. Logs,
+run config, training summary, augmentation statistics, phase argv/budget/exit,
+and checkpoint records are under `train_constrain/` and the phase runtime JSON.
+
+### One paired native trial and result
+
+The one actual native trial used the same 30 restored R36 development scenes,
+identical per-policy scene seeds, 500-control-step cap, 300-second per-episode
+timeout, and a 36,000-second outer budget. Sampling was DDPM-100, epsilon,
+`squaredcos_cap_v2`, clipping enabled, predicted slice `[1:9]`, execute/replan 8,
+native seven-channel actions, with inference augmentation off. Base and Control
+conditions pair across all scenes; the R41 Base's native action traces and
+outcomes match R40 **exactly**. All 30 rows per policy completed with zero
+runtime errors.
+
+| Policy | Task success | Safe success | Obstacle contact | XY crossing |
+| --- | ---: | ---: | ---: | ---: |
+| R40 matched Base (unchanged checkpoint) | 27/30 | 0/30 | 30/30 | 21/30 |
+| R40 Control primary | 29/30 | 15/30 | 15/30 | 5/30 |
+| R41 Control hint-9 | 29/30 | 17/30 | 13/30 | 6/30 |
+
+R40 Control → R41 Control transitions (both / neither; improved-or-cleared old
+only / regressed-or-introduced new only) were: task `28 / 0; improved 1,
+regressed 1`; safe `12 / 10; improved 5, regressed 3`; contact `10 / 12;
+cleared 5, introduced 3`; XY crossing `4 / 23; cleared 1, introduced 2`.
+All transition marginals reconcile to the 30-row cohorts. R41 Control first
+contacts were transport 7, goal stabilization 4, grasp approach 1, lift 1;
+contact links were Panda hand 10, cube 1, right finger 2. Contact entity-pair
+positions are unknown because the recorder does not expose them. Terminal
+phases were 29 task successes and one lift-no-transport. First-success steps
+min/median/p90/max were `58/87/134/324`.
+
+The frozen gate (`task >=27`, `safe >=26`, `contact <=3`, `XY <=3`) **failed**:
+task `29` passed, safe `17`, contact `13`, and XY crossing `6` failed. This
+single hint representation trial modestly improved safe success/contact against
+R40 while leaving task success unchanged and increasing XY crossings by one.
+It does not meet the gate and does not warrant a hint-grid sweep. The next
+engineering slice should address the retained transport/goal-stabilization
+contact mechanism using complete contact-phase evidence.
+
+The first evaluator invocation failed in adapter construction before any
+environment rollout (zero rows); its preregistration/runtime record is preserved.
+The second invocation completed exactly one 60-episode trial in 413.34 s and
+saved all rows. A historical report assembly error (`summarize_pilot` referenced
+on the training module) happened only after the rows were complete. The report
+was rebuilt offline from those immutable rows; `analysis_report_inputs.json`
+pins row hashes and the R40 comparison tree, and `paired/status.json` records
+`native_evaluation_rerun: false`. The analysis input snapshot SHA-256 is
+`4c25c6a4de2a7886f48908228e75bee8c357d046f7ce34703a60367ca02a8ba3`; final
+`paired/analysis.json` file SHA-256 is
+`65c263a4387b1383e35c317c452505118ebafef4846953f699b977eebf5370c2`.
+Complete episode action/flag traces, raw initial hint-9 values/hashes, checkpoint
+and source identity, per-episode wall times, phase/contact links, and final
+cube/goal XYZ are retained under `paired/base_dp/` and `paired/constrain_dp/`.
+
+Verification: full constrain suite **586 passed, 28 warnings**; focused R41
+feature/profile tests **6 passed**. The calibration, frozen-window preflight,
+real saved-R40-row aggregation fixture, strict checkpoint load, and disabled
+Control action equivalence all passed. Frozen source hashes remained unchanged;
+ManiSkill/Panda and PlaceSphere files were read-only.
+
 ## Round 40 — matched PickCube global-XY gauge augmentation (2026-10-29)
 
 R40 completed one matched Base/Control retraining and one paired 30-scene native
