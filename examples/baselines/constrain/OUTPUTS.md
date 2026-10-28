@@ -1,5 +1,104 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 43 — swept clearance-proxy Control trial (2026-10-29)
+
+The independently registered R43 frozen-data precheck is in
+`outputs/exp/20261029_052324_pickcube_clearance_r43/`; model weights are in
+`outputs/ckpt/20261029_052324_pickcube_clearance_r43_constrain/`. R43 retained
+all three immutable precheck stages. The final source registration is
+`preregistration_final_02.json` (identity
+`db246e9d4ce56a53a1e2a4cc1aa8b91f70e4befbb800adb99b61934565d5d1ee`) and its
+fresh final-source report is `precheck_final_02/geometry_response_precheck.json`
+(SHA-256 `0feb6120d69b4a6c857e5b50a238fb6f32eded5acc4bb6ab526993bd8f556579`).
+The first R43 preregistration/precheck and the R42 false-positive report plus
+both R42 correction records remain byte-preserved.
+
+The fixed-frame point validation now applies `T_tcp_link` in the forward
+direction. Across 36 saved-state native FK queries, the maximum point error was
+`6.03e-8 m` (hand `3.16e-8`, link7 `6.03e-8`, left finger `3.71e-8`, right
+finger `2.19e-8`). Finger links were identified as prismatic joints and their
+TCP-relative translation axes calibrated from two distinct existing qpos states;
+rotation spread and translation residuals on the validation states were below
+`1.4e-6 m/rad` (recorded individually in the report). The registered 5 mm
+sample-sphere padding was applied separately to the analytic finite-cylinder
+SDF; the unpadded physical-center SDF is separately reported. All four links
+use deterministic samples capped at 256 per link. The carried-cube forbidden
+radius uses the native `collision_radius + sqrt(2)*cube_half_size + safety_margin`
+formula, and its XY-only current-state component was measured on 29,363 grasped
+frames without a height waiver. Full mesh/URDF provenance, deterministic
+sampling indices, dynamic finger q references/axes, finite-caps SDF quantiles,
+and fit/validation cohort metrics are in the report.
+
+The unchanged R42 21-feature ridge response artifact retained the same 96.60%
+mean translation improvement and 0.682 mm TCP p95. On held-out trajectories,
+translation-only predicted next-state body points (current TCP orientation and
+finger q held fixed) had 0.568 mm mean / 1.542 mm p95 error, with 92.79% mean
+improvement over zero motion. These are sampled geometry-proxy results, not
+PhysX collision labels or a runtime safety guarantee. The frozen HDF5, manifest,
+R40 Base, Panda source/assets and R42 response-fit records were read-only.
+
+### One guarded Control training
+
+The typed training admission is `train_preregistration.json` (identity
+`49b8849d75ec97552ae3f6a03b0907de30c509796770e10c04796204bfe6f2ce`). It pins
+the final precheck report, source/code/geometry/data hashes, R40 Base, normalizer,
+R42 response fit, ten-real-batch benchmark, and the sole objective:
+`epsilon MSE + 0.01 * min(step/10000, 1) * (swept_body + swept_cube_xy)`.
+The proxy uses timesteps 10–30, scheduler-clipped `x0`, action index 1, four
+sweep fractions `[.25,.5,.75,1]`, 5 mm point padding, 2 cm body margin and 1 cm
+cube XY margin. It is training-only; actor inference has no clearance cost or
+shield call. Before training, disabled Control matched the independent frozen
+R40 Base exactly (epsilon and DDPM-100 sample max absolute difference both 0).
+The ten-batch benchmark projected 9,909 s p90, within the registered 15,000 s
+budget, with 550,867,968 bytes peak allocated.
+
+Exactly 150,000 Control updates ran in 5,811.79 s on the RTX 5070. Batch size
+1,024, seed 1, AdamW `1e-4`, warmup 500, cosine schedule, EMA power `.75`, R40
+common-XY gauge seed 424243, R41 position-unit normalizer and raw hint-9 were
+retained. No Base gradients/updates or new physical data were used. All logged
+epsilon/clearance values and gradients were finite; proxy active rows and body/
+cube component costs were recorded per step. The frozen R40 EMA state hash
+remained `5e5e7e9ebd007bd1b9319825e537aa922943e25d4844787e0e3ebd148b848b2d`.
+The final EMA checkpoint SHA-256 is
+`da818a9267a19a6ab8369a2d6b55b3e2116a28514c72662087607df635e53d48`; ten
+thousand-step atomic recovery checkpoints and a step-0 strict metadata/EMA/
+optimizer/scheduler export round-trip fixture are retained.
+
+### One paired 30-scene native trial
+
+Trial registration `native_trial_preregistration.json` (identity
+`b6b5376d4a84d3b80685ca41c678ace52b530f767f4a16851fc890899eb7f09a`) pins the
+final EMA, training/precheck registrations, unchanged R40 Base, R41 primary
+tree, existing 30 R36 restored scenes and the exact DDPM-100/native-action
+protocol. The pretrial real R41 row context check and disabled-Control/Base
+equivalence passed. Exactly 30 rows per policy completed in 404.14 s with zero
+runtime errors. Base action traces and outcomes match R41 **exactly** scene by
+scene. All paired restored states and normalizer conditions matched; no rollout
+was repeated. Raw rows are under `paired_native_r43/`; offline immutable-row
+analysis and hash snapshot are `native_analysis_final.json` and
+`native_analysis_inputs.json`. The native evaluator's summary-only report
+assembly record is preserved separately; final analysis was produced from the
+retained 60 rows, without rerunning native evaluation. The source-only report
+repair chronology is `native_report_assembly_correction.json`.
+
+| Policy | Task success | Safe success | Contact | XY crossing |
+| --- | ---: | ---: | ---: | ---: |
+| R40 matched Base (R41-exact) | 27/30 | 0/30 | 30/30 | 21/30 |
+| R43 clearance Control | 30/30 | 14/30 | 16/30 | 5/30 |
+| R41 Control primary | 29/30 | 17/30 | 13/30 | 6/30 |
+
+R41 Control → R43 Control transitions (old/new-only, both, neither): task
+`improved 1, regressed 0, both 29, neither 0`; safe `improved 4, regressed 7,
+both 10, neither 9`; contact `cleared 4, introduced 7, both 9, neither 10`;
+XY `cleared 4, introduced 3, both 2, neither 21`. Against the matched Base,
+R43 cleared 14 contacts and 19 XY crossings, introduced 3 XY crossings, and
+improved task success in 3 scenes.
+
+The frozen gate (`task >=27`, `safe >=26`, `contact <=3`, `XY <=3`) **failed**:
+task 30 passed; safe 14, contact 16 and XY crossing 5 failed. The sole trial is
+complete exploratory evidence, not a formal performance claim or safety
+guarantee. No further objective/training/native trial was run.
+
 ## Round 42 — preregistered training-only clearance proxy precheck (2026-10-29)
 
 R42 **stopped before training and native development evaluation**. The one
