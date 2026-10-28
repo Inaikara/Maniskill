@@ -1,6 +1,218 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 36 — R35 report correction and archived PickCube sampler recovery (2026-10-28)
+
+R35's original paired records, preregistration, and analysis JSON are preserved
+unchanged. A separately written `outputs/exp/20261028_145500_pickcube_native_control_r35/paired/correction_r36.json`
+recomputes the old-90k-Control → R35-Control transitions directly from all 30
+raw `result` records. The original report had the adverse-event labels reversed
+for contact and XY and had incorrect safe/task transition values. Correct values:
+
+| Metric | Old → R35 marginals | Transitions |
+| --- | --- | --- |
+| Task | 27 → 26 | improved 2 / regressed 3 / both 24 / neither 1 |
+| Safe | 15 → 16 | improved 7 / regressed 6 / both 9 / neither 8 |
+| Contact | 15 → 13 | cleared 8 / introduced 6 / both 7 / neither 9 |
+| XY crossing | 3 → 9 | cleared 2 / introduced 8 / both 1 / neither 19 |
+
+The corrected counts reconcile exactly to both cohorts' positive-outcome or
+violation marginals. They are an analysis correction, not a native rerun. In
+particular, the original R35 100/500 result remains R35's recorded result and is
+not relabeled as DDPM-100.
+
+Archived source recovery resolves the earlier protocol uncertainty: Git blob
+`43b08ab:examples/baselines/constrain/pickcube_learning_pilot.py` has SHA-256
+`24522af7d02d3cdce98742ad7df0f3e7bbfba62321272fa1de8d509388e3c0ec`, exactly
+matching the R13 preregistration's source identity. That historical adapter
+uses `DDPMScheduler`, 100 training/inference timesteps and the native
+`[1:9]` prediction slice executed directly in chunks of eight. It does not use
+the later DDIM-50 profile or a 0.35 decode/clamp. This archival proof establishes
+the intended same-weights R36 restoration protocol; it does not by itself prove
+runtime equivalence or native outcomes.
+
+### R36 native trial
+
+Registration was frozen at
+`outputs/exp/20261028_191000_pickcube_archived_ddpm100_r36/preregistration.json`
+before native evaluation. The one trial used the exact R35 Base and Control
+checkpoint hashes above, all 30 frozen scenes, 500 control steps, and 300 s per
+episode. The selected outer timeout was 36,000 s. Runtime profile confirms
+DDPM-100, stride 8, prediction `[1:9]`, direct native actions and source identity
+matching registration. The original frozen dataset HDF5 and manifest hashes
+were verified again after evaluation. No training, data creation, new layouts,
+or checkpoint writes occurred.
+
+Both cohorts completed 30/30 with zero runtime errors. Base scored **10 task / 0
+safe / 30 contact / 15 XY**; Control scored **25 / 16 / 13 / 4**. On the exact
+same R35 scenes and weights, restored state/controller/observation hashes match
+scene-by-scene. R36 Base exactly reproduced the retained 90k experiment's old
+Base outcomes scene-by-scene (10/0/30/15), supporting the restored native
+DDPM-100 path. Control versus R35 transitions (task/safe/contact/XY) were task
+2 improved / 3 regressed / 23 both / 2 neither; safe 6 improved / 6 regressed /
+10 both / 8 neither; contact 6 cleared / 6 introduced / 7 both / 11 neither;
+XY 6 cleared / 1 introduced / 3 both / 20 neither. Compared to the old 90k
+Control, R36 Control transitions were task 2 improved / 4 regressed / 23 both /
+1 neither; safe 4 improved / 3 regressed / 12 both / 11 neither; contact 5
+cleared / 3 introduced / 10 both / 12 neither; XY 2 cleared / 3 introduced / 1
+both / 24 neither. This secondary comparison still combines 500-vs-300 data and
+150k-vs-90k updates.
+
+R36's frozen gate is **pause**: task 25/30 <27, safe 16/30 <26, contact 13/30
+>3, and XY 4/30 >3; Ticket 07 remains blocked. Control's first-contact phases
+were transport 5, goal stabilization 3, grasp approach 3, lift 2. Terminal
+phases were task success 25, transport/place failure 2, lift/no transport 3.
+Success termination steps had min/median/p90/max 58/98/130.8/223. Per-episode
+wall time, final cube XYZ/3-D goal distance, and full contact-pair positions are
+not available in this evaluator and were not reconstructed. Full results and
+all transitions are in
+`outputs/exp/20261028_191000_pickcube_archived_ddpm100_r36/paired/archived_protocol_comparison.json`;
+native records and traces are in `paired/base_dp/` and `paired/constrain_dp/`.
+The R35 original native records and original report remain unchanged; its
+corrected post-hoc transition table is separately preserved as
+`outputs/exp/20261028_145500_pickcube_native_control_r35/paired/correction_r36.json`.
+
+Verification: focused PickCube pilot tests passed 48/48; the full constrain
+suite passed **555/555** (28 warnings) in 99.66 s before the final analysis-only
+marginal-validation addition; focused pilot tests passed again 48/48 afterward.
+The validation changed the analysis source hash after the R36 run, not the
+registered sampler/evaluator path: registered runtime source identity
+`cb2737f357e85a55652cb13b3696c70359ee806894006aca3676e0cce602c0b7` matches the
+preregistration and saved inference profile; current analysis source identity is
+`761f518ac65ae3ac10f201bce013d27a1be0931f885bd94fb5c57c1029a202d9`. Offline same-weight adapter
+checks executed the exact archived `get_action` AST methods, bound to the loaded
+current model/scheduler/normalization namespaces; with a fixed observation and
+RNG seed both configured adapters matched the archived methods exactly (max
+absolute action difference 0), returning finite `(1,8,7)` native actions.
+Evaluation
+and gate were run serially under the activated `maniskill` environment; the
+gate remains pause. No worker was intentionally left running.
+
 ## Cleanup status
+
+## Round 35 — PickCube frozen 1000/500 native-action control-only retrain (2026-10-28)
+
+One native-coordinate ControlNet retrain was completed on the frozen 500-obstacle
+package, initialized from the retained original native-action 1000-direct Base
+EMA. No Base retraining, data/layout creation, replay, action codec, PlaceSphere
+change, or ManiSkill source edit occurred. This remains a repeated-dev engineering
+result, not formal performance or generalization evidence.
+
+### Frozen inputs, native representation, and source protocol
+
+The frozen package is `demos/PickCube-transport-detour/20261028_164500_frozen500/`:
+HDF5 `0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`,
+manifest `6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`,
+validation `f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`.
+The opt-in native manifest reader requires all 1,500 IDs/classes, successful
+held-at-goal metadata, safe obstacle records, the native seven-channel action
+contract, closed `-1` obstacle terminal grip, and native window padding. It
+returned exactly **83,004 direct / 45,840 obstacle** windows. The 1,000 original
+direct observation and action arrays were individually compared byte-for-byte
+against the source used to train the Base; all 1,000 matched. That source is
+`demos/PickCube-transport-detour/20261024_104348_expansion/trajectory.h5`
+(`2af959e3d3ebeba8bb046db6d9583d300e1533fc638c7d36eb6393dd28024dff`), with
+manifest `26cb2b3f8c371315805cb6219e0a4314dce3461bac3aaa872d35ce2e5ca7fd45`.
+
+The selected Base is the original
+`outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt`, SHA-256
+`dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d`. Its strict
+checkpoint contract is `pickcube_pilot_base_v1`, step 30,000, selected EMA,
+direct IDs 0–999, 42-D state condition, 7-D native `pd_ee_delta_pose`, identity
+action normalization, and no action encoding. The newly trained control
+checkpoint records a distinct typed native-identity contract; raw actions are
+used directly, with no `0.35` codec scaling or post-sampling decode. Before and
+after training, independently loaded Base and disabled-control epsilon and
+DDIM-50 samples matched exactly (maximum absolute difference **0**).
+
+Retained 90k preregistration, paired indices, and command records do not identify
+the old inference scheduler, step count, or executed slice. Therefore the run is
+explicitly labeled the predeclared fallback hypothesis **DDIM-50, eta 0,
+100-training-timestep squared-cosine schedule, prediction `[1:9]`, execute 8,
+replan every 8**, with the same scene-seed reset. It is **not claimed to reproduce
+the exact old inference protocol**. This protocol limitation is material: the
+same frozen-scene Base scored 8/30 here versus the retained old Base 10/30. The
+checkpoint, scenes, and native initial states match, but old protocol evidence is
+insufficient to treat that difference as a failed exact-protocol reproduction.
+The old baseline was copied byte-for-byte and its tree SHA-256 verified before
+the new paired evaluation: `98ba0bbaa5c74d6548ede8aa4a014e10a4456b9e55aae4343403d1d25450ca3d`.
+
+### Training and recovery record
+
+Original preregistration:
+`outputs/exp/20261028_145500_pickcube_native_control_r35/preregistration.json`.
+It freezes the dataset, Base, source identity, 30 dev scenes, final-EMA selection,
+DDPM-100 epsilon objective, AdamW `1e-4`, batch 1,024, seed 1, warmup 500,
+cosine schedule, EMA power 0.75, unweighted loss, and exactly 150,000 control-only
+updates. Equal-batch exposure is approximately 3,351 obstacle-window epochs,
+close to 3,342 for the retained 90k/300-window comparison; data size and update
+budget both differ, so this is not a single-factor causal comparison.
+
+Two completed 150k attempts are preserved with loss logs and failure records:
+the first reached its post-training source audit but did not finalize because the
+audit did not consult the already-frozen recovery identity; the second exposed
+the missing explicit identity-action checkpoint field before it could save a
+checkpoint. Neither was evaluated or used for checkpoint selection. Recovery
+identity/preregistration history is retained as `recovery_identity_r1.json`,
+`recovery_identity_r2.json`, `recovery_identity.json`, and
+`recovery_preregistration.json` through `recovery_preregistration_r3.json`.
+The selected completed attempt is
+`outputs/exp/20261028_145500_pickcube_native_control_r35/train_constrain_retry2/`
+with weights at
+`outputs/ckpt/20261028_145500_pickcube_fullscene500_native_constrain_retry2/final.pt`,
+SHA-256 `be5b2b740a59eaf428c71a906e15eb5c83d1cf807e1629c3bdf060ac31b8db93`.
+It completed 150,000/150,000 updates in 4,497.32 recorded seconds; all losses
+were finite (first `0.0308330`, final `0.00227748`, final-100 mean `0.00217241`).
+The embedded Base state remained unchanged, trainable control parameters moved,
+and strict EMA loading passed. Source identity was recomputed after training and
+matched recovery SHA `6ab1502551991e49342be5053ca0e9b7d723370919c36b88d638b018d0e43c4e`.
+
+### Paired native evaluation and gate
+
+The evaluation used the exact same frozen 30 scene seeds and restored native
+states for both policies, with matching state/controller/observation identity
+hashes scene-by-scene. Both cohorts completed 30/30 with zero runtime errors.
+Complete actual per-step native-action/flag traces are retained under
+`paired/base_dp/` and `paired/constrain_dp/`; the original old records are in
+`paired/baseline_snapshot/paired/`.
+
+| Policy / reference | Task | Safe | Contact | XY crossing | Runtime errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Current Base, DDIM-50/8 hypothesis | 8/30 | 0/30 | 30/30 | 20/30 | 0 |
+| Native Control, 150k / 500 obstacles | 26/30 | 16/30 | 13/30 | 9/30 | 0 |
+| Retained old 90k Control | 27/30 | 15/30 | 15/30 | 3/30 | 0 |
+
+Current Control versus current Base transitions (task/safe/contact/XY): task
+20 improved / 2 regressed / 6 both / 2 neither; safe 16 improved / 0 regressed /
+0 both / 14 neither; contact 17 cleared / 0 introduced / 13 both / 0 neither;
+XY 12 cleared / 1 introduced / 8 both / 9 neither.
+
+Against the retained old 90k Control, raw-record transitions are task 2 improved
+/ 3 regressed / 24 both / 1 neither; safe 7 improved / 6 regressed / 9 both / 8
+neither; contact 8 cleared / 6 introduced / 7 both / 9 neither; XY 2 cleared / 8
+introduced / 1 both / 19 neither. The earlier R35 analysis JSON swapped the
+adverse-event labels and misreported safe transitions; the immutable correction
+is `paired/correction_r36.json`. Contact and XY remain worse than the old
+Control. The exact old inference protocol is resolved by R36's archived-source
+evidence, but R35 itself remains the recorded DDIM-50 run; R36 is the separate
+same-weight DDPM-100 restoration.
+
+The fixed gate is **pause / Ticket 07 remains blocked**: task 26/30 <27, safe
+16/30 <26, contact 13/30 >3, and XY crossing 9/30 >3. New Control successes
+terminated at median step 89.5 / p90 219.5 / max 293; first grasp median/p90
+28.5/47.1 and lift 42.0/63.2. Its 13 first contacts were transport 9, goal
+stabilization 3, lift 1 (reported contact links: Panda hand 9, fingers 3, cube
+1). Four episodes terminated in transport/place failure. Full traces contain
+native actions, grasp/lift/transport/success, collision/crossing, actual
+termination/truncation, and contact phase/link. The existing trace schema does
+not contain per-episode wall time, final cube XYZ/3-D goal distance, or complete
+contact entity-pair geometry; these are not reconstructed. Aggregate details,
+per-scene transitions and audit hashes are in `paired/evidence_audit.json` and
+`paired/native_primary_analysis.json`; gate is `paired/gate.json`.
+
+The 553-test constrain suite passed (28 existing warnings) before the frozen
+recovery training and evaluation. No further training, data collection, layouts,
+or evaluation trial was started. The PlaceSphere frozen configuration and
+artifacts are untouched.
 
 ## Round 34 — fixed-weight PickCube 50→100 DDIM inference (2026-10-28)
 

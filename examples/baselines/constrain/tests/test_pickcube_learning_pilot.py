@@ -34,6 +34,9 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     build_obstacle_increment_preregistration,
     build_preregistration,
     build_fullscene500_preregistration,
+    build_fullscene500_native_preregistration,
+    build_r36_archived_ddpm_preregistration,
+    _verify_native_direct_subset,
     dataset_coverage,
     decide_gate,
     direct_candidate_accepted,
@@ -42,6 +45,7 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     expansion_id_plan,
     freeze_pilot_identity,
     expansion_transitions,
+    validate_transition_marginals,
     layouts_conflict,
     load_preregistration,
     layouts_from_episodes,
@@ -233,6 +237,60 @@ def test_fullscene500_preregistration_freezes_matched_training_and_codec(tmp_pat
     path.write_text(json.dumps(registration))
     with pytest.raises(ValueError, match="contract mismatch"):
         load_preregistration(path)
+
+
+def test_native_fullscene500_preregistration_has_identity_actions_and_explicit_inference_hypothesis(tmp_path):
+    payload = build_fullscene500_native_preregistration(
+        {"dev_scenes": "outputs/exp/frozen/dev"},
+        {"datasets": {"h5": {"path": "demos/frozen.h5", "sha256": "h"},
+                      "manifest": {"path": "demos/frozen.json", "sha256": "m"}},
+         "validation": {}},
+        {"files_sha256": "source"},
+    )
+    assert payload["action_encoding"] is None
+    assert payload["base_checkpoint"]["sha256"] == "dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d"
+    assert payload["training"]["constrain_updates"] == 150000
+    assert payload["inference_hypothesis"]["inference_steps"] == 50
+    assert "not recoverable" in payload["inference_hypothesis"]["status"]
+    path = tmp_path / "native-registration.json"
+    path.write_text(json.dumps(payload))
+    assert load_preregistration(path)["kind"] == "frozen_fullscene500_native"
+    payload["action_encoding"] = {"name": "wrong"}
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="native full-scene500"):
+        load_preregistration(path)
+
+
+def test_r36_registration_opts_into_archived_ddpm_without_changing_r35_profile(tmp_path):
+    identity = {"datasets": {"h5": {"path": "demos/frozen.h5", "sha256": "h"},
+                             "manifest": {"path": "demos/frozen.json", "sha256": "m"}},
+                "validation": {}}
+    source = {"files_sha256": "source"}
+    legacy = build_fullscene500_native_preregistration({"dev_scenes": "outputs/exp/dev"}, identity, source)
+    restored = build_r36_archived_ddpm_preregistration({"dev_scenes": "outputs/exp/dev"}, identity, source)
+    assert legacy["inference_hypothesis"]["sampler"] == "DDIMScheduler"
+    assert legacy["inference_hypothesis"]["inference_steps"] == 50
+    assert restored["inference_hypothesis"]["sampler"] == "DDPMScheduler"
+    assert restored["inference_hypothesis"]["inference_steps"] == 100
+    path = tmp_path / "r36.json"
+    path.write_text(json.dumps(restored))
+    assert load_preregistration(path)["round_index"] == 36
+
+
+def test_native_direct_base_arrays_must_match_frozen_direct_subset(tmp_path):
+    source, frozen = tmp_path / "base.h5", tmp_path / "frozen.h5"
+    for path, mismatch in ((source, False), (frozen, False)):
+        with h5py.File(path, "w") as handle:
+            for episode_id in range(1000):
+                group = handle.create_group(f"traj_{episode_id}")
+                group.attrs["kind"] = "direct"
+                group.create_dataset("obs", data=np.arange(8, dtype=np.float32).reshape(2, 4))
+                group.create_dataset("actions", data=np.arange(7, dtype=np.float32).reshape(1, 7))
+    _verify_native_direct_subset(frozen, source)
+    with h5py.File(frozen, "a") as handle:
+        handle["traj_0/actions"][0, 0] = 99
+    with pytest.raises(ValueError, match="direct array differs"):
+        _verify_native_direct_subset(frozen, source)
 
 
 def test_pickcube_ddim_runtime_option_preserves_50_default_and_uses_full_endpoint_sequence():
@@ -461,6 +519,22 @@ def test_expansion_transitions_match_scene_ids_and_separate_failed_attempts():
     assert separated["failed_attempt_is_authoritative"] is False
     assert separated["recovery_authoritative"] is True
     assert separated["recovery_evaluated"] == 2
+
+
+def test_violation_transitions_use_adverse_outcome_orientation_and_match_marginals():
+    old = [{"scene_id": "cleared", "result": {"obstacle_contact": True}},
+           {"scene_id": "introduced", "result": {"obstacle_contact": False}}]
+    new = [{"scene_id": "cleared", "result": {"obstacle_contact": False}},
+           {"scene_id": "introduced", "result": {"obstacle_contact": True}}]
+    assert expansion_transitions(old, new, ("obstacle_contact",))["obstacle_contact"] == {
+        "cleared": 1, "introduced": 1, "both": 0, "neither": 0}
+    transitions = {"obstacle_contact": {"cleared": 1, "introduced": 1, "both": 1, "neither": 1}}
+    validate_transition_marginals(transitions, {"obstacle_contact": 2},
+                                  {"obstacle_contact": 2}, 4)
+    with pytest.raises(ValueError, match="contradict cohort marginals"):
+        validate_transition_marginals(
+            {"obstacle_contact": {"cleared": 0, "introduced": 2, "both": 1, "neither": 1}},
+            {"obstacle_contact": 2}, {"obstacle_contact": 2}, 4)
 
 
 def test_episode_index_stores_the_checkpoint_sha():

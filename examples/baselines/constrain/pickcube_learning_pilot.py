@@ -33,6 +33,19 @@ BASE_FORMAT = "pickcube_pilot_base_v1"
 CONSTRAIN_FORMAT = "pickcube_pilot_constrain_v1"
 FULLSCENE_BASE_FORMAT = "pickcube_fullscene_base_v2"
 FULLSCENE_CONSTRAIN_FORMAT = "pickcube_fullscene_constrain_v2"
+NATIVE500_KIND = "frozen_fullscene500_native"
+NATIVE500_BASE_FORMAT = "pickcube_fullscene500_native_base_v1"
+NATIVE500_CONSTRAIN_FORMAT = "pickcube_fullscene500_native_constrain_v1"
+NATIVE500_H5 = "demos/PickCube-transport-detour/20261028_164500_frozen500/trajectory.h5"
+NATIVE500_MANIFEST = "demos/PickCube-transport-detour/20261028_164500_frozen500/trajectory.json"
+NATIVE500_H5_SHA256 = "0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f"
+NATIVE500_MANIFEST_SHA256 = "6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486"
+NATIVE500_VALIDATION_SHA256 = "f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f"
+NATIVE500_BASE = "outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt"
+NATIVE500_BASE_SHA256 = "dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d"
+NATIVE500_BASE_H5 = "demos/PickCube-transport-detour/20261024_104348_expansion/trajectory.h5"
+NATIVE500_BASE_H5_SHA256 = "2af959e3d3ebeba8bb046db6d9583d300e1533fc638c7d36eb6393dd28024dff"
+NATIVE500_BASE_MANIFEST_SHA256 = "26cb2b3f8c371315805cb6219e0a4314dce3461bac3aaa872d35ce2e5ca7fd45"
 TICKET01_REFERENCE = {
     "distribution": "old PickCube obstacle scenes, not this pilot",
     "attribution": "rates are not a same-distribution improvement delta",
@@ -181,6 +194,125 @@ def build_fullscene500_preregistration(paths, identities, source_identity):
         "baseline": dict(identities["baseline"]),
         "matched_base_checkpoint": dict(identities.get("matched_base_checkpoint") or {}),
         "matched_constrain_checkpoint": dict(identities.get("matched_constrain_checkpoint") or {}),
+        "source_identity": source_identity, "validation": dict(identities["validation"]),
+        "evaluation": {"scene_manifest": paths["dev_scenes"] + "/manifest.json",
+                       "scene_count": 30, "max_steps": 500, "episode_wall_seconds": 300,
+                       "same_initial_native_state_and_controller": True,
+                       "noise_seed_rule": "torch.manual_seed(scene seed) before each policy episode",
+                       "runtime_errors_remain_in_denominator": True},
+        "compute_budget_seconds": {"base": 4500, "constrain": 9000, "paired_eval": 18000},
+        "selection": "final EMA only; selected before training; no evaluation-based checkpoint selection",
+        "claims": {"formal_performance": False, "generalization": False,
+                   "engineering_pipeline_comparison": True,
+                   "confounds": ["training data size", "action encoding", "inference DDIM stride-2"]},
+        "gate": {"task_success_rate_gte": 0.90, "safe_success_rate_gte": 0.85,
+                 "contact_rate_lte": 0.10, "xy_crossing_rate_lte": 0.10,
+                 "formal_performance_claim": False, "require_complete": True,
+                 "require_zero_runtime_errors": True},
+    }
+
+
+def build_fullscene500_native_preregistration(paths, identities, source_identity):
+    """Freeze the one native-action control-only trial; no action codec is used."""
+    return {
+        "format": "pickcube_fullscene500_native_preregistration_v1",
+        "kind": NATIVE500_KIND,
+        "version": "r35-native-control",
+        "round_index": 35,
+        "round_cap": 35,
+        "train_direct_count": 1000,
+        "train_obstacle_count": 500,
+        "selected_direct_ids": list(range(1000)),
+        "selected_obstacle_ids": list(range(1000, 1500)),
+        "obstacle_plan_cap": 500,
+        "dev_scene_count": 30,
+        "layout_dedup": {"mode": "frozen_fullscene500", "within_run_enforced": True,
+                          "cylinder_proximity_is_conflict": False,
+                          "dev_and_ticket03_task_identity_strict": True},
+        "paths": dict(paths),
+        "datasets": dict(identities["datasets"]),
+        "baseline": dict(identities.get("baseline", {})),
+        "validation": dict(identities["validation"]),
+        "source_identity": source_identity,
+        "base_checkpoint": {"path": NATIVE500_BASE, "sha256": NATIVE500_BASE_SHA256,
+                            "format": BASE_FORMAT, "step": 30000,
+                            "selected_weights": "ema", "selected_class": "direct",
+                            "selected_episode_ids": list(range(1000)),
+                            "action_encoding": None, "model_action_space": "native identity coordinates"},
+        "base_training_data": {"h5_path": NATIVE500_BASE_H5, "h5_sha256": NATIVE500_BASE_H5_SHA256,
+                               "manifest_sha256": NATIVE500_BASE_MANIFEST_SHA256},
+        "matched_base_checkpoint": {"path": NATIVE500_BASE, "sha256": NATIVE500_BASE_SHA256},
+        "action_encoding": None,
+        "action_space": "native pd_ee_delta_pose coordinates; identity normalization; no codec",
+        "training": {
+            "seed": 1, "base_updates": 30000, "constrain_updates": 150000,
+            "total_iters": 150000, "batch_size": 1024, "lr": 1e-4,
+            "warmup": 500, "ema_power": 0.75, "optimizer": "AdamW",
+            "betas": [0.95, 0.999], "weight_decay": 1e-6,
+            "lr_schedule": "cosine", "loss_weight": None,
+            "base_retrained": False, "trainable": "control branch only",
+            "base_class": "direct", "constrain_class": "obstacle",
+            "constrain_init": "matched base final EMA",
+            "selected_weights": SELECTED_WEIGHTS,
+            "training_diffusion": {"scheduler": "DDPMScheduler", "steps": 100,
+                                    "beta_schedule": "squaredcos_cap_v2", "prediction_type": "epsilon"},
+        },
+        "inference_hypothesis": {
+            "status": "explicit hypothesis; old sampler protocol is not recoverable from retained records",
+            "sampler": "DDIMScheduler", "num_train_timesteps": 100,
+            "inference_steps": 50, "eta": 0.0, "prediction_horizon": 16,
+            "executed_prediction_slice": [1, 9], "execution_horizon": 8,
+            "replan_stride": 8, "noise_seed_rule": "torch.manual_seed(scene seed) before each policy episode",
+        },
+        "evaluation": {"scene_count": 30, "max_steps": 500,
+                       "episode_wall_seconds": 300, "same_initial_native_state_and_controller": True,
+                       "runtime_errors_remain_in_denominator": True},
+        "gate": {"task_success_count_gte": 27, "safe_success_count_gte": 26,
+                 "contact_count_lte": 3, "xy_crossing_count_lte": 3,
+                 "require_complete": True, "require_zero_runtime_errors": True,
+                 "formal_performance_claim": False},
+        "comparison_note": "combined dataset-size and update-budget comparison, not a single-factor causal estimate",
+        "selection": "final EMA fixed before training; no evaluation-based checkpoint selection",
+    }
+
+
+def build_r36_archived_ddpm_preregistration(paths, identities, source_identity):
+    """Freeze same-weight R36 inference using the recovered archived sampler."""
+    payload = build_fullscene500_native_preregistration(paths, identities, source_identity)
+    payload.update({"version": "r36-archived-ddpm-restoration", "round_index": 36,
+                    "round_cap": 36})
+    payload["inference_hypothesis"] = {
+        "status": "archived protocol supported by exact preregistered source identity",
+        "sampler": "DDPMScheduler", "num_train_timesteps": 100,
+        "inference_steps": 100, "prediction_horizon": 16,
+        "executed_prediction_slice": [1, 9], "execution_horizon": 8,
+        "replan_stride": 8,
+        "native_action_representation": "identity pd_ee_delta_pose; direct environment action; no codec/decode/clamp",
+        "noise_seed_rule": "torch.manual_seed(scene seed) before each policy episode",
+    }
+    payload["comparison_note"] = (
+        "same-weight restoration of archived native DDPM-100; compared with R35 DDIM-50, "
+        "sampler and inference-step package both change; stride remains 8. Secondary old 90k/300 "
+        "comparison still combines dataset size and training budget differences.")
+    return payload
+    return {
+        "format": "pickcube_fullscene500_action_codec_preregistration_v1",
+        "kind": "frozen_fullscene500_action_codec", "version": "r33",
+        "round_index": 33, "round_cap": 33,
+        "train_direct_count": 1000, "train_obstacle_count": 500,
+        "selected_direct_ids": list(range(1000)),
+        "selected_obstacle_ids": list(range(1000, 1500)),
+        "obstacle_plan_cap": 500, "dev_scene_count": 30,
+        "layout_dedup": {"mode": "frozen_fullscene500", "within_run_enforced": True,
+                          "cylinder_proximity_is_conflict": False,
+                          "dev_and_ticket03_task_identity_strict": True},
+        "action_encoding": CONTROLLER_RANGE,
+        "action_encoding_sha256": profile_sha256(CONTROLLER_RANGE),
+        "training": training,
+        "paths": dict(paths), "datasets": dict(identities["datasets"]),
+        "baseline": dict(identities["baseline"]),
+        "matched_base_checkpoint": dict(identities.get("matched_base_checkpoint") or {}),
+        "matched_constrain_checkpoint": dict(identities.get("matched_constrain_checkpoint") or {}),
         "source_identity": source_identity,
         "validation": dict(identities["validation"]),
         "evaluation": {"scene_manifest": paths["dev_scenes"] + "/manifest.json",
@@ -228,6 +360,14 @@ def load_preregistration(path):
         raise ValueError("pilot gate must not claim formal performance")
     if payload["training"].get("selected_weights") != SELECTED_WEIGHTS:
         raise ValueError("selected weights are not the pre-registered final EMA")
+    if payload.get("kind") == NATIVE500_KIND:
+        if (payload.get("action_encoding") is not None
+                or payload.get("training", {}).get("constrain_updates") != 150000
+                or payload.get("inference_hypothesis", {}).get("sampler") not in ("DDIMScheduler", "DDPMScheduler")
+                or payload.get("inference_hypothesis", {}).get("inference_steps") not in (50, 100)
+                or payload.get("selected_direct_ids") != list(range(1000))
+                or payload.get("selected_obstacle_ids") != list(range(1000, 1500))):
+            raise ValueError("native full-scene500 preregistration contract mismatch")
     if payload.get("kind") == "frozen_fullscene500_action_codec":
         from examples.baselines.constrain.pickcube_action_codec import profile_sha256
         if (payload["train_direct_count"] != 1000 or payload["train_obstacle_count"] != 500
@@ -241,7 +381,7 @@ def load_preregistration(path):
 
 
 def _assert_registered_dataset(dataset, registration):
-    if registration.get("kind") != "frozen_fullscene500_action_codec":
+    if registration.get("kind") not in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
         return
     identity = registration["datasets"]
     if (dataset.data_path.resolve() != Path(identity["h5"]["path"]).resolve()
@@ -253,6 +393,10 @@ def _assert_registered_dataset(dataset, registration):
     expected = registration["selected_direct_ids"] if dataset.kind == "direct" else registration["selected_obstacle_ids"]
     if dataset.trajectory_ids != expected:
         raise ValueError("full-scene500 selected class IDs differ from preregistration")
+    if registration.get("kind") == NATIVE500_KIND:
+        expected_windows = 45840 if dataset.kind == "obstacle" else 83004
+        if len(dataset) != expected_windows or not dataset.native_fullscene500:
+            raise ValueError("native full-scene500 official window count/profile mismatch")
     for spec in registration["validation"].values():
         if isinstance(spec, dict) and "path" in spec and sha256_file(spec["path"]) != spec["sha256"]:
             raise ValueError("full-scene500 pinned validation/source identity changed")
@@ -302,12 +446,13 @@ def audit_fullscene_action_encoding(data_path, manifest_path):
 
 
 def _recompute_registered_source(registration):
-    if registration.get("kind") != "frozen_fullscene500_action_codec":
+    if registration.get("kind") not in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
         return None
     current = freeze_pilot_identity(fullscene=True)
-    expected = registration["source_identity"]
-    if current.get("files") != expected.get("files") or current.get("files_sha256") != expected.get("files_sha256"):
-        raise RuntimeError("experiment source changed after preregistration")
+    try:
+        enforce_runtime_source_identity(registration, current, "post-training-source-audit")
+    except RuntimeError as exc:
+        raise RuntimeError("experiment source changed after preregistration/recovery freeze") from exc
     return current
 
 
@@ -463,12 +608,14 @@ def materialize_window(obs, actions, start, end):
 class PilotTrajectoryDataset(torch.utils.data.Dataset):
     """Strict windows for one predeclared class. Refuses extra trajectories."""
 
-    def __init__(self, data_path, manifest_path, kind, expected_ids, action_profile=None):
+    def __init__(self, data_path, manifest_path, kind, expected_ids, action_profile=None,
+                 native_fullscene500=False):
         from examples.baselines.constrain.pickcube_action_codec import encode_native
 
         self.kind = kind
         self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
         self.action_profile = action_profile
+        self.native_fullscene500 = bool(native_fullscene500)
         self.expected_ids = [int(item) for item in expected_ids]
         manifest = json.loads(Path(manifest_path).read_text())
         episodes = manifest["episodes"]
@@ -481,6 +628,15 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
         other = [item for item in episodes if item["kind"] not in ("direct", "obstacle")]
         if other:
             raise ValueError("undeclared training kind")
+        if self.native_fullscene500:
+            if (len(episodes) != 1500 or sorted(ids) != list(range(1500))
+                    or len(set(ids)) != 1500 or action_profile is not None):
+                raise ValueError("native full-scene500 requires the exact 1500-ID manifest and identity actions")
+            for row in episodes:
+                if (not row.get("native_success") or not row.get("held_at_success")
+                        or (row["kind"] == "obstacle" and
+                            (row.get("obstacle_collision") or row.get("obstacle_crossing")))):
+                    raise ValueError(f"episode {row['episode_id']}: unsafe or non-held native success")
         self.h5_sha256 = sha256_file(data_path)
         self.manifest_sha256 = sha256_file(manifest_path)
         self.observations, self.actions, self.slices = [], [], []
@@ -498,6 +654,9 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
                     raise ValueError(f"traj_{episode_id} is non-finite")
                 if np.max(np.abs(actions)) > 1.00001:
                     raise ValueError(f"traj_{episode_id} action outside [-1, 1]")
+                if self.native_fullscene500 and (np.max(np.abs(actions[:, :6])) > 0.350001
+                        or (kind == "obstacle" and float(actions[-1, 6]) != -1.0)):
+                    raise ValueError(f"traj_{episode_id}: native action range or CLOSED terminal grip mismatch")
                 if not bool(group["success"][-1]) or bool(group["truncated"][:].any()):
                     raise ValueError(f"traj_{episode_id} lacks successful non-truncated evidence")
                 self.observations.append(torch.as_tensor(obs, dtype=torch.float32))
@@ -692,31 +851,65 @@ def expected_constrain_updates(registration):
 def _load_base_ema(checkpoint, registration):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     payload = ck.get("payload") or {}
+    native500 = registration.get("kind") == NATIVE500_KIND
     expected_format = FULLSCENE_BASE_FORMAT if registration.get("action_encoding") else BASE_FORMAT
     if (ck.get("format") != expected_format or ck.get("selected_weights") != "ema"
             or int(ck.get("step", -1)) != expected_base_updates(registration)
             or payload.get("selected_class") != "direct"
             or payload.get("selected_episode_ids") != list(registration["selected_direct_ids"])
-            or (registration.get("kind") == "frozen_fullscene500_action_codec" and (
+            or (registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND) and (
                 payload.get("action_encoding") != registration.get("action_encoding")
-                or payload.get("action_encoding_sha256") != registration.get("action_encoding_sha256")
-                or payload.get("model_action_space") != "encoded controller-range coordinates"
-                or payload.get("actual_training") != {"updates": expected_base_updates(registration), "selected_weights": "ema"}))):
+                or (not native500 and (
+                    payload.get("action_encoding_sha256") != registration.get("action_encoding_sha256")
+                    or payload.get("model_action_space") != "encoded controller-range coordinates"
+                    or payload.get("actual_training") != {"updates": expected_base_updates(registration), "selected_weights": "ema"}))
+                or (native500 and (payload.get("model_action_space") not in (None, "native identity coordinates")
+                                   or payload.get("selected_class") != "direct"))))):
         raise ValueError("pilot base checkpoint is not the matched final EMA")
     matched_base = registration.get("matched_base_checkpoint") or {}
     if matched_base and (Path(checkpoint).resolve() != Path(matched_base["path"]).resolve()
                          or sha256_file(checkpoint) != matched_base["sha256"]):
         raise ValueError("Base EMA path/hash differs from the preregistered matched checkpoint")
-    if registration.get("kind") == "frozen_fullscene500_action_codec":
+    if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
         identity = registration["datasets"]
-        if (payload.get("h5_sha256") != identity["h5"]["sha256"]
-                or payload.get("manifest_sha256") != identity["manifest"]["sha256"]
-                or Path(payload.get("data_path", "")).resolve() != Path(identity["h5"]["path"]).resolve()
-                or Path(payload.get("manifest_path", "")).resolve() != Path(identity["manifest"]["path"]).resolve()):
+        if native500:
+            base_identity = registration["base_checkpoint"]
+            if (Path(checkpoint).resolve() != Path(base_identity["path"]).resolve()
+                    or sha256_file(checkpoint) != base_identity["sha256"]
+                    or ck.get("format") != BASE_FORMAT or ck.get("step") != 30000
+                    or ck.get("selected_weights") != "ema"
+                    or payload.get("selected_episode_ids") != list(range(1000))
+                    or payload.get("selected_class") != "direct"
+                    or payload.get("action_encoding") is not None):
+                raise ValueError("native control requires the exact original native 1000-direct Base EMA")
+            base_data = registration["base_training_data"]
+            if (payload.get("h5_sha256") != base_data["h5_sha256"]
+                    or payload.get("manifest_sha256") != base_data["manifest_sha256"]
+                    or sha256_file(base_data["h5_path"]) != base_data["h5_sha256"]):
+                raise ValueError("native Base training data identity differs from its retained source")
+            _verify_native_direct_subset(identity["h5"]["path"], base_data["h5_path"])
+        elif (payload.get("h5_sha256") != identity["h5"]["sha256"]
+              or payload.get("manifest_sha256") != identity["manifest"]["sha256"]
+              or Path(payload.get("data_path", "")).resolve() != Path(identity["h5"]["path"]).resolve()
+              or Path(payload.get("manifest_path", "")).resolve() != Path(identity["manifest"]["path"]).resolve()):
             raise ValueError("base checkpoint data hashes differ from full-scene500 registration")
     agent = build_agent("cpu")
     agent.load_state_dict(ck["weights"]["ema"], strict=True)
     return ck, agent
+
+
+def _verify_native_direct_subset(frozen_h5, base_h5):
+    """Prove each original direct observation/action array is byte-identical."""
+    with h5py.File(frozen_h5, "r") as frozen, h5py.File(base_h5, "r") as base:
+        for episode_id in range(1000):
+            key = f"traj_{episode_id}"
+            left, right = frozen[key], base[key]
+            if left.attrs.get("kind") != "direct" or right.attrs.get("kind") != "direct":
+                raise ValueError(f"{key}: native Base direct-class identity mismatch")
+            for field in ("obs", "actions"):
+                a, b = left[field][:], right[field][:]
+                if a.dtype != b.dtype or a.shape != b.shape or not np.array_equal(a, b):
+                    raise ValueError(f"{key}/{field}: frozen direct array differs from the Base training source")
 
 
 def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoint_dir,
@@ -738,8 +931,10 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         raise RuntimeError("CUDA requested but unavailable")
     _, base_agent = _load_base_ema(base_checkpoint, registration)
     profile = registration.get("action_encoding")
+    native500 = registration.get("kind") == NATIVE500_KIND
     dataset = PilotTrajectoryDataset(
-        demo_path, manifest_path, "obstacle", registration["selected_obstacle_ids"], profile)
+        demo_path, manifest_path, "obstacle", registration["selected_obstacle_ids"], profile,
+        native_fullscene500=registration.get("kind") == NATIVE500_KIND)
     _assert_registered_dataset(dataset, registration)
     if len(dataset) < training["batch_size"]:
         raise RuntimeError("obstacle windows are fewer than the pre-registered batch size")
@@ -749,7 +944,7 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
     denoiser.base_net.load_state_dict(base_agent.noise_pred_net.state_dict(), strict=True)
     denoiser.to(device)
     base_sha = _state_sha(denoiser.base_net.state_dict())
-    equivalence_before = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None else None
+    equivalence_before = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None or native500 else None
     if equivalence_before is not None and not (
             equivalence_before["epsilon_matches"] and equivalence_before["sampling_matches"]):
         raise RuntimeError("new Base EMA and disabled Constrain path differ before training")
@@ -774,7 +969,8 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         dataset, batch_sampler=BatchSampler(RandomSampler(dataset), training["batch_size"], drop_last=True),
         num_workers=0)
     norm = PickCubeConditionNorm()
-    checkpoint_format = FULLSCENE_CONSTRAIN_FORMAT if profile is not None else CONSTRAIN_FORMAT
+    checkpoint_format = (NATIVE500_CONSTRAIN_FORMAT if native500 else
+                         FULLSCENE_CONSTRAIN_FORMAT if profile is not None else CONSTRAIN_FORMAT)
     config = {
         "model": dict(MODEL_CONFIG),
         "policy": {
@@ -783,10 +979,12 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
             "control_mode": "pd_ee_delta_pose", "observation_mode": "state",
             "named_state_fields": NAMED_FIELDS,
         },
-        "diffusion": {"training_scheduler": "DDPMScheduler", "inference_scheduler": "DDIMScheduler" if profile else "DDPMScheduler",
+        "diffusion": {"training_scheduler": "DDPMScheduler", "inference_scheduler": "DDIMScheduler" if profile is not None or native500 else "DDPMScheduler",
                       "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
                       "prediction_type": "epsilon", "num_train_timesteps": 100,
-                      "inference_steps": 50 if profile else 100, "eta": 0.0 if profile else None},
+                      "inference_steps": registration.get("inference_hypothesis", {}).get("inference_steps", 50)
+                      if profile is not None or native500 else 100,
+                      "eta": 0.0 if profile is not None or native500 else None},
         "normalization": norm.to_dict(),
         "base_weights": {
             "source": str(base_checkpoint), "sha256": sha256_file(base_checkpoint),
@@ -804,6 +1002,7 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "action_encoding": profile,
         "action_encoding_sha256": registration.get("action_encoding_sha256"),
         "model_action_space": "encoded controller-range coordinates" if profile else "native identity coordinates",
+        "action_encoding_identity": True,
         "actual_training": {"updates": expected_constrain_updates(registration), "selected_weights": "ema"},
         "pretraining_disabled_control_equivalence": equivalence_before,
     }
@@ -868,7 +1067,7 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         raise RuntimeError("frozen base changed during constrain training")
     if not any(not torch.equal(param, start) for param, start in zip(denoiser.trainable_parameters(), initial)):
         raise RuntimeError("control branch did not change")
-    equivalence_after = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None else None
+    equivalence_after = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None or native500 else None
     if equivalence_after is not None and not (
             equivalence_after["epsilon_matches"] and equivalence_after["sampling_matches"]):
         raise RuntimeError("frozen base/disabled control equivalence failed after training")
@@ -1045,16 +1244,23 @@ class PilotBaseAdapter:
         self.agent.to(device).eval()
         self.device = torch.device(device)
         self.action_profile = registration.get("action_encoding")
+        native500 = registration.get("kind") == NATIVE500_KIND
+        protocol = registration.get("inference_hypothesis", {})
+        action_slice = protocol.get("executed_prediction_slice", [1, 9])
+        self.action_slice = slice(action_slice[0], action_slice[1])
         self.scheduler = None
-        if self.action_profile is not None:
+        protocol = registration.get("inference_hypothesis", {})
+        self.native_ddpm = native500 and protocol.get("sampler") == "DDPMScheduler"
+        if self.action_profile is not None or (native500 and not self.native_ddpm):
             self.scheduler = _pickcube_ddim_scheduler(inference_steps)
         self.inference_steps = inference_steps if self.scheduler is not None else 100
         self.metadata = {"format": FULLSCENE_BASE_FORMAT if self.action_profile else BASE_FORMAT,
                          "selected_weights": "ema",
                          "checkpoint_sha256": sha256_file(checkpoint),
-                         "inference_scheduler": "DDIMScheduler" if self.action_profile else "DDPMScheduler",
+                         "inference_scheduler": "DDPMScheduler" if self.native_ddpm or not (self.action_profile or native500) else "DDIMScheduler",
                          "inference_steps": self.inference_steps,
-                         "eta": 0.0 if self.action_profile else None}
+                         "eta": 0.0 if self.action_profile or native500 else None,
+                         "execution_horizon": registration.get("inference_hypothesis", {}).get("execution_horizon", 8)}
 
     def get_action(self, queued):
         obs = torch.as_tensor(queued, dtype=torch.float32, device=self.device)
@@ -1063,7 +1269,6 @@ class PilotBaseAdapter:
         if obs.ndim == 2:
             obs = obs[None]
         if self.scheduler is not None:
-            from examples.baselines.constrain.pickcube_action_codec import decode_prediction_to_native
             sample = torch.randn((obs.shape[0], 16, 7), device=self.device)
             condition = obs[..., :42].flatten(start_dim=obs.ndim - 2)
             with torch.no_grad():
@@ -1071,7 +1276,11 @@ class PilotBaseAdapter:
                     prediction = self.agent.noise_pred_net(
                         sample, timestep, global_cond=condition)
                     sample = self.scheduler.step(prediction, timestep, sample, eta=0.0).prev_sample
-            return decode_prediction_to_native(sample[:, 1:9], self.action_profile)
+            action = sample[:, self.action_slice]
+            if self.action_profile is not None:
+                from examples.baselines.constrain.pickcube_action_codec import decode_prediction_to_native
+                return decode_prediction_to_native(action, self.action_profile)
+            return action
         with torch.no_grad():
             return self.agent.get_action(obs[..., :42])
 
@@ -1086,29 +1295,39 @@ class PilotConstrainAdapter:
         config = ck.get("config") or {}
         data = config.get("data_identity") or {}
         matched_control = registration.get("matched_constrain_checkpoint") or {}
-        expected_format = FULLSCENE_CONSTRAIN_FORMAT if registration.get("action_encoding") else CONSTRAIN_FORMAT
+        native500 = registration.get("kind") == NATIVE500_KIND
+        expected_format = (NATIVE500_CONSTRAIN_FORMAT if native500 else
+                           FULLSCENE_CONSTRAIN_FORMAT if registration.get("action_encoding") else CONSTRAIN_FORMAT)
         if (ck.get("format") != expected_format or int(ck.get("step", -1)) != expected_constrain_updates(registration)
                 or config.get("selected_weights") != SELECTED_WEIGHTS
-                or (registration.get("kind") == "frozen_fullscene500_action_codec"
-                    and (config.get("diffusion") != {
+                or (registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND)
+                    and (config.get("diffusion", {}).get("training_scheduler") != "DDPMScheduler"
+                         or config.get("diffusion", {}).get("num_train_timesteps") != 100
+                         or config.get("diffusion", {}).get("beta_schedule") != "squaredcos_cap_v2"
+                         or config.get("diffusion", {}).get("prediction_type") != "epsilon"
+                         or (not native500 and config.get("diffusion") != {
                         "training_scheduler": "DDPMScheduler", "inference_scheduler": "DDIMScheduler",
                         "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
                         "prediction_type": "epsilon", "num_train_timesteps": 100,
-                        "inference_steps": 50, "eta": 0.0}
+                        "inference_steps": registration.get("inference_hypothesis", {}).get("inference_steps", 50), "eta": 0.0})
                          or config.get("policy", {}).get("obs_dim") != 42
-                         or config.get("policy", {}).get("act_dim") != 7
-                         or config.get("model_action_space") != "encoded controller-range coordinates"))
+                          or config.get("policy", {}).get("act_dim") != 7
+                          or (not native500 and config.get("model_action_space") != "encoded controller-range coordinates")
+                          or (native500 and (config.get("model_action_space") != "native identity coordinates"
+                                             or config.get("action_encoding_identity") is not True))))
                 or data.get("selected_class") != "obstacle"
                 or data.get("selected_episode_ids") != list(registration["selected_obstacle_ids"])
                 or config.get("action_encoding") != registration.get("action_encoding")
                 or config.get("action_encoding_sha256") != registration.get("action_encoding_sha256")
-                or (registration.get("kind") == "frozen_fullscene500_action_codec" and (
-                    config.get("model_action_space") != "encoded controller-range coordinates"
+                 or (registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND) and (
+                    (not native500 and config.get("model_action_space") != "encoded controller-range coordinates")
+                    or (native500 and config.get("model_action_space") != "native identity coordinates")
+                    or (native500 and config.get("action_encoding_identity") is not True)
                     or config.get("actual_training") != {"updates": expected_constrain_updates(registration), "selected_weights": "ema"}))
                 or (matched_control and (
                     Path(checkpoint).resolve() != Path(matched_control["path"]).resolve()
                     or sha256_file(checkpoint) != matched_control["sha256"]))
-        or (registration.get("kind") == "frozen_fullscene500_action_codec"
+        or (registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND)
             and (data.get("h5_sha256") != registration["datasets"]["h5"]["sha256"]
                  or data.get("manifest_sha256") != registration["datasets"]["manifest"]["sha256"]
                  or Path(data.get("data_path", "")).resolve() != Path(registration["datasets"]["h5"]["path"]).resolve()
@@ -1127,17 +1346,25 @@ class PilotConstrainAdapter:
             num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
             clip_sample=True, prediction_type="epsilon")
         self.inference_scheduler = None
-        if registration.get("action_encoding"):
-            self.inference_scheduler = _pickcube_ddim_scheduler(inference_steps)
+        steps = inference_steps
+        protocol = registration.get("inference_hypothesis", {})
+        native_ddpm = native500 and protocol.get("sampler") == "DDPMScheduler"
+        if registration.get("action_encoding") or (native500 and not native_ddpm):
+            steps = registration.get("inference_hypothesis", {}).get("inference_steps", inference_steps)
+            self.inference_scheduler = _pickcube_ddim_scheduler(steps)
         else:
-            self.scheduler.set_timesteps(100)
+            self.scheduler.set_timesteps(steps if native_ddpm else 100)
         self.action_profile = registration.get("action_encoding")
-        self.inference_steps = inference_steps if self.inference_scheduler is not None else 100
+        protocol = registration.get("inference_hypothesis", {})
+        action_slice = protocol.get("executed_prediction_slice", [1, 9])
+        self.action_slice = slice(action_slice[0], action_slice[1])
+        self.inference_steps = steps if self.inference_scheduler is not None else 100
         self.metadata = {"format": expected_format, "selected_weights": SELECTED_WEIGHTS,
                          "checkpoint_sha256": sha256_file(checkpoint),
-                         "inference_scheduler": "DDIMScheduler" if self.action_profile else "DDPMScheduler",
+                         "inference_scheduler": "DDPMScheduler" if native_ddpm or not (self.action_profile is not None or native500) else "DDIMScheduler",
                          "inference_steps": self.inference_steps,
-                         "eta": 0.0 if self.action_profile else None}
+                         "eta": 0.0 if self.action_profile is not None or (native500 and not native_ddpm) else None,
+                         "execution_horizon": registration.get("inference_hypothesis", {}).get("execution_horizon", 8)}
 
     def get_action(self, queued):
         from examples.baselines.constrain.pickcube_constrain import pickcube_relative_condition
@@ -1156,7 +1383,7 @@ class PilotConstrainAdapter:
                     sample = scheduler.step(prediction, timestep, sample, eta=0.0).prev_sample
                 else:
                     sample = scheduler.step(prediction, timestep, sample).prev_sample
-        action = sample[:, 1:9]
+        action = sample[:, self.action_slice]
         if self.action_profile is not None:
             return decode_prediction_to_native(action, self.action_profile)
         if bool((action.abs() > 1.000001).any()):
@@ -1212,7 +1439,8 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
         step_trace = []
         while elapsed < max_steps:
             prediction = adapter.get_action(history)
-            execution_horizon = 2 if getattr(adapter, "action_profile", None) is not None else 8
+            execution_horizon = int(getattr(adapter, "metadata", {}).get(
+                "execution_horizon", 2 if getattr(adapter, "action_profile", None) is not None else 8))
             for action in prediction[0][:min(execution_horizon, max_steps - elapsed)]:
                 action_cpu = action.detach().cpu().numpy()
                 obs, _, step_terminated, step_truncated, info = env.step(action_cpu[None])
@@ -1370,6 +1598,22 @@ def fullscene500_engineering_comparison(registration, output_dir, current_rows):
                         "introduced_new_only": counts["constrain_only"],
                         "both": counts["both"], "neither": counts["neither"],
                     }
+            normalized = {}
+            for field, counts in transitions[policy].items():
+                violation = field not in ("native_success", "safe_success")
+                normalized[field] = {
+                    ("cleared" if violation else "improved"): counts[
+                        "cleared_new_only" if violation else "improved_new_only"],
+                    ("introduced" if violation else "regressed"): counts[
+                        "introduced_new_only" if violation else "regressed_baseline_only"],
+                    "both": counts["both"], "neither": counts["neither"],
+                }
+            validate_transition_marginals(
+                normalized,
+                {field: sum(bool(row["result"][field]) for row in old) for field in fields},
+                {field: sum(bool(row["result"][field]) for row in current) for field in fields},
+                30,
+            )
     return {
         "comparison_type": "engineering pipeline comparison; not isolated codec/data/inference effect",
         "formal_performance_claim": False, "generalization_claim": False,
@@ -1794,6 +2038,23 @@ def expansion_transitions(baseline_rows, expansion_rows, fields):
             buckets[key] += 1
         report[field] = buckets
     return report
+
+
+def validate_transition_marginals(transitions, baseline_counts, current_counts, denominator):
+    """Reject paired transition tables that cannot produce their cohort marginals."""
+    for field, buckets in transitions.items():
+        if field not in baseline_counts or field not in current_counts:
+            raise ValueError(f"missing marginal count for {field}")
+        if sum(int(value) for value in buckets.values()) != int(denominator):
+            raise ValueError(f"{field} transitions do not sum to denominator")
+        if field in VIOLATION_FIELDS:
+            baseline_total = buckets["cleared"] + buckets["both"]
+            current_total = buckets["introduced"] + buckets["both"]
+        else:
+            baseline_total = buckets["regressed"] + buckets["both"]
+            current_total = buckets["improved"] + buckets["both"]
+        if baseline_total != int(baseline_counts[field]) or current_total != int(current_counts[field]):
+            raise ValueError(f"{field} transitions contradict cohort marginals")
 
 
 def separate_failed_attempts(failed_rows, recovery_rows):
@@ -3077,7 +3338,7 @@ def _run_window_gap_diagnosis(registration, device):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "preregister", "preregister-fullscene500", "preregister-expansion", "preregister-obstacle-increment",
+        "preregister", "preregister-fullscene500", "preregister-native500", "preregister-r36-ddpm", "preregister-expansion", "preregister-obstacle-increment",
         "collect-train", "collect-dev", "package",
         "include-original", "collect-pairs", "collect-direct", "package-expansion",
         "collect-obstacle-increment", "package-obstacle-increment",
@@ -3224,6 +3485,123 @@ def main(argv=None):
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
+    if args.command == "preregister-native500":
+        import importlib.util
+        from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
+        exp = args.registration.parent
+        dataset = Path(NATIVE500_H5).parent
+        dev = Path(FROZEN_DEV_SCENES)
+        baseline_exp = Path("outputs/exp/20261025_065159_pickcube_exposure90000")
+        base_path = Path(NATIVE500_BASE)
+        if sha256_file(base_path) != NATIVE500_BASE_SHA256:
+            raise RuntimeError("original native direct Base EMA hash changed")
+        base_ck = torch.load(base_path, map_location="cpu", weights_only=False)
+        base_payload = base_ck.get("payload") or {}
+        if (base_ck.get("format") != BASE_FORMAT or base_ck.get("step") != 30000
+                or base_ck.get("selected_weights") != "ema"
+                or base_payload.get("selected_class") != "direct"
+                or base_payload.get("selected_episode_ids") != list(range(1000))
+                or base_payload.get("action_encoding") is not None):
+            raise RuntimeError("original Base EMA is not the expected 1000-direct native checkpoint")
+        if (base_payload.get("h5_sha256") != NATIVE500_BASE_H5_SHA256
+                or base_payload.get("manifest_sha256") != NATIVE500_BASE_MANIFEST_SHA256
+                or sha256_file(NATIVE500_BASE_H5) != NATIVE500_BASE_H5_SHA256):
+            raise RuntimeError("original Base data identity is not the retained expansion source")
+        _verify_native_direct_subset(dataset / "trajectory.h5", NATIVE500_BASE_H5)
+        baseline = {
+            "base_checkpoint": NATIVE500_BASE, "base_checkpoint_sha256": NATIVE500_BASE_SHA256,
+            "constrain_checkpoint": "outputs/ckpt/20261025_065159_pickcube_exposure90000_constrain/final.pt",
+            "constrain_checkpoint_sha256": sha256_file("outputs/ckpt/20261025_065159_pickcube_exposure90000_constrain/final.pt"),
+            "paired_base": str(baseline_exp / "paired/base_dp"),
+            "paired_constrain": str(baseline_exp / "paired/constrain_dp"),
+            "paired_episode_tree_sha256": file_tree_hash(baseline_exp / "paired"),
+            "protocol_recovery": "not recoverable from retained preregistration/index/commands; this trial uses the explicit DDIM50 hypothesis",
+            "counts": {"base": {"task": 10, "safe": 0, "contact": 30, "xy": 15},
+                       "constrain": {"task": 27, "safe": 15, "contact": 15, "xy": 3}},
+        }
+        paths = {
+            "exp": str(exp), "demos": str(dataset), "dev_scenes": str(dev),
+            "constrain_run": str(exp / "train_constrain"),
+            "constrain_checkpoint_dir": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_native_constrain",
+            "constrain_checkpoint": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_native_constrain/final.pt",
+            "base_checkpoint": NATIVE500_BASE, "paired": str(exp / "paired"),
+        }
+        runtime_module = importlib.util.find_spec("mani_skill.envs.tasks.tabletop.pick_cube")
+        if runtime_module is None or runtime_module.origin is None:
+            raise RuntimeError("cannot resolve the ManiSkill PickCube task source")
+        identities = {
+            "datasets": {
+                "h5": {"path": NATIVE500_H5, "sha256": sha256_file(NATIVE500_H5)},
+                "manifest": {"path": NATIVE500_MANIFEST, "sha256": sha256_file(NATIVE500_MANIFEST)},
+            },
+            "validation": {
+                "dataset_validation": {"path": str(dataset / "validation.json"),
+                                       "sha256": sha256_file(dataset / "validation.json")},
+                "dev_manifest": {"path": str(dev / "manifest.json"), "sha256": sha256_file(dev / "manifest.json")},
+                "dev_scenes_h5": {"path": str(dev / "scenes.h5"), "sha256": sha256_file(dev / "scenes.h5")},
+                "maniskill_pickcube_source": {"path": runtime_module.origin,
+                                               "sha256": sha256_file(runtime_module.origin)},
+            },
+            "baseline": baseline,
+        }
+        payload = build_fullscene500_native_preregistration(
+            paths, identities, freeze_pilot_identity(fullscene=True))
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
+    if args.command == "preregister-r36-ddpm":
+        import importlib.util
+        from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
+        exp = args.registration.parent
+        dataset = Path(NATIVE500_H5).parent
+        dev = Path(FROZEN_DEV_SCENES)
+        r35 = Path("outputs/exp/20261028_145500_pickcube_native_control_r35")
+        base_path = Path(NATIVE500_BASE)
+        constrain_path = Path("outputs/ckpt/20261028_145500_pickcube_fullscene500_native_constrain_retry2/final.pt")
+        if base_path.is_file() is False or sha256_file(base_path) != NATIVE500_BASE_SHA256:
+            raise RuntimeError("R36 Base checkpoint identity mismatch")
+        if constrain_path.is_file() is False or sha256_file(constrain_path) != "be5b2b740a59eaf428c71a906e15eb5c83d1cf807e1629c3bdf060ac31b8db93":
+            raise RuntimeError("R36 Constrain checkpoint identity mismatch")
+        baseline_paired = r35 / "paired"
+        baseline = {
+            "paired_base": str(baseline_paired / "base_dp"),
+            "paired_constrain": str(baseline_paired / "constrain_dp"),
+            "paired_episode_tree_sha256": file_tree_hash(baseline_paired),
+            "base_checkpoint_sha256": NATIVE500_BASE_SHA256,
+            "constrain_checkpoint_sha256": "be5b2b740a59eaf428c71a906e15eb5c83d1cf807e1629c3bdf060ac31b8db93",
+            "protocol": "R35 actual DDIM-50, stride 8; frozen same-weight primary comparator",
+        }
+        paths = {
+            "exp": str(exp), "demos": str(dataset), "dev_scenes": str(dev),
+            "base_checkpoint": str(base_path), "constrain_checkpoint": str(constrain_path),
+            "paired": str(exp / "paired"),
+        }
+        runtime_module = importlib.util.find_spec("mani_skill.envs.tasks.tabletop.pick_cube")
+        if runtime_module is None or runtime_module.origin is None:
+            raise RuntimeError("cannot resolve the ManiSkill PickCube task source")
+        identities = {
+            "datasets": {"h5": {"path": NATIVE500_H5, "sha256": sha256_file(NATIVE500_H5)},
+                         "manifest": {"path": NATIVE500_MANIFEST, "sha256": sha256_file(NATIVE500_MANIFEST)}},
+            "validation": {
+                "dataset_validation": {"path": str(dataset / "validation.json"), "sha256": sha256_file(dataset / "validation.json")},
+                "dev_manifest": {"path": str(dev / "manifest.json"), "sha256": sha256_file(dev / "manifest.json")},
+                "dev_scenes_h5": {"path": str(dev / "scenes.h5"), "sha256": sha256_file(dev / "scenes.h5")},
+                "maniskill_pickcube_source": {"path": runtime_module.origin, "sha256": sha256_file(runtime_module.origin)},
+            },
+            "baseline": baseline,
+            "matched_base_checkpoint": {"path": str(base_path), "sha256": NATIVE500_BASE_SHA256},
+            "matched_constrain_checkpoint": {"path": str(constrain_path), "sha256": baseline["constrain_checkpoint_sha256"]},
+        }
+        payload = build_r36_archived_ddpm_preregistration(paths, identities, freeze_pilot_identity(fullscene=True))
+        payload["baseline"] = baseline
+        payload["matched_constrain_checkpoint"] = identities["matched_constrain_checkpoint"]
+        payload["gate"] = {"task_success_count_gte": 27, "safe_success_count_gte": 26,
+                            "contact_count_lte": 3, "xy_crossing_count_lte": 3,
+                            "require_complete": True, "require_zero_runtime_errors": True,
+                            "formal_performance_claim": False}
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
     if args.command == "preregister-expansion":
         from examples.baselines.constrain.pickcube_transport_detour import freeze_source_identity
         exp = args.registration.parent
@@ -3340,7 +3718,7 @@ def main(argv=None):
     registration = load_preregistration(args.registration)
     enforce_runtime_source_identity(
         registration,
-        freeze_pilot_identity(fullscene=registration.get("kind") == "frozen_fullscene500_action_codec"),
+        freeze_pilot_identity(fullscene=registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND)),
         args.command,
     )
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
@@ -3547,7 +3925,9 @@ def main(argv=None):
         print(dest, flush=True)
         return dest
     if args.command == "train-base":
-        if registration.get("kind") == "frozen_fullscene500_action_codec":
+        if registration.get("kind") == NATIVE500_KIND:
+            raise SystemExit("native full-scene500 trial freezes the original Base; base retraining is forbidden")
+        if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
             expected = registration["paths"]
             if (Path(args.run_dir).resolve() != Path(expected["base_run"]).resolve()
                     or Path(args.checkpoint_dir).resolve() != Path(expected["base_checkpoint_dir"]).resolve()
@@ -3563,7 +3943,7 @@ def main(argv=None):
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.run_dir, args.checkpoint_dir, registration, args.device)
     if args.command == "train-constrain":
-        if registration.get("kind") == "frozen_fullscene500_action_codec":
+        if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
             expected = registration["paths"]
             if (Path(args.run_dir).resolve() != Path(expected["constrain_run"]).resolve()
                     or Path(args.checkpoint_dir).resolve() != Path(expected["constrain_checkpoint_dir"]).resolve()
@@ -3592,7 +3972,8 @@ def main(argv=None):
         import shutil
         from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
         from examples.baselines.constrain.pickcube_transport_detour import TransportDetourSceneSet
-        if registration.get("kind") == "frozen_fullscene500_action_codec":
+        native500 = registration.get("kind") == NATIVE500_KIND
+        if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
             expected = registration["paths"]
             if (Path(args.output_dir).resolve() != Path(expected["paired"]).resolve()
                     or Path(args.base_checkpoint).resolve() != Path(expected["base_checkpoint"]).resolve()
@@ -3670,26 +4051,29 @@ def main(argv=None):
         }
         if args.inference_steps not in (50, 100):
             raise SystemExit("registered action-codec inference supports only 50 or 100 DDIM steps")
+        if native500 and args.inference_steps != registration["inference_hypothesis"]["inference_steps"]:
+            raise SystemExit("native500 inference must match its preregistered hypothesis")
         adapters = {
             "base_dp": PilotBaseAdapter(args.base_checkpoint, registration, args.device, args.inference_steps),
             "constrain_dp": PilotConstrainAdapter(
                 args.constrain_checkpoint, registration, args.device, args.inference_steps),
         }
         args.output_dir.mkdir(parents=True, exist_ok=False)
+        registered_sampler = registration.get("inference_hypothesis", {}).get("sampler", "DDPMScheduler")
         _json_atomic(args.output_dir / "inference_profile.json", {
-            "scheduler": "DDIMScheduler" if registration.get("action_encoding") else "DDPMScheduler",
-            "inference_steps": args.inference_steps if registration.get("action_encoding") else 100,
+            "scheduler": registered_sampler,
+            "inference_steps": args.inference_steps if registration.get("action_encoding") is not None or native500 else 100,
             "training_timesteps": 100, "beta_schedule": "squaredcos_cap_v2",
-            "prediction_type": "epsilon", "eta": 0.0 if registration.get("action_encoding") else None,
+            "prediction_type": "epsilon", "eta": 0.0 if registered_sampler == "DDIMScheduler" else None,
             "prediction_horizon": 16, "executed_prediction_slice": [1, 9],
-            "execution_stride": 2, "plans_per_call": 1,
+            "execution_stride": registration.get("inference_hypothesis", {}).get("replan_stride", 2), "plans_per_call": 1,
             "action_encoding_sha256": registration.get("action_encoding_sha256"),
             "base_checkpoint_sha256": sha256_file(args.base_checkpoint),
             "constrain_checkpoint_sha256": sha256_file(args.constrain_checkpoint),
             "scene_manifest_sha256": sha256_file(args.scene_dir / "manifest.json"),
             "source_identity": freeze_pilot_identity(fullscene=True),
         })
-        if registration.get("kind") == "frozen_fullscene500_action_codec":
+        if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND):
             baseline_root = args.output_dir / "baseline_snapshot"
             shutil.copytree(Path(registration["baseline"]["paired_base"]).parent, baseline_root / "paired")
             if file_tree_hash(baseline_root / "paired") != registration["baseline"]["paired_episode_tree_sha256"]:
@@ -3722,7 +4106,7 @@ def main(argv=None):
                 adapters.pop("base_dp")
         import signal
         episode_wall = (registration["evaluation"]["episode_wall_seconds"]
-                        if registration.get("kind") == "frozen_fullscene500_action_codec"
+                        if registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND)
                         else registration["eval"]["episode_wall_seconds"])
         if reuse_rows is not None:
             policy_dir = args.output_dir / "base_dp"
@@ -3739,7 +4123,7 @@ def main(argv=None):
             stored["base_dp"] = rows
             index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints["base_dp"]))
             index["source_identity"] = freeze_pilot_identity(
-                fullscene=registration.get("kind") == "frozen_fullscene500_action_codec")
+                fullscene=registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND))
             index["reused_expansion_base"] = True
             _json_atomic(policy_dir / "summary.json", summaries["base_dp"])
             _json_atomic(policy_dir / "index.json", index)
@@ -3769,7 +4153,7 @@ def main(argv=None):
             _json_atomic(policy_dir / "summary.json", summaries[name])
             index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints[name]))
             index["source_identity"] = freeze_pilot_identity(
-                fullscene=registration.get("kind") == "frozen_fullscene500_action_codec")
+                fullscene=registration.get("kind") in ("frozen_fullscene500_action_codec", NATIVE500_KIND))
             _json_atomic(policy_dir / "index.json", index)
         paired = {
             "policies": summaries,
