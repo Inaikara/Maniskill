@@ -2,6 +2,114 @@
 
 ## Cleanup status
 
+## Round 32 — PickCube full-scene existing-pool inventory (2026-10-28)
+
+The user-approved target is 500 distinct real demonstrations, not 500 task-
+unique layouts. Within training, task conflict is same seed or componentwise
+start/goal XY within 0.02 m. Full-scene conflict additionally requires cylinder
+center XY within 0.005 m per component, height within 0.005 m, and radius within
+0.001 m. Frozen dev30 and Ticket 03 exclusions remain strict task identity
+regardless of cylinder geometry.
+
+### Phase 1 — versioned, geometry-reconciled inventory
+
+The initial inventory is retained at
+`outputs/exp/20261028_143000_pickcube_fullscene_inventory/`; it has an obsolete
+1070 candidate count because the old 300-package manifest omitted cylinder
+height/radius. It was not rewritten. The corrected versioned report is
+`outputs/exp/20261028_164000_pickcube_fullscene_inventory/inventory_geometry_reconciled.json`;
+its pre-audit correction registration is
+`registration_geometry_reconciliation.json`. Old 300 cylinder identities were
+reconciled from the pinned retained/merged source manifests and catalog records.
+Corrected eligible catalog additions: **706**, all from the 900-record direct-
+scene catalog; the 64 pair, 127 increment, and 200 deficit catalogs contribute
+zero after geometry-aware first-qualified selection. This leaves 506 unused candidates after the
+successful one-pass selection. The old strict task-only result remains 103
+additional task-unique candidates; the 706 count is full-scene eligible and is
+not called task-unique.
+
+Reconciliation inventory command (after activating `maniskill`):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=10s 300s \
+  python -m examples.baselines.constrain.audit_pickcube_existing_pool \
+  --output outputs/exp/20261028_164000_pickcube_fullscene_inventory/inventory_geometry_reconciled.json --full-scene
+```
+
+Corrected inventory SHA-256:
+`b2e3c310b3086294e96271dd191568861ca9d99a7e3e682c7fd74b7003a6443d`.
+
+### Phase 2 — frozen native replay and exact 1,000/500 package
+
+Before native execution, `outputs/exp/20261028_164500_pickcube_fullscene500/registration.json`
+froze the 706-candidate ordered pool, every candidate's source/catalog ID,
+seed/start/goal/cylinder/waypoint, initial-state/action/observation fingerprints,
+old/direct dataset hashes, external manifests, runtime versions, and replay
+source identities. Registration SHA-256:
+`de4fe563f356735bce5e0ada49057734e41dd615f53ee5fae02d97bb5f6b5462`.
+The first three original-layout canaries passed fresh-environment initial
+state/controller/45-D observation restoration and exact first-transition state,
+controller, 45-D observation, info, and flags. All 200 selected candidates were
+then attempted in stable source/manifest order; **200 accepted, 0 rejected, 0
+runtime errors**, 157.20 seconds. All 200 came from the existing
+`direct_scenes/assembled` catalog; no seed/layout/cylinder/waypoint was sampled
+or modified. The accepted IDs and 506 unused IDs are recoverable from the full
+registration and `materialization/replay_report.json`.
+
+The package is `demos/PickCube-transport-detour/20261028_164500_frozen500/`:
+exactly 1,000 direct IDs 0–999 and 500 obstacle IDs 1000–1499, all 1,500 IDs
+covered once. Old direct/obstacle arrays for IDs 0–1299 match their source
+arrays; all direct arrays also match the frozen 1,000-direct source. The old
+1,000/300 source HDF5 remains unchanged at SHA-256
+`3c15f50993b5ab5967b1a40695e53288b0f9464f4b61504a93d9989499ded7e6`.
+Obstacle counts are **333 task-unique / 500 full-scene-unique**; the 500 figure
+is not represented as 500 task-unique layouts. New 200 are physically executed
+native demonstrations, not copied trajectories. New cylinder geometry is
+identical to the corresponding frozen catalog record; radius remains 0.03 m.
+
+Final identities: `trajectory.h5`
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`,
+`trajectory.json`
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, and
+`validation.json` is retained beside them. The independent audit verified exact
+class IDs/counts, full-scene/task counts, all 1,300 old-source arrays, every new
+T actions/T+1 raw-45/policy-42/full-state/controller/info/terminated/truncated
+trace, native held success, collision/crossing-free prefix through first held
+success, and all **200/200 exact initial plus first-transition restore audits**.
+Every recorded controller snapshot is `{}`; runtime arm/gripper `config.use_target`
+was present and false at every saved state.
+
+Official PickCube action/window profile from the package audit:
+
+| Class | Episodes | DP windows (obs=2, pred=16, before=1, after=14) | Length min/median/p90/p95/max | 6 pose-channel min/max | Grip min/max | Per-episode RMS quantiles (0/5/50/95/100%) |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| Direct | 1,000 | 83,004 | 55 / 83 / 107.1 / 112 / 123 | each `[-0.35, +0.35]` | `[-1, +1]` | per-channel arrays in `validation.json` |
+| Obstacle | 500 | 45,840 | 66 / 90 / 114 / 119 / 125 | each `[-0.35, +0.35]` | `[-1, +1]` | per-channel arrays in `validation.json` |
+
+The first six stored values are the native `pd_ee_delta_pose` expert commands
+(the collector's documented 0.35 action cap); the seventh is the native gripper
+command. These are controller-native command coordinates, not meters/radians
+or the PlaceSphere codec. Every native obstacle episode ends with grip `-1`
+(closed) at held success. The opt-in official-window reader preserves the final
+grip value in tail padding, so it does not invent an open-gripper terminal tail.
+Future training should consume this version through
+`PickCubeFullScene500Dataset` with both HDF5 and manifest SHA pins; retain native
+action coordinates until a separate codec audit establishes a different
+normalization. No training or evaluation was run in this round.
+
+Focused tests passed 7/7; reader smoke loaded both classes and returned exactly
+83,004 / 45,840 windows with `(2,42)` observations and `(16,7)` actions. Final
+full suite: `timeout --signal=TERM --kill-after=20s 700s python -m pytest
+examples/baselines/constrain/tests -q --tb=line` — **544 passed, 28 warnings,
+86.51 s**. `git diff --check` passed. No replay, audit, or training worker
+remained after verification.
+One earlier registered packaging attempt at
+`outputs/exp/20261028_163500_pickcube_fullscene500/` replayed 200 candidates but
+failed during HDF5 state-series serialization; its incomplete package remains
+retained as a failed attempt. The corrected 164500 registration persisted each
+replay before assembly and produced the audited final dataset above.
+
 ## Round 31 — PickCube existing-pool audit (2026-10-28)
 
 Read-only audit at `outputs/exp/20261028_110000_pickcube_existing_pool_audit/`

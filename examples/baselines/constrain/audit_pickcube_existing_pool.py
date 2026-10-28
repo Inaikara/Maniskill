@@ -24,6 +24,11 @@ RETAINED_CATALOGS = (
     Path("outputs/exp/20261024_213325_pickcube_obstacle300/obstacle_scenes/assembled"),
     Path("outputs/exp/20261024_213325_pickcube_obstacle300/obstacle_scenes/assembled_deficit"),
 )
+OLD_GEOMETRY_SOURCES = (
+    Path("outputs/exp/20261024_104348_pickcube_data_expansion/retained_scenes/manifest.json"),
+    Path("outputs/exp/20261024_104348_pickcube_data_expansion/pair_scenes/merged/manifest.json"),
+    Path("outputs/exp/20261023_235744_pickcube_learning_pilot_r2/train_scenes/manifest.json"),
+)
 
 
 def layout_key(episode):
@@ -54,6 +59,30 @@ def task_duplicate(left, right, tolerance=0.02):
         if a is None or b is None or np.asarray(a).shape != np.asarray(b).shape:
             return False
         if np.any(np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)) > tolerance):
+            return False
+    return True
+
+
+def full_scene_duplicate(left, right):
+    """A full-scene repeat is a task repeat with near-identical cylinder geometry."""
+    if not task_duplicate(left, right):
+        return False
+    def cylinder(episode):
+        layout = episode.get("layout", {})
+        return episode.get("cylinder", layout.get("cylinder", episode.get("obstacle", {})))
+
+    a, b = cylinder(left), cylinder(right)
+    center_a = a.get("center_xy", a.get("obstacle_center_xy", a.get("cylinder_center_xy")))
+    center_b = b.get("center_xy", b.get("obstacle_center_xy", b.get("cylinder_center_xy")))
+    if center_a is None or center_b is None:
+        center_a = left.get("layout", {}).get("obstacle_center_xy")
+        center_b = right.get("layout", {}).get("obstacle_center_xy")
+    if center_a is None or center_b is None:
+        return False
+    if np.any(np.abs(np.asarray(center_a, dtype=float) - np.asarray(center_b, dtype=float)) > 0.005):
+        return False
+    for field, tolerance in (("height", 0.005), ("radius", 0.001)):
+        if field not in a or field not in b or abs(float(a[field]) - float(b[field])) > tolerance:
             return False
     return True
 
@@ -161,8 +190,31 @@ def audit(repo_root=Path(".")):
         }
     obstacle300 = raw_episodes.get("obstacle300", {}).get("obstacle", [])
     expansion_obstacle = raw_episodes.get("expansion_1000_100", {}).get("obstacle", [])
+    geometry_rows = []
+    for catalog in RETAINED_CATALOGS:
+        manifest = repo / catalog / "manifest.json"
+        if manifest.is_file():
+            geometry_rows.extend(json.loads(manifest.read_text()).get("scenes", []))
+    geometry_sources = []
+    for relative in OLD_GEOMETRY_SOURCES:
+        manifest = repo / relative
+        if manifest.is_file():
+            geometry_rows.extend(json.loads(manifest.read_text()).get("scenes", []))
+            geometry_sources.append({"path": relative.as_posix(),
+                                     "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()})
+    geometry_by_seed = {int(row["seed"]): row for row in geometry_rows}
+    unresolved_old_geometry = []
+    for episode in [*obstacle300, *expansion_obstacle]:
+        scene = geometry_by_seed.get(int(episode.get("layout", {}).get("seed", -1)))
+        if scene is None:
+            if episode in obstacle300:
+                unresolved_old_geometry.append(int(episode["episode_id"]))
+            continue
+        episode["cylinder"] = scene["cylinder"]
     expansion_extra = [episode for episode in expansion_obstacle
                        if not any(task_duplicate(episode, prior) for prior in obstacle300)]
+    expansion_full_scene_extra = [episode for episode in expansion_obstacle
+                                  if not any(full_scene_duplicate(episode, prior) for prior in obstacle300)]
     dev_path = repo / Path("outputs/exp/20261023_235744_pickcube_learning_pilot_r2/dev_scenes/manifest.json")
     prior_path = repo / Path("outputs/exp/20261023_165956_pickcube_transport_detour/manifest.json")
     external = []
@@ -188,6 +240,7 @@ def audit(repo_root=Path(".")):
                                      "available": False})
     retained = []
     catalog_candidates = []
+    full_scene_candidates = []
     for path in RETAINED_CATALOGS:
         absolute = repo / path
         files = sorted(p for p in absolute.rglob("*") if p.is_file()) if absolute.exists() else []
@@ -206,7 +259,8 @@ def audit(repo_root=Path(".")):
                 expert = row.get("expert", {})
                 candidate = {"episode_id": row.get("scene_id"), "kind": "obstacle",
                              "layout": {"seed": row.get("seed"), "start_xy": row.get("start_xy"),
-                                        "goal_xy": row.get("goal_xy")}}
+                                        "goal_xy": row.get("goal_xy")},
+                             "cylinder": row.get("cylinder", {})}
                 group = h5[str(row["scene_id"])]
                 actions, observations = np.asarray(group["expert_actions"]), np.asarray(group["observations"])
                 certified = (
@@ -219,20 +273,23 @@ def audit(repo_root=Path(".")):
                     and bool(np.asarray(group["obstacle_terminated"]).any())
                     and not bool(np.asarray(group["obstacle_truncated"]).any())
                 )
-                if not certified or any(task_duplicate(candidate, old) for old in obstacle300):
+                if not certified:
                     continue
                 if any(task_duplicate(candidate, prior) for prior in external):
                     continue
-                if any(task_duplicate(candidate, prior) for prior in catalog_candidates):
-                    continue
-                catalog_candidates.append(candidate)
-                per_catalog.append(row["scene_id"])
+                if not any(task_duplicate(candidate, old) for old in obstacle300):
+                    if not any(task_duplicate(candidate, prior) for prior in catalog_candidates):
+                        catalog_candidates.append(candidate)
+                if not any(full_scene_duplicate(candidate, old) for old in obstacle300):
+                    if not any(full_scene_duplicate(candidate, prior) for prior in full_scene_candidates):
+                        full_scene_candidates.append(candidate)
+                        per_catalog.append(row["scene_id"])
         retained[-1]["catalog_identity"] = {
             "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
             "scenes_h5_sha256": hashlib.sha256(scenes_path.read_bytes()).hexdigest(),
             "source_identity": json.loads((absolute / "source_identity.json").read_text()),
             "scene_count": len(rows),
-            "new_eligible_ids_after_old300_dev30_ticket03_and_prior_catalog_order": per_catalog,
+            "new_full_scene_eligible_ids_after_old300_dev30_ticket03_and_prior_catalog_order": per_catalog,
         }
     return {
         "audit_type": "read_only_existing_artifact_inventory_no_sampling_no_replay",
@@ -246,8 +303,12 @@ def audit(repo_root=Path(".")):
             "combined_obstacle_unique": count_task_unique([*obstacle300, *expansion_obstacle])[0],
         },
         "additional_existing_source_catalogs": retained,
+        "old_package_geometry_sources": geometry_sources,
+        "old300_geometry_records_unresolved": unresolved_old_geometry,
         "external_exclusion_sources": external_sources,
         "catalog_new_eligible_count": len(catalog_candidates),
+        "catalog_new_full_scene_eligible_count": len(full_scene_candidates),
+        "expansion_new_full_scene_eligible_count": len(expansion_full_scene_extra),
         "materialization": {
             "goal_obstacle_count": 500,
             "already_qualified_obstacle_count": len(obstacle300),
@@ -255,6 +316,9 @@ def audit(repo_root=Path(".")):
             "available_packaged_obstacle_trajectories": len(expansion_extra) + len(catalog_candidates),
             "existing_pool_max_unique": len(obstacle300) + len(expansion_extra) + len(catalog_candidates),
             "can_materialize_500_without_replay": len(obstacle300) + len(expansion_extra) + len(catalog_candidates) >= 500,
+            "full_scene_additional_eligible_count": len(expansion_full_scene_extra) + len(full_scene_candidates),
+            "full_scene_unique_existing_pool_max": len(obstacle300) + len(expansion_full_scene_extra) + len(full_scene_candidates),
+            "full_scene_can_materialize_500": len(obstacle300) + len(expansion_full_scene_extra) + len(full_scene_candidates) >= 500,
         },
     }
 
@@ -262,6 +326,8 @@ def audit(repo_root=Path(".")):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--full-scene", action="store_true",
+                        help="report the user-approved task-plus-existing-cylinder identity alongside strict task identity")
     args = parser.parse_args()
     result = audit()
     args.output.parent.mkdir(parents=True, exist_ok=True)
