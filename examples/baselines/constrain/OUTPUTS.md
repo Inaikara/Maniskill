@@ -1,5 +1,93 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 42 — preregistered training-only clearance proxy precheck (2026-10-29)
+
+R42 **stopped before training and native development evaluation**. The one
+precheck's final fail-closed analysis found that the fixed hand/link-7 frames
+matched native FK, but the sampled point-cloud transform validation did not
+meet tolerance, declared point padding was not applied, registered finger samples
+were omitted, and the carried-cube forbidden-disk component was not implemented.
+Therefore the surrogate was not credible as a complete
+training objective, regardless of the response fit's strong held-out numeric
+score. No λ tuning, geometry/dynamics refit, retry, checkpoint, policy action,
+development label, simulator episode, or new demonstration was used.
+
+### Frozen protocol and preserved attempt
+
+The R42 output is
+`outputs/exp/20261029_050700_pickcube_clearance_r42/`. Registration
+`preregistration.json` was frozen before geometry/dynamics analysis (identity
+`e1f843e385ed2975136ca15e1f0cedffeab24e7593c46add53f36129d9839f47`). The
+final implementation source was pinned in the pre-analysis correction record
+(`precheck_source_correction.json`, next registration identity
+`6314040c6d53672d3788a155451c3ff7a3a49078f16b2c7d14f041875dcb89e3`); the
+initial registration is retained unchanged. The single recorded precheck is
+`precheck/geometry_response_precheck.json` (SHA-256
+`804012ccf11b5e5e2ed63ff8fa70344150fa2d67d3a8c7befdb90cbdd5098eb2`). The
+analysis-only invalidations are `precheck/precheck_correction.json` and
+`precheck/precheck_correction_02.json`; the latter supersedes the first and
+records the padding/finger audit. Both reference the first result by hash and
+record no additional precheck attempt. Report-source deltas are independently recorded in
+`analysis_source_correction*.json`.
+
+Inputs were the exact R41 frozen 500 source: HDF5 SHA-256
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`, manifest
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, and
+validation `f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`.
+The source has explicit per-trajectory cylinder metadata for all 500 obstacle
+IDs (center, radius 0.03 m, and measured height; range 0.10698–0.16833 m).
+The frozen initializer was the unchanged R40 Base final EMA
+`9cee2f8ce05461c8b3ab75a834db94c2b88cf9c864cb95d79b78c501cd961719`; R41
+Control was not resumed. No direct or dev states/actions were used to fit.
+
+### Measured response and proxy evidence
+
+The registered 21-feature, centered float64 ridge fit (`λ=1e-6`) used 36,697
+frames from IDs `1000..1499 where id % 5 != 0`; the held-out-by-trajectory
+validation used 9,143 frames from `id % 5 == 0`. Current-frame action index 1
+alignment and target next-recorded TCP pose were used. Validation position error
+was mean **0.0002623 m**, p95 **0.0006817 m**, maximum **0.0041635 m**; mean
+position error improved **96.60%** over the preregistered zero-displacement
+baseline. Angular p95 was **0.0009019 rad**. This meets the response-fit numeric
+thresholds but is only one-step recorded-action prediction, not rollout or
+collision-prediction accuracy.
+
+The 36-state read-only FK check found fixed TCP→hand and TCP→link7 relation
+maximum absolute errors `2.3842e-7` and `3.5763e-7`, respectively. However, the
+recorded point-cloud/native transform comparison was **0.424431 m**, far above
+the `1e-5 m` acceptance tolerance; its saved-TCP comparison field was conflated
+with that point-cloud maximum, so the surface-point transform validation is
+invalid. The original report also recorded 130,557 negative sampled point-SDF
+values among 23,470,080 points; because the transforms failed and samples are
+not exact surfaces, these cannot be interpreted as robot collisions or used to
+assert the safe demonstrations are geometrically invalid. The proxy geometry
+was limited to sampled URDF collision-mesh points from hand and link7. Although
+the preregistration declared 5 mm point-sphere padding, the precheck did not
+apply it; this is another recorded blocker. Registered left/right finger
+collision samples were also absent. It was not a full Panda collision model and
+never represented PhysX collision ground truth.
+
+The registration additionally specified a carried-cube XY forbidden-disk
+constraint, active only when the current raw grasp flag is true, using the
+native PickCube radius formula. That component was **not implemented or
+validated** in this one attempt. This is an independent hard failure. The
+recorded attempted point cloud/hash/mesh sources and response coefficients are
+retained under `precheck/`; they are not approved training artifacts.
+
+### Decision and scope
+
+The corrected result is `status: failed`, `training_permitted: false`, with
+failure reasons: point-cloud transform validation above tolerance, missing
+carried-cube proxy, declared sample padding not applied, and omitted finger
+samples. As required, the 150,000-update R42 training, R41-equivalent
+30-scene paired native trial, and gate were **not run**. The proposed
+`epsilon MSE + λ_eff clearance` objective (λ final 0.01, warmup 10,000) was
+never registered as a training phase or applied. Inference behavior is
+unchanged. There are no R42 model weights or outcome counts. The preregistered
+precheck attempt limit was one; no second model/geometry fit was attempted.
+Frozen HDF5, manifest, validation, R40 Base, R41 Control, ManiSkill/Panda source,
+PlaceSphere source, and existing demos remain unchanged.
+
 ## Round 41 — fixed Panda body-frame PickCube hint (2026-10-29)
 
 R41 completed one 150,000-update Control-only training run on the frozen 500
