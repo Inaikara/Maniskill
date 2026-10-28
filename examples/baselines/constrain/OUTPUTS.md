@@ -1,5 +1,213 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 40 — matched PickCube global-XY gauge augmentation (2026-10-29)
+
+R40 completed one matched Base/Control retraining and one paired 30-scene native
+development trial (60 episodes total). It is exploratory development evidence,
+not a formal performance or generalization claim. The single treatment is a
+**training-distribution change**: each training window sees one uniformly
+sampled XY coordinate-origin translation of the same physical episode. It is
+not a claim that the training distribution or training examples were unchanged.
+There are still exactly 1,000 direct and 500 obstacle physical demonstrations;
+no demonstrations, HDF5 variants, labels, layouts, task geometries, or replay
+materializations were created. The R40 augmentation draw counts below describe
+in-memory training calls, not additional data episodes.
+
+### Frozen source and preregistration chronology
+
+The R40 experiment lives at
+`outputs/exp/20261029_004500_pickcube_xy_gauge_r40/`; checkpoints are in
+`outputs/ckpt/20261029_004500_pickcube_xy_gauge_r40_{base,constrain}/`.
+The initial registration was frozen before Base training, with registration
+identity `b7ea9f8d80049f8fbca71ac920d8c0c34548f088fc50f91e0b22073d9c5befb6`
+and source aggregate
+`82b54a6650fff1f2540c79bb777b2b02ab7aa2a76a1eb24521238ec3e9ef83af`.
+Base's phase preregistration identity is
+`49e14ee3f05be3a5280fd3636f75ea39198f419d3ef64bbb0666bd0f440ff53c`.
+
+The Control preflight found a missing import for the explicit original-raw-hint
+invariance check before Control training began. That precise source correction
+is recorded in `post_base_source_correction.json`; the original Base registration
+and source identity are byte-preserved at
+`preregistration_base_training_frozen.json`. The R40 Base checkpoint was not
+changed or retrained. The new Control registration identity is
+`eafac1a12fa6fcae4641787d65bc7355bded3fc65857fb3353a48cfb493e1c35`, and its
+phase preregistration identity is
+`b37fb7743c1340f2e9258a2130e10f57fa90fb5900d0a32854d1d35a6a01e02d`.
+
+After both training phases, a report-adapter source correction was recorded
+before any native rollout in `post_training_analysis_correction.json`; the
+Control-training registration is preserved at
+`preregistration_control_training_frozen.json`. Neither model was retrained.
+The native evaluation preregistration identity is
+`4ef5212bb7d235a37fdeabd18fdfa91c1fe04471b0e0098254ac0fb88acd468e`, using
+source aggregate
+`0fdd4b7b6dc0927a59e4a82bfe490b58878e43e69c10c28575106f74cc2f79cb`.
+The actual frozen native registration is
+`3168e00fbdfde80bc96471203ab68ebc66a8833774e7bd1f118c65b7cfb64f0e`.
+
+The immutable training source is
+`demos/PickCube-transport-detour/20261028_164500_frozen500/`: HDF5
+SHA-256 `0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`,
+manifest `6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`,
+validation `f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`.
+Training uses direct IDs 0–999 (83,004 windows) and obstacle IDs 1000–1499
+(45,840 windows); the same 333-task/500-obstacle cohort is unchanged. All three
+hashes matched after both trainings and native evaluation. PickCube source stayed
+at SHA-256 `53bfed0229cd4de2c7e363e7f3c531d5c5c84803c28e1345a2aea1a4972f3168`;
+ManiSkill task/controller code and all PlaceSphere files were untouched.
+
+### Fixed coordinate-origin transform and invariants
+
+The fixed profile is `global_xy_gauge_v1`, with one always-on training draw
+`delta_xy ~ Uniform([-0.02,0.02]^2)` meters per batch window. In raw observations,
+the same delta is added to TCP world XY, goal world XY, and object world XY; for
+raw 45-D Control observations, it is also added to obstacle-center XY. Indices
+are derived from `NAMED_FIELDS`, not unsupported offsets. The delta is shared
+across both history frames and all world-position fields in that window, and is
+independent across windows. It is applied to a cloned minibatch before the fixed
+R38 position-unit encoder.
+
+This represents translating the coordinate origin of the entire scene,
+including its implicit robot-base/table frame; it does not move an object or
+cylinder relative to the robot. Z, joint positions/velocities, grasp flags,
+quaternions, all relative vectors, cylinder radius, and all seven native action
+labels remain exactly unchanged. Therefore TCP-to-object and object-to-goal
+vectors, object-to-cylinder XY displacement, and the cylinder disk-clearance
+margin are invariant. No axes rotation, Z shift, per-frame/independent
+target/obstacle shift, label perturbation, new geometry, input feature, or
+inference augmentation is used. Model inputs retain the 42-D R38 position-unit
+condition and Control's same three-value relative hint; the latter is computed
+from the original unshifted raw 45-D frame for bit consistency. Real-data
+preflight measured zero hint change and zero disabled-Control epsilon difference.
+
+The hypothesis is exploratory: a small common-origin randomization may reduce
+absolute global-position memorization and improve conditional generalization
+across the 500 demonstrations and 333 task variants. R38/R39 do not causally
+establish that mechanism. The model has no explicit base-pose observation;
+unchanged joint coordinates plus shifted TCP coordinates make this a deliberately
+scoped coordinate-gauge hypothesis, not a sensor-noise or physical robot-motion
+augmentation.
+
+The dedicated RNG is `torch.Generator(device="cpu")`, seed
+`training_seed + 424242` (424243 for this training seed). Once per batch it draws
+`torch.rand((B,2), dtype=torch.float32, generator=cpu_generator)`, consumed in
+row-major order `[window0-x, window0-y, window1-x, window1-y, ...]`, then maps
+each value by `(2u-1)*0.02`. Its state is saved/restored with every recovery
+checkpoint, independently of model initialization, diffusion noise/timestep,
+sampler, and DataLoader RNG. The exact algorithm is repeated in both checkpoint
+metadata blocks. Inference is unshifted in the original world frame.
+
+### Matched training and checkpoints
+
+The unchanged pipeline is Base direct-only for 30,000 updates, then Control
+obstacle-only for 150,000 updates initialized from this new Base final EMA, with
+all Base parameters frozen. Both keep batch 1,024, seed 1, AdamW `1e-4`, betas
+`(0.95,0.999)`, weight decay `1e-6`, warmup 500, cosine LR, EMA power 0.75,
+unweighted native epsilon MSE, DDPM-100 squared-cosine epsilon prediction, and
+the R38 model/profile/action dimensions. Actions remain native identity
+`pd_ee_delta_pose`; no new clamp, codec, shield, or phase weighting was added.
+
+| Policy | Updates | Wall time | First → final loss | Final EMA SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| R40 Base | 30,000 | 1,061.30 s | 1.17822170 → 0.00282031 | `9cee2f8ce05461c8b3ab75a834db94c2b88cf9c864cb95d79b78c501cd961719` |
+| R40 Control | 150,000 | 4,363.34 s | 0.03726619 → 0.00181645 | `2215f9f7d8bbec933bec53b2880758206af304a171297c5369ad85dcadfe1374` |
+
+Both phase summaries report finite losses and complete 10,000-update recovery
+checkpoints (3 Base, 15 Control). Loss logs have exactly 30,000 and 150,000
+rows. Both checkpoint metadata objects carry exactly the same registered
+augmentation profile and dedicated RNG state. Control's frozen-Base tensor hash
+matches the R40 Base EMA (`5e5e7e9ebd007bd1b9319825e537aa922943e25d4844787e0e3ebd148b848b2d`).
+The selected weights are the fixed final EMA, not a searched seed/step/δ setting.
+
+Saved aggregate δ statistics (one entry per window draw, **not data quantity**):
+
+| Policy | Draws | X min / mean / max (m) | Y min / mean / max (m) |
+| --- | ---: | --- | --- |
+| Base | 30,720,000 | -0.02000000 / -7.38e-8 / 0.01999999 | -0.02000000 / 3.30e-7 / 0.02000000 |
+| Control | 153,600,000 | -0.02000000 / -6.80e-8 / 0.02000000 | -0.02000000 / 1.48e-6 / 0.02000000 |
+
+Recovery state and summaries are under the R40 `outputs/ckpt/` and
+`outputs/exp/` paths above. Training budgets were 3,000 s Base and 9,000 s
+Control; both finished within budget. The first Base invocation exited before
+any updates due only to a wrapper-created nonempty output directory (exit 1,
+zero updates); its exact invocation record is preserved as
+`phase_runtime_base_training_attempt01.json`. The corrected 30k launch used the
+same preregistered settings and completed once.
+
+### One paired native trial and primary comparison
+
+Both EMA loaders strictly checked the same R38 typed position normalizer plus
+registered augmentation metadata before evaluation. An independently seeded
+Base-vs-disabled-Control native action preflight matched exactly (max absolute
+difference 0.0). Runtime augmentation was off. The archived DDPM sampler stayed
+at 100 steps, epsilon, squared-cosine, clipping enabled, predicted slice
+`[1:9]`, execute/replan 8, seven native action channels, with no extra action
+clamp or grip shield. The trial used the same 30 R36 development scene states,
+controller/raw-observation hashes, position-encoded condition hashes and
+per-scene seeds as R38, 500 control steps, 300 s per-episode limit and 36,000 s
+overall limit. Exactly 30/30 Base and 30/30 Control rows are retained; all were
+evaluated with zero runtime errors. Episode wall times were Base
+4.163/6.995/15.322/17.702 s and Control 4.445/5.599/9.702/24.976 s
+(min/median/p90/max).
+
+| Policy | Task success | Safe success | Contact | XY crossing |
+| --- | ---: | ---: | ---: | ---: |
+| Primary R38 Base | 22/30 | 0/30 | 30/30 | 23/30 |
+| R40 Base | 27/30 | 0/30 | 30/30 | 21/30 |
+| Primary R38 Control | 29/30 | 13/30 | 16/30 | 6/30 |
+| R40 gauge-augmented Control | 29/30 | 15/30 | 15/30 | 5/30 |
+| R39 guidance, scale 1.5 (negative result, excluded) | 29/30 | 11/30 | 17/30 | 6/30 |
+
+R38 → R40 Control paired transitions (both / neither; positive outcomes
+improved-new-only / regressed-old-only; violations cleared-old-only /
+introduced-new-only): task `28 / 0; 1 / 1`; safe `9 / 11; 6 / 4`; contact
+`10 / 9; 6 / 5`; XY crossing `4 / 23; 2 / 1`. Each integer table reconciles
+to both 30-row marginals. The Base transitions were task `20 both, 7 improved,
+2 regressed, 1 neither`; safe `0 both, 30 neither`; contact `30 both`; XY
+`20 both, 3 cleared, 1 introduced, 6 neither`. The per-scene R38 tree was
+preregistered and hashed before native execution; its aggregate tree hash is
+`208f69a4dc85b4f1b7d96ee7fc9d74ad606d1e82c60c1ee84463f0adfbe2ea4f`.
+
+R40 Control first-contact phases were transport 11, goal stabilization 2,
+grasp approach 1, lift 1; link counts were panda hand 10, cube 1, link7 1,
+right finger 3. Contact entity-pair positions are unknown because the native
+recorder does not expose them. The Control terminal phases were 29 task success
+and 1 lift-no-transport; first-success steps were min/median/p90/max
+74/98/164/237. Final 3-D goal-distance min/median/p90/max was
+0.00465/0.00824/0.01553/0.56811 m. All per-episode wall time, final cube/goal
+XYZ, terminal flags, contact/stage traces, and raw rows remain in
+`paired/constrain_dp/` and `paired/base_dp/`.
+
+The preregistered gate (`task >=27`, `safe >=26`, `contact <=3`, `XY <=3`)
+**failed**: task passed at 29, safe was 15, contact 15, and XY crossing 5.
+The paired development result is exploratory and does not isolate an
+augmentation-only causal effect because both Base and Control were retrained.
+No extra trial was launched after the failed gate.
+
+The native runner completed and retained all 60 rows, then its historical report
+assembly raised `KeyError: 'phase_counts'` after those rows were saved (the
+summary object did not contain that legacy key). The first native command exit
+status is retained in `paired/phase_runtime.json`; no episode was repeated.
+`analysis_report_correction.json` records the analysis-only source change,
+`analysis_report_inputs.json` freezes all 60 row hashes and the R38 result-tree
+hash, and `paired/analysis.json` / `paired/status.json` were rebuilt offline.
+`native_evaluation_rerun` is false, and the repaired report now validates exact
+row/marginal counts, phase counts, terminal flags and R38 identity. Its analysis
+input snapshot SHA-256 is
+`57d21f04882832558d07619a4485b73df55329237721bd6f86d28be03d08f675` and final
+analysis SHA-256 is
+`9200e31106bb13e9d4666d048fe14e250628cdb36f915f00f14979bc2ab38bb4`.
+
+Verification: full constrain suite **580 passed, 28 warnings** in 350.73 s;
+focused gauge/report tests **5 passed**. The final R40 evaluator/report code is
+under `examples/baselines/constrain/pickcube_xy_gauge_round40.py`; the reusable
+named-field transform/RNG is `pickcube_xy_gauge.py`, matched trainer changes are
+in `pickcube_zscore_round37.py`, and invariant/strict-metadata/report-contract
+tests are in `tests/test_pickcube_xy_gauge.py`. All native rows and checkpoint
+hashes are retained. No extra training, replay, evaluation scene, or process
+remains.
+
 ## Round 39 — one-scale learned residual guidance trial (2026-10-29)
 
 Round 39 performed **one** inference-only native trial using the exact R38 EMA

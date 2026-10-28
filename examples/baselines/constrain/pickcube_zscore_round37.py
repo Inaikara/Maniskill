@@ -110,7 +110,8 @@ def _restore_rng(state):
 
 
 def _save_base(path, agent, ema, optimizer, lr_sched, step, stats, data_identity,
-               provenance):
+               provenance, training_augmentation=None, augmentation_generator=None,
+               augmentation_delta_stats=None):
     shadow = copy.deepcopy(agent)
     ema.copy_to(shadow.parameters())
     payload = {
@@ -122,6 +123,10 @@ def _save_base(path, agent, ema, optimizer, lr_sched, step, stats, data_identity
                           "action": "identity native seven-channel"},
         "action_encoding": None, "action_encoding_identity": True,
         "training": dict(TRAINING, updates=BASE_UPDATES), "step": step,
+        "training_augmentation": training_augmentation,
+        "augmentation_rng_state": (augmentation_generator.get_state()
+                                   if augmentation_generator is not None else None),
+        "augmentation_delta_stats": augmentation_delta_stats,
         "selected_weights": "ema", "weights": {
             "model": {k: v.detach().cpu() for k, v in agent.state_dict().items()},
             "ema": {k: v.detach().cpu() for k, v in shadow.state_dict().items()},
@@ -132,7 +137,9 @@ def _save_base(path, agent, ema, optimizer, lr_sched, step, stats, data_identity
     torch.save(payload, tmp); os.replace(tmp, path)
 
 
-def _base_contract(ck, stats, require_final=True):
+def _base_contract(ck, stats, require_final=True, training_augmentation=None):
+    from examples.baselines.constrain.pickcube_xy_gauge import validate_checkpoint_metadata
+    validate_checkpoint_metadata(ck.get("training_augmentation"), training_augmentation)
     identity = ck.get("data_identity", {})
     if (ck.get("format") != BASE_FORMAT or ck.get("profile") != PROFILE
             or ck.get("contract") != contract() or ck.get("model_config") != BASE_CONFIG
@@ -147,6 +154,9 @@ def _base_contract(ck, stats, require_final=True):
             or identity.get("selected_episode_ids") != DIRECT_IDS
             or identity.get("episodes") != 1000 or identity.get("windows") != 83004
             or ck.get("training") != dict(TRAINING, updates=BASE_UPDATES)
+            or ck.get("training_augmentation") != training_augmentation
+            or (training_augmentation is not None and ck.get("augmentation_rng_state") is None)
+            or (training_augmentation is not None and ck.get("augmentation_delta_stats") is None)
             or ck.get("selected_weights") != "ema"
             or (require_final and ck.get("step") != BASE_UPDATES)):
         raise ValueError("normalized PickCube Base checkpoint contract mismatch")
@@ -160,7 +170,7 @@ def _make_schedule(total_updates, warmup, optimizer):
 
 
 def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
-               total_updates=BASE_UPDATES, provenance=None):
+               total_updates=BASE_UPDATES, provenance=None, training_augmentation=None):
     stats = load_stats(stats_path)
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
@@ -171,6 +181,16 @@ def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
         random.seed(TRAINING["seed"]); np.random.seed(TRAINING["seed"])
         torch.manual_seed(TRAINING["seed"])
         if str(device).startswith("cuda"): torch.cuda.manual_seed_all(TRAINING["seed"])
+    augmentation_generator = None
+    if training_augmentation is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import (
+            empty_delta_stats, make_generator, validate_metadata,
+        )
+        validate_metadata(training_augmentation)
+        augmentation_generator = make_generator(TRAINING["seed"])
+        augmentation_delta_stats = empty_delta_stats()
+    else:
+        augmentation_delta_stats = None
     dataset = native_dataset("direct")
     if len(dataset) != 83004:
         raise ValueError(f"direct window count mismatch: {len(dataset)} != 83004")
@@ -183,10 +203,14 @@ def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
     start_step = 0
     if resume:
         ck = torch.load(resume, map_location=device, weights_only=False)
-        _base_contract(ck, stats, require_final=False)
+        _base_contract(ck, stats, require_final=False,
+                       training_augmentation=training_augmentation)
         runtime.load_state_dict(ck["weights"]["model"], strict=True)
         optimizer.load_state_dict(ck["optimizer"]); lr_sched.load_state_dict(ck["lr_scheduler"])
         ema.load_state_dict(ck["ema"]); start_step = int(ck["step"]); _restore_rng(ck["rng"])
+        if augmentation_generator is not None:
+            augmentation_generator.set_state(ck["augmentation_rng_state"])
+            augmentation_delta_stats = ck["augmentation_delta_stats"]
     scheduler = _training_scheduler()
     loader = DataLoader(dataset, batch_size=TRAINING["batch_size"],
                         sampler=RandomSampler(dataset), drop_last=True, num_workers=0,
@@ -198,7 +222,8 @@ def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
     provenance = provenance or {}
     cfg = {"profile": PROFILE, "normalizer_sha256": stats["sha256"],
            "normalizer": stats, "training": dict(TRAINING, updates=total_updates),
-           "data_identity": identity, "initial_model_sha256": state_sha(runtime.state_dict()),
+            "data_identity": identity, "initial_model_sha256": state_sha(runtime.state_dict()),
+            "training_augmentation": training_augmentation,
            "provenance": provenance,
            "outputs": {"run_dir": str(run_dir), "checkpoint_dir": str(checkpoint_dir)}}
     (run_dir / "run_config.json").write_text(json.dumps(cfg, indent=2, sort_keys=True) + "\n")
@@ -210,7 +235,14 @@ def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
     for step in range(start_step + 1, total_updates + 1):
         try: batch = next(iterator)
         except StopIteration: iterator = iter(loader); batch = next(iterator)
-        obs = normalize_observation(batch["observations"].to(device), stats)
+        raw_observations = batch["observations"].to(device)
+        if augmentation_generator is not None:
+            from examples.baselines.constrain.pickcube_xy_gauge import (
+                augment_window_observations, update_delta_stats,
+            )
+            raw_observations, delta = augment_window_observations(raw_observations, augmentation_generator)
+            augmentation_delta_stats = update_delta_stats(augmentation_delta_stats, delta)
+        obs = normalize_observation(raw_observations, stats)
         actions = batch["actions"].to(device)
         noise = torch.randn_like(actions); t = torch.randint(0, 100, (len(actions),), device=device)
         loss = torch.nn.functional.mse_loss(
@@ -224,18 +256,26 @@ def train_base(stats_path, run_dir, checkpoint_dir, device="cuda", resume=None,
         if step % 100 == 0: log.flush()
         if step % 10000 == 0 or step == total_updates:
             log.flush(); _save_base(checkpoint_dir / f"recovery_{step:06d}.pt", runtime,
-                                    ema, optimizer, lr_sched, step, stats, identity, provenance)
+                                    ema, optimizer, lr_sched, step, stats, identity, provenance,
+                                    training_augmentation, augmentation_generator,
+                                    augmentation_delta_stats)
             print(f"Base {step}/{total_updates} loss={value:.6f}", flush=True)
     log.close()
     _save_base(checkpoint_dir / "final.pt", runtime, ema, optimizer, lr_sched,
-               total_updates, stats, identity, provenance)
-    _base_contract(torch.load(checkpoint_dir / "final.pt", map_location="cpu", weights_only=False), stats)
-    return {"step": total_updates, "elapsed_seconds": time.monotonic()-start,
+               total_updates, stats, identity, provenance, training_augmentation,
+               augmentation_generator, augmentation_delta_stats)
+    _base_contract(torch.load(checkpoint_dir / "final.pt", map_location="cpu", weights_only=False),
+                   stats, training_augmentation=training_augmentation)
+    result = {"step": total_updates, "elapsed_seconds": time.monotonic()-start,
             "checkpoint": str(checkpoint_dir / "final.pt"),
             "checkpoint_sha256": sha256_file(checkpoint_dir / "final.pt"),
             "loss_first": losses[0] if losses else None,
             "loss_last": losses[-1] if losses else None,
             "all_losses_finite": all(np.isfinite(losses))}
+    if augmentation_delta_stats is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import finalize_delta_stats
+        result["augmentation_delta_stats"] = finalize_delta_stats(augmentation_delta_stats)
+    return result
 
 
 def _training_scheduler():
@@ -244,7 +284,7 @@ def _training_scheduler():
                          clip_sample=True, prediction_type="epsilon")
 
 
-def preflight_base(stats_path, output, device="cpu"):
+def preflight_base(stats_path, output, device="cpu", training_augmentation=None):
     """Exercise the production Base loader/model/loss seam on one real batch."""
     stats = load_stats(stats_path)
     dataset = native_dataset("direct")
@@ -252,6 +292,14 @@ def preflight_base(stats_path, output, device="cpu"):
         raise ValueError("Base preflight direct-window count differs from frozen contract")
     batch = next(iter(DataLoader(dataset, batch_size=2, shuffle=False, num_workers=0)))
     raw, actions = batch["observations"].to(device), batch["actions"].to(device)
+    if training_augmentation is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import (
+            augment_window_observations, make_generator, validate_metadata,
+        )
+        validate_metadata(training_augmentation)
+        raw, sampled_delta = augment_window_observations(raw, make_generator(TRAINING["seed"]))
+    else:
+        sampled_delta = None
     normalized = normalize_observation(raw, stats)
     agent = build_agent(device)
     scheduler = _training_scheduler()
@@ -265,20 +313,27 @@ def preflight_base(stats_path, output, device="cpu"):
                 "raw_obs_shape": list(raw.shape), "normalized_obs_shape": list(normalized.shape),
                 "action_shape": list(actions.shape), "epsilon_shape": list(eps.shape),
                 "finite": bool(torch.isfinite(normalized).all() and torch.isfinite(eps).all()),
-                "one_normalization_application": True}
+                 "one_normalization_application": True}
+    if sampled_delta is not None:
+        evidence["training_augmentation"] = training_augmentation
+        evidence["delta_min_m"] = sampled_delta.min(dim=0).values.tolist()
+        evidence["delta_max_m"] = sampled_delta.max(dim=0).values.tolist()
     if not evidence["finite"] or normalized.shape[-1] != 42 or eps.shape != actions.shape:
         raise RuntimeError(f"Base real-minibatch preflight failed: {evidence}")
     Path(output).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     return evidence
 
 
-def preflight_control(stats_path, base_checkpoint, output, device="cpu"):
+def preflight_control(stats_path, base_checkpoint, output, device="cpu",
+                      training_augmentation=None):
     """Validate typed Base metadata and run real raw-obstacle/hint minibatch."""
     from examples.baselines.constrain.pickcube_constrain import (
         MODEL_CONFIG as PICKCUBE_CONTROL_CONFIG, PickCubeConditionNorm,
+        pickcube_relative_condition,
     )
     stats = load_stats(stats_path)
-    base_ck = _base_contract(torch.load(base_checkpoint, map_location="cpu", weights_only=False), stats)
+    base_ck = _base_contract(torch.load(base_checkpoint, map_location="cpu", weights_only=False),
+                             stats, training_augmentation=training_augmentation)
     dataset = native_dataset("obstacle", include_obstacle=True)
     if len(dataset) != 45840:
         raise ValueError("Constrain preflight obstacle-window count differs from frozen contract")
@@ -286,7 +341,18 @@ def preflight_control(stats_path, base_checkpoint, output, device="cpu"):
     raw, actions = batch["observations"].to(device), batch["actions"].to(device)
     if raw.shape[-1] != 45:
         raise RuntimeError("preflight loader must preserve raw 45-D observations for the hint")
-    normalized, hint_condition = prepare_control_observation(raw, stats)
+    original_hint = pickcube_relative_condition(raw, PickCubeConditionNorm())
+    if training_augmentation is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import (
+            augment_window_observations, make_generator, validate_metadata,
+        )
+        validate_metadata(training_augmentation)
+        raw, sampled_delta = augment_window_observations(raw, make_generator(TRAINING["seed"]))
+    else:
+        sampled_delta = None
+    normalized, transformed_hint = prepare_control_observation(raw, stats)
+    hint_condition = original_hint
+    hint_invariant_error = float((hint_condition - original_hint).abs().max())
     hint = hint_condition[:, None, :].expand(-1, 16, -1)
     base_agent = build_agent(device); base_agent.load_state_dict(base_ck["weights"]["ema"], strict=True)
     denoiser = build_constrain_denoiser(PICKCUBE_CONTROL_CONFIG, device=device)
@@ -310,29 +376,42 @@ def preflight_control(stats_path, base_checkpoint, output, device="cpu"):
                 "raw_obs_shape": list(raw.shape), "normalized_obs_shape": list(normalized.shape),
                 "hint_shape": list(hint.shape), "actions_shape": list(actions.shape),
                 "epsilon_shape": list(epsilon.shape), "hint_source": "raw native 45-D latest frame",
-                "disabled_control_max_abs_diff": float((reference-disabled).abs().max()),
-                "finite": bool(torch.isfinite(epsilon).all())}
+                 "disabled_control_max_abs_diff": float((reference-disabled).abs().max()),
+                 "hint_invariance_max_abs_diff": hint_invariant_error,
+                 "transformed_hint_max_abs_diff": float((transformed_hint - original_hint).abs().max()),
+                 "finite": bool(torch.isfinite(epsilon).all())}
+    if sampled_delta is not None:
+        evidence["training_augmentation"] = training_augmentation
+        evidence["delta_min_m"] = sampled_delta.min(dim=0).values.tolist()
+        evidence["delta_max_m"] = sampled_delta.max(dim=0).values.tolist()
     if (normalized.shape[-1] != 42 or hint.shape != (len(raw),16,3)
-            or not evidence["finite"] or evidence["disabled_control_max_abs_diff"] > 1e-6):
+            or not evidence["finite"] or evidence["disabled_control_max_abs_diff"] > 1e-6
+            or evidence["hint_invariance_max_abs_diff"] > 1e-6):
         raise RuntimeError(f"Constrain real-minibatch preflight failed: {evidence}")
     Path(output).write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     return evidence
 
 
-def _save_control(path, denoiser, ema, optimizer, lr_sched, step, rng, config):
+def _save_control(path, denoiser, ema, optimizer, lr_sched, step, rng, config,
+                  augmentation_generator=None, augmentation_delta_stats=None):
     from examples.baselines.constrain.constrain_ckpt import save_constrain_checkpoint
+    if augmentation_generator is not None:
+        rng = dict(rng, gauge_augmentation=augmentation_generator.get_state(),
+                   gauge_delta_stats=augmentation_delta_stats)
     return save_constrain_checkpoint(path, denoiser, ema, optimizer, lr_sched, step,
                                      rng, config, checkpoint_format=CONSTRAIN_FORMAT)
 
 
 def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
                     device="cuda", resume=None, total_updates=CONSTRAIN_UPDATES,
-                    provenance=None):
+                    provenance=None, training_augmentation=None):
     from examples.baselines.constrain.pickcube_constrain import (
         MODEL_CONFIG as PICKCUBE_CONTROL_CONFIG, PickCubeConditionNorm,
+        pickcube_relative_condition,
     )
     stats = load_stats(stats_path)
-    base_ck = _base_contract(torch.load(base_checkpoint, map_location="cpu", weights_only=False), stats)
+    base_ck = _base_contract(torch.load(base_checkpoint, map_location="cpu", weights_only=False),
+                             stats, training_augmentation=training_augmentation)
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
     run_dir, checkpoint_dir = Path(run_dir), Path(checkpoint_dir)
@@ -342,6 +421,16 @@ def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
         random.seed(TRAINING["seed"]); np.random.seed(TRAINING["seed"])
         torch.manual_seed(TRAINING["seed"])
         if str(device).startswith("cuda"): torch.cuda.manual_seed_all(TRAINING["seed"])
+    augmentation_generator = None
+    if training_augmentation is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import (
+            empty_delta_stats, make_generator, validate_metadata,
+        )
+        validate_metadata(training_augmentation)
+        augmentation_generator = make_generator(TRAINING["seed"])
+        augmentation_delta_stats = empty_delta_stats()
+    else:
+        augmentation_delta_stats = None
     dataset = native_dataset("obstacle", include_obstacle=True)
     if len(dataset) != 45840:
         raise ValueError(f"obstacle window count mismatch: {len(dataset)} != 45840")
@@ -361,10 +450,14 @@ def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
     step0 = 0
     if resume:
         ck = torch.load(resume, map_location=device, weights_only=False)
-        _validate_control(ck, stats, base_checkpoint, require_final=False)
+        _validate_control(ck, stats, base_checkpoint, require_final=False,
+                          training_augmentation=training_augmentation)
         denoiser.load_state_dict(ck["model"], strict=True)
         optimizer.load_state_dict(ck["optimizer"]); lr_sched.load_state_dict(ck["lr_scheduler"])
         ema.load_state_dict(ck["ema"]); step0 = int(ck["step"]); _restore_rng(ck["rng"].get("round37", {}))
+        if augmentation_generator is not None:
+            augmentation_generator.set_state(ck["rng"]["gauge_augmentation"])
+            augmentation_delta_stats = ck["rng"]["gauge_delta_stats"]
     norm = PickCubeConditionNorm()
     data_identity = {"selected_class": "obstacle", "selected_episode_ids": list(range(1000,1500)),
                      "episodes": 500, "windows": len(dataset), "h5_sha256": DATA_H5_SHA,
@@ -383,6 +476,7 @@ def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
             "updates": BASE_UPDATES},
         "data_identity": data_identity,
         "training": dict(TRAINING, updates=total_updates),
+        "training_augmentation": training_augmentation,
         "provenance": provenance,
         "selected_weights": "ema", "model_action_space": "native identity coordinates",
         "action_encoding": None, "action_encoding_identity": True,
@@ -398,7 +492,16 @@ def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
         except StopIteration: iterator = iter(loader); batch = next(iterator)
         raw = batch["observations"].to(device)
         if raw.shape[-1] != 45: raise ValueError("obstacle training requires raw native 45-D frames")
-        obs, hint_condition = prepare_control_observation(raw, stats)
+        original_raw = raw
+        if augmentation_generator is not None:
+            from examples.baselines.constrain.pickcube_xy_gauge import (
+                augment_window_observations, update_delta_stats,
+            )
+            raw, delta = augment_window_observations(raw, augmentation_generator)
+            augmentation_delta_stats = update_delta_stats(augmentation_delta_stats, delta)
+        obs, _ = prepare_control_observation(raw, stats)
+        # Keep the original raw-frame hint byte-identical; translation leaves it invariant.
+        hint_condition = pickcube_relative_condition(original_raw, PickCubeConditionNorm())
         # Hint semantics deliberately consume unnormalized raw TCP/obstacle values.
         hint = hint_condition[:, None, :].expand(-1, 16, -1)
         actions = batch["actions"].to(device)
@@ -414,24 +517,35 @@ def train_constrain(stats_path, base_checkpoint, run_dir, checkpoint_dir,
         if step % 10000 == 0 or step == total_updates:
             log.flush()
             _save_control(checkpoint_dir / f"recovery_{step:06d}.pt", denoiser, ema,
-                          optimizer, lr_sched, step, {"round37": _rng_state()}, config)
+                          optimizer, lr_sched, step, {"round37": _rng_state()}, config,
+                          augmentation_generator, augmentation_delta_stats)
             print(f"Constrain {step}/{total_updates} loss={value:.6f}", flush=True)
     log.close()
     final = checkpoint_dir / "final.pt"
     _save_control(final, denoiser, ema, optimizer, lr_sched, total_updates,
-                  {"round37": _rng_state()}, config)
+                  {"round37": _rng_state()}, config, augmentation_generator,
+                  augmentation_delta_stats)
     # A durable final artifact exists before post-training validation.
     if state_sha(denoiser.base_net.state_dict()) != frozen_base_sha:
         raise RuntimeError(f"frozen base changed; preserve pending checkpoint {final}")
-    loaded, ck = load_control(final, stats, device, expected_base_sha=sha256_file(base_checkpoint))
-    return {"step": total_updates, "elapsed_seconds": time.monotonic()-start,
+    loaded, ck = load_control(final, stats, device, expected_base_sha=sha256_file(base_checkpoint),
+                              expected_augmentation=training_augmentation)
+    result = {"step": total_updates, "elapsed_seconds": time.monotonic()-start,
             "checkpoint": str(final), "checkpoint_sha256": sha256_file(final),
             "loss_first": losses[0] if losses else None, "loss_last": losses[-1] if losses else None,
             "all_losses_finite": all(np.isfinite(losses)), "ema_loaded": loaded is not None,
             "base_state_sha256": frozen_base_sha, "checkpoint_step": ck["step"]}
+    if augmentation_delta_stats is not None:
+        from examples.baselines.constrain.pickcube_xy_gauge import finalize_delta_stats
+        result["augmentation_delta_stats"] = finalize_delta_stats(augmentation_delta_stats)
+    return result
 
 
-def _validate_control(ck, stats, base_checkpoint, require_final=True):
+def _validate_control(ck, stats, base_checkpoint, require_final=True,
+                      training_augmentation=None):
+    from examples.baselines.constrain.pickcube_xy_gauge import validate_checkpoint_metadata
+    validate_checkpoint_metadata(ck.get("config", {}).get("training_augmentation"),
+                                 training_augmentation)
     cfg = ck.get("config", {}); data = cfg.get("data_identity", {})
     norm = cfg.get("normalization", {})
     if (ck.get("format") != CONSTRAIN_FORMAT or cfg.get("profile") != PROFILE
@@ -447,6 +561,10 @@ def _validate_control(ck, stats, base_checkpoint, require_final=True):
             or data.get("manifest_sha256") != DATA_MANIFEST_SHA
             or cfg.get("base_weights", {}).get("sha256") != sha256_file(base_checkpoint)
             or cfg.get("training") != dict(TRAINING, updates=CONSTRAIN_UPDATES)
+            or cfg.get("training_augmentation") != training_augmentation
+            or (training_augmentation is not None
+                and (ck.get("rng", {}).get("gauge_augmentation") is None
+                     or ck.get("rng", {}).get("gauge_delta_stats") is None))
             or cfg.get("policy") != POLICY
             or cfg.get("selected_weights") != "ema"
             or (require_final and ck.get("step") != CONSTRAIN_UPDATES)):
@@ -454,9 +572,12 @@ def _validate_control(ck, stats, base_checkpoint, require_final=True):
     return ck
 
 
-def load_control(checkpoint, stats, device="cpu", expected_base_sha=None):
+def load_control(checkpoint, stats, device="cpu", expected_base_sha=None,
+                 expected_augmentation=None):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     config = ck.get("config", {}); normalizer = config.get("normalization", {})
+    from examples.baselines.constrain.pickcube_xy_gauge import validate_checkpoint_metadata
+    validate_checkpoint_metadata(config.get("training_augmentation"), expected_augmentation)
     if (ck.get("format") != CONSTRAIN_FORMAT or config.get("profile") != PROFILE
             or normalizer.get("observation_profile") != PROFILE
             or normalizer.get("observation_stats_sha256") != stats["sha256"]
@@ -477,6 +598,7 @@ def load_control(checkpoint, stats, device="cpu", expected_base_sha=None):
             or config.get("base_weights", {}).get("subkey") != "weights.ema"
             or config.get("base_weights", {}).get("updates") != BASE_UPDATES
             or config.get("training") != dict(TRAINING, updates=CONSTRAIN_UPDATES)
+            or config.get("training_augmentation") != expected_augmentation
             or config.get("selected_weights") != "ema"
             or ck.get("step") != CONSTRAIN_UPDATES):
         raise ValueError("normalized PickCube Constrain checkpoint contract mismatch")
@@ -492,9 +614,10 @@ def load_control(checkpoint, stats, device="cpu", expected_base_sha=None):
 
 
 class ZScoreBaseAdapter:
-    def __init__(self, checkpoint, stats_path, device="cpu"):
+    def __init__(self, checkpoint, stats_path, device="cpu", expected_augmentation=None):
         self.stats = load_stats(stats_path)
-        ck = _base_contract(torch.load(checkpoint, map_location="cpu", weights_only=False), self.stats)
+        ck = _base_contract(torch.load(checkpoint, map_location="cpu", weights_only=False),
+                            self.stats, training_augmentation=expected_augmentation)
         self._agent = build_agent(device); self._agent.load_state_dict(ck["weights"]["ema"], strict=True)
         self._agent.eval(); self.device = torch.device(device); self.stats_sha256 = self.stats["sha256"]
         from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
@@ -533,10 +656,12 @@ class ZScoreBaseAdapter:
 
 
 class ZScoreConstrainAdapter:
-    def __init__(self, checkpoint, stats_path, base_checkpoint, device="cpu", control_enabled=True):
+    def __init__(self, checkpoint, stats_path, base_checkpoint, device="cpu", control_enabled=True,
+                 expected_augmentation=None):
         self.stats = load_stats(stats_path)
         self.denoiser, self.ck = load_control(checkpoint, self.stats, device,
-                                              expected_base_sha=sha256_file(base_checkpoint))
+                                              expected_base_sha=sha256_file(base_checkpoint),
+                                              expected_augmentation=expected_augmentation)
         self.device = torch.device(device); self.control_enabled = control_enabled
         from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
         self.scheduler = DDPMScheduler(num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
