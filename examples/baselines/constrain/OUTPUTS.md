@@ -1,5 +1,100 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 39 — one-scale learned residual guidance trial (2026-10-29)
+
+Round 39 performed **one** inference-only native trial using the exact R38 EMA
+checkpoints, fixed position/controller-unit state profile, frozen dataset and
+existing 30 R36 development scenes. No demonstrations/layouts were collected,
+no model was trained, no checkpoint was written, and ManiSkill/PlaceSphere
+sources were untouched. The experiment is exploratory and makes no formal
+performance or guaranteed-safety claim.
+
+### Preregistration and runtime operation
+
+Registration:
+`outputs/exp/20261029_000001_pickcube_residual_guidance_r39/preregistration.json`
+(file SHA-256
+`c0d56a00f24a85ccbf6283b815157ab48f31bcfa587af34388a2ec883808bdb9`, internal
+registration identity `2f2b133098cf48db685fde3e19c2c22e626f1f5e4d388ce58c05a5260136173d`).
+It was created before native execution and pins source aggregate
+`654ae12d5c9868dd429e8669e1eab9043f36fdbd960d86658acb15af3c33e7f8`, exact
+Base/Control final EMA SHA-256 values from R38 (`6a7c1af0…3d9869` /
+`1c3276e3…63bf42`), the position profile file SHA-256
+`d14d56e3…23f543` and profile identity
+`8bcb1df3…b3d7fef`, frozen HDF5/manifest/validation identities
+(`0c74b88e…349f4f` / `6b9d2c75…e5c486` / `f4756f69…d5b8f`), scene manifest/HDF5,
+and per-file hashes for immutable snapshots of every R38 Base and Control row.
+The R38 report had identified an analysis-only report assembly mismatch; its
+retained rows, not a rerun, were snapshotted and used here.
+
+The sole treatment is epsilon-space
+`eps_base + 1.5 * (eps_control - eps_base)`: both outputs use the same current
+sample, timestep, encoded 84-D global condition and raw-observation-derived
+hint; `eps_base` calls the frozen Base branch (`enabled=False`) of the same
+Control checkpoint and `eps_control` calls its learned enabled branch. This is
+**learned conditional residual guidance**, not classifier-free guidance (there
+is no unconditional branch trained for this use). Base is unchanged and has
+guidance N/A. Runtime scale is not part of or written into either checkpoint.
+No action/pose/grip correction, data feedback, or geometry shield is applied.
+
+DDPM remained 100/100 steps with the squared-cosine beta schedule, epsilon
+prediction and original clipping; predicted slice `[1:9]`, native 7-D identity
+actions, execute/replan 8. Per-scene seed reset and one Gaussian latent draw per
+decision are unchanged; the extra deterministic Base forward consumes no RNG.
+An offline scale-1 check on the first retained R38 Control scene reproduces its
+saved first native action bit-for-bit (max absolute difference 0.0), confirming
+the default runtime fast path preserves the historical action output.
+The fixed limits were 600 s per episode per policy and 36,000 s overall. Runtime
+sources and all frozen input/checkpoint hashes matched after the trial.
+
+### Native result and paired analysis
+
+Exactly 30 existing scenes per policy completed (60 total), with 0 runtime
+errors, 0 wall timeouts, and total elapsed time 602.26 s on an RTX 5070. Base
+reproduced R38 exactly scene-by-scene, including native step traces/outcomes;
+the guided comparison is therefore against a validated unchanged Base. Counts
+below use denominator 30 in every case:
+
+| Policy | Task success | Safe success | Contact | XY crossing |
+| --- | ---: | ---: | ---: | ---: |
+| R38 Base / R39 Base | 22 | 0 | 30 | 23 |
+| R38 Control | 29 | 13 | 16 | 6 |
+| R39 learned residual guidance, scale 1.5 | 29 | 11 | 17 | 6 |
+
+R38 Control → R39 guided paired transitions (both / neither; old-only / new-only)
+were task `28 / 0; regressed 1 / improved 1`, safe `9 / 15; regressed 4 /
+improved 2`, contact `14 / 11; cleared 2 / introduced 3`, and XY `3 / 21;
+cleared 3 / introduced 3`. The exact marginals reconcile to each transition
+table. Against R39 Base, guidance transitions were task `21 both, 8 improved,
+1 regressed`; safe `11 improved`; contact `13 cleared, 17 both`; and XY `17
+cleared, 6 both`.
+
+Guided first-contact phases: transport 11, goal stabilization 4, grasp approach
+1, lift 1; first-contact link counts: hand 13, cube 1, left finger 1, link7 1,
+right finger 1. The native recorder does not retain contact entity-pair
+positions, so these remain unknown. First-success step min/median/p90/max was
+78 / 107 / 218 / 334. Per-episode wall time min/median/p90/max was 5.952 /
+8.241 / 20.266 / 35.163 s for guided Control and 3.396 / 7.555 / 15.605 /
+15.782 s for Base. Guided final 3-D goal-error min/median/p90/max was 0.00332 /
+0.00895 / 0.01781 / 0.09949 m.
+
+The preregistered gate (`task >=27`, `safe >=26`, `contact <=3`, `XY <=3`) **did
+not pass**: task passed; safe, contact and XY failed. Scale 1.5 is rejected for
+this trial; it does not justify trying another guidance scale. The result is
+consistent with a small safety regression versus R38 Control and does not
+establish route-preserving control.
+
+Retained native rows and summaries are in `paired/base_dp/` and
+`paired/guided_control/`. The report-only analysis was enriched from these rows
+without rerunning the environment. Final `paired/analysis.json` SHA-256 is
+`80cba3052d92dbbd3cb1632af06061076069b19ae08933d0b5ed53fcf482c0e3`; the
+pre-enrichment native report is preserved byte-for-byte as
+`paired/native_analysis_before_report_enrichment.json` (SHA-256
+`0f3ea358326897a5b89a9302f752d6df3e560ed41981610d65366d42ec62573d`) and the
+report-only chronology is in `paired/analysis_report_fix.json`. Post-run audit
+confirms frozen data, both checkpoints, profile and scene files all retain
+their preregistered hashes. No policy/evaluation processes remain active.
+
 ## Round 38 — fixed PickCube position/controller-unit matched retraining (2026-10-28)
 
 Round 38 completed exactly one matched Base/Control retraining and one paired
