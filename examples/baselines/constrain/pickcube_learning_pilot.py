@@ -18,7 +18,7 @@ import numpy as np
 import torch
 
 from examples.baselines.constrain.pickcube_base_dp import (
-    build_agent, contract, sha256_file,
+    NAMED_FIELDS, build_agent, contract, sha256_file,
 )
 
 LAYOUT_TOLERANCE_M = 0.02
@@ -31,6 +31,8 @@ PRIOR_MANIFEST = "outputs/exp/20261023_165956_pickcube_transport_detour/manifest
 SELECTED_WEIGHTS = "final EMA fixed before training; no task evaluation"
 BASE_FORMAT = "pickcube_pilot_base_v1"
 CONSTRAIN_FORMAT = "pickcube_pilot_constrain_v1"
+FULLSCENE_BASE_FORMAT = "pickcube_fullscene_base_v2"
+FULLSCENE_CONSTRAIN_FORMAT = "pickcube_fullscene_constrain_v2"
 TICKET01_REFERENCE = {
     "distribution": "old PickCube obstacle scenes, not this pilot",
     "attribution": "rates are not a same-distribution improvement delta",
@@ -142,6 +144,64 @@ def build_preregistration(round_index, version, paths, reason=None, prior_versio
     }
 
 
+def build_fullscene500_preregistration(paths, identities, source_identity):
+    """Freeze the matched 1000/500 encoded-action engineering trial."""
+    from examples.baselines.constrain.pickcube_action_codec import CONTROLLER_RANGE, profile_sha256
+
+    training = {
+        "seed": 1, "base_updates": 30000, "constrain_updates": 150000,
+        "total_iters": 30000, "batch_size": 1024, "lr": 1e-4, "warmup": 500,
+        "ema_power": 0.75, "optimizer": "AdamW", "betas": [0.95, 0.999],
+        "weight_decay": 1e-6, "lr_schedule": "cosine",
+        "architecture": "PickCube ConditionalUnet1D + ConstrainDenoiser",
+        "selected_weights": SELECTED_WEIGHTS, "base_class": "direct",
+        "constrain_class": "obstacle", "constrain_init": "matched base final EMA",
+        "trainable": "control branch only", "loss_weight": None,
+        "training_diffusion": {"scheduler": "DDPMScheduler", "steps": 100,
+                                "beta_schedule": "squaredcos_cap_v2", "prediction_type": "epsilon"},
+        "inference": {"scheduler": "DDIMScheduler", "steps": 50, "eta": 0.0,
+                      "prediction_horizon": 16, "execution_horizon": 2,
+                      "executed_prediction_slice": [1, 9], "plans_per_call": 1},
+    }
+    return {
+        "format": "pickcube_fullscene500_action_codec_preregistration_v1",
+        "kind": "frozen_fullscene500_action_codec", "version": "r33",
+        "round_index": 33, "round_cap": 33,
+        "train_direct_count": 1000, "train_obstacle_count": 500,
+        "selected_direct_ids": list(range(1000)),
+        "selected_obstacle_ids": list(range(1000, 1500)),
+        "obstacle_plan_cap": 500, "dev_scene_count": 30,
+        "layout_dedup": {"mode": "frozen_fullscene500", "within_run_enforced": True,
+                          "cylinder_proximity_is_conflict": False,
+                          "dev_and_ticket03_task_identity_strict": True},
+        "action_encoding": CONTROLLER_RANGE,
+        "action_encoding_sha256": profile_sha256(CONTROLLER_RANGE),
+        "training": training,
+        "paths": dict(paths), "datasets": dict(identities["datasets"]),
+        "baseline": dict(identities["baseline"]),
+        "matched_base_checkpoint": dict(identities.get("matched_base_checkpoint") or {}),
+        "matched_constrain_checkpoint": dict(identities.get("matched_constrain_checkpoint") or {}),
+        "source_identity": source_identity,
+        "validation": dict(identities["validation"]),
+        "evaluation": {"scene_manifest": paths["dev_scenes"] + "/manifest.json",
+                       "scene_count": 30, "max_steps": 500,
+                       "episode_wall_seconds": 300,
+                       "same_initial_native_state_and_controller": True,
+                       "noise_seed_rule": "torch.manual_seed(scene seed) before each policy episode",
+                       "runtime_errors_remain_in_denominator": True},
+        "compute_budget_seconds": {"base": 4500, "constrain": 9000,
+                                    "paired_eval": 18000},
+        "selection": "final EMA only; selected before training; no evaluation-based selection",
+        "claims": {"formal_performance": False, "generalization": False,
+                   "engineering_pipeline_comparison": True,
+                   "confounds": ["training data size", "action encoding", "inference DDIM stride-2"]},
+        "gate": {"task_success_rate_gte": 0.90, "safe_success_rate_gte": 0.85,
+                 "contact_rate_lte": 0.10, "xy_crossing_rate_lte": 0.10,
+                 "formal_performance_claim": False, "require_complete": True,
+                 "require_zero_runtime_errors": True},
+    }
+
+
 def write_preregistration(path, payload):
     path = Path(path)
     if path.exists():
@@ -161,13 +221,94 @@ def load_preregistration(path):
     missing = [key for key in required if key not in payload]
     if missing:
         raise ValueError(f"preregistration missing {missing}")
-    if payload["train_obstacle_count"] > payload["obstacle_plan_cap"]:
+    if (payload.get("kind") != "frozen_fullscene500_action_codec"
+            and payload["train_obstacle_count"] > payload["obstacle_plan_cap"]):
         raise ValueError("obstacle subset exceeds the 100-plan")
     if payload["gate"].get("formal_performance_claim") is not False:
         raise ValueError("pilot gate must not claim formal performance")
     if payload["training"].get("selected_weights") != SELECTED_WEIGHTS:
         raise ValueError("selected weights are not the pre-registered final EMA")
+    if payload.get("kind") == "frozen_fullscene500_action_codec":
+        from examples.baselines.constrain.pickcube_action_codec import profile_sha256
+        if (payload["train_direct_count"] != 1000 or payload["train_obstacle_count"] != 500
+                or payload["selected_direct_ids"] != list(range(1000))
+                or payload["selected_obstacle_ids"] != list(range(1000, 1500))
+                or payload["training"].get("base_updates") != 30000
+                or payload["training"].get("constrain_updates") != 150000
+                or profile_sha256(payload.get("action_encoding")) != payload.get("action_encoding_sha256")):
+            raise ValueError("full-scene500 preregistration contract mismatch")
     return payload
+
+
+def _assert_registered_dataset(dataset, registration):
+    if registration.get("kind") != "frozen_fullscene500_action_codec":
+        return
+    identity = registration["datasets"]
+    if (dataset.data_path.resolve() != Path(identity["h5"]["path"]).resolve()
+            or dataset.manifest_path.resolve() != Path(identity["manifest"]["path"]).resolve()):
+        raise ValueError("full-scene500 training data paths differ from preregistration")
+    if (dataset.h5_sha256 != identity["h5"]["sha256"]
+            or dataset.manifest_sha256 != identity["manifest"]["sha256"]):
+        raise ValueError("full-scene500 training data hashes differ from preregistration")
+    expected = registration["selected_direct_ids"] if dataset.kind == "direct" else registration["selected_obstacle_ids"]
+    if dataset.trajectory_ids != expected:
+        raise ValueError("full-scene500 selected class IDs differ from preregistration")
+    for spec in registration["validation"].values():
+        if isinstance(spec, dict) and "path" in spec and sha256_file(spec["path"]) != spec["sha256"]:
+            raise ValueError("full-scene500 pinned validation/source identity changed")
+
+
+def audit_fullscene_action_encoding(data_path, manifest_path):
+    """Recompute native and encoded action ranges/RMS directly from the frozen HDF5."""
+    from examples.baselines.constrain.pickcube_action_codec import CONTROLLER_RANGE, encode_native
+
+    manifest = json.loads(Path(manifest_path).read_text())
+    by_id = {int(row["episode_id"]): row for row in manifest["episodes"]}
+    if sorted(by_id) != list(range(1500)) or len(manifest["episodes"]) != 1500:
+        raise ValueError("frozen manifest must cover IDs 0..1499 exactly once")
+    stats = {}
+    with h5py.File(data_path, "r") as handle:
+        if len(handle) != 1500:
+            raise ValueError("frozen HDF5 must have exactly 1500 episodes")
+        for kind, ids in (("direct", range(1000)), ("obstacle", range(1000, 1500))):
+            chunks, rms, encoded_min, encoded_max, terminal_grip = [], [], [], [], []
+            for episode_id in ids:
+                row = by_id[episode_id]
+                group = handle[f"traj_{episode_id}"]
+                actions = np.asarray(group["actions"][:], dtype=np.float32)
+                if (row.get("kind") != kind or group.attrs.get("kind") != kind
+                        or actions.ndim != 2 or actions.shape[1] != 7 or not np.isfinite(actions).all()):
+                    raise ValueError(f"frozen action class/schema mismatch at episode {episode_id}")
+                encoded = encode_native(torch.from_numpy(actions), CONTROLLER_RANGE).numpy()
+                chunks.append(actions)
+                rms.append(np.sqrt(np.mean(actions.astype(np.float64) ** 2, axis=0)))
+                encoded_min.append(encoded.min(axis=0))
+                encoded_max.append(encoded.max(axis=0))
+                terminal_grip.append(float(actions[-1, 6]))
+            native = np.concatenate(chunks, axis=0)
+            stats[kind] = {
+                "episodes": len(chunks), "native_min": native.min(axis=0).tolist(),
+                "native_max": native.max(axis=0).tolist(),
+                "episode_rms_quantiles_0_05_50_95_100": np.quantile(
+                    np.stack(rms), [0, .05, .5, .95, 1], axis=0).tolist(),
+                "encoded_min": np.min(encoded_min, axis=0).tolist(),
+                "encoded_max": np.max(encoded_max, axis=0).tolist(),
+                "terminal_gripper_values": sorted(set(terminal_grip)),
+            }
+    if stats["obstacle"]["terminal_gripper_values"] != [-1.0]:
+        raise ValueError("frozen PickCube obstacle tails must remain CLOSED (-1)")
+    return {"source": "recomputed all frozen HDF5 action arrays before training",
+            "profile": CONTROLLER_RANGE, "classes": stats}
+
+
+def _recompute_registered_source(registration):
+    if registration.get("kind") != "frozen_fullscene500_action_codec":
+        return None
+    current = freeze_pilot_identity(fullscene=True)
+    expected = registration["source_identity"]
+    if current.get("files") != expected.get("files") or current.get("files_sha256") != expected.get("files_sha256"):
+        raise RuntimeError("experiment source changed after preregistration")
+    return current
 
 
 def layout_view(value):
@@ -322,8 +463,12 @@ def materialize_window(obs, actions, start, end):
 class PilotTrajectoryDataset(torch.utils.data.Dataset):
     """Strict windows for one predeclared class. Refuses extra trajectories."""
 
-    def __init__(self, data_path, manifest_path, kind, expected_ids):
+    def __init__(self, data_path, manifest_path, kind, expected_ids, action_profile=None):
+        from examples.baselines.constrain.pickcube_action_codec import encode_native
+
         self.kind = kind
+        self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
+        self.action_profile = action_profile
         self.expected_ids = [int(item) for item in expected_ids]
         manifest = json.loads(Path(manifest_path).read_text())
         episodes = manifest["episodes"]
@@ -356,7 +501,10 @@ class PilotTrajectoryDataset(torch.utils.data.Dataset):
                 if not bool(group["success"][-1]) or bool(group["truncated"][:].any()):
                     raise ValueError(f"traj_{episode_id} lacks successful non-truncated evidence")
                 self.observations.append(torch.as_tensor(obs, dtype=torch.float32))
-                self.actions.append(torch.as_tensor(actions, dtype=torch.float32))
+                action_tensor = torch.as_tensor(actions, dtype=torch.float32)
+                if action_profile is not None:
+                    action_tensor = encode_native(action_tensor, action_profile)
+                self.actions.append(action_tensor)
                 for start, end in _window_slices(len(actions)):
                     self.slices.append((len(self.actions) - 1, start, end))
         self.trajectory_ids = list(self.expected_ids)
@@ -382,7 +530,44 @@ def _state_sha(state):
     return digest.hexdigest()
 
 
-def _save_base(path, agent, ema, step, payload):
+def fullscene_disabled_equivalence(base_agent, denoiser, device="cpu", seed=3351):
+    """Compare independent Base EMA and disabled-control paths under identical DDIM noise."""
+    from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+
+    reference = base_agent.noise_pred_net.to(device).eval()
+    denoiser.eval()
+    generator = torch.Generator(device="cpu").manual_seed(seed)
+    sample = torch.randn((1, 16, 7), generator=generator).to(device)
+    condition = torch.randn((1, 84), generator=generator).to(device)
+    hint = torch.zeros((1, 16, 3), device=device)
+    timestep = torch.tensor([37], device=device)
+    with torch.no_grad():
+        expected = reference(sample, timestep, global_cond=condition)
+        observed = denoiser(sample, timestep, global_cond=condition, hint=hint, enabled=False)
+    epsilon_difference = float((expected - observed).abs().max())
+    expected_sample, observed_sample = sample.clone(), sample.clone()
+    scheduler = DDIMScheduler(
+        num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
+        clip_sample=True, prediction_type="epsilon")
+    scheduler.set_timesteps(50)
+    with torch.no_grad():
+        for current_timestep in scheduler.timesteps:
+            expected_epsilon = reference(expected_sample, current_timestep, global_cond=condition)
+            observed_epsilon = denoiser(
+                observed_sample, current_timestep, global_cond=condition, hint=hint, enabled=False)
+            expected_sample = scheduler.step(
+                expected_epsilon, current_timestep, expected_sample, eta=0.0).prev_sample
+            observed_sample = scheduler.step(
+                observed_epsilon, current_timestep, observed_sample, eta=0.0).prev_sample
+    sample_difference = float((expected_sample - observed_sample).abs().max())
+    return {"epsilon_max_abs_diff": epsilon_difference,
+            "ddim50_max_abs_diff": sample_difference,
+            "epsilon_matches": epsilon_difference <= 1e-6,
+            "sampling_matches": sample_difference <= 1e-6,
+            "noise_seed": seed, "inference_steps": 50, "eta": 0.0}
+
+
+def _save_base(path, agent, ema, step, payload, checkpoint_format=BASE_FORMAT):
     import copy
     path = Path(path)
     model_state = {key: value.detach().cpu() for key, value in agent.state_dict().items()}
@@ -391,7 +576,7 @@ def _save_base(path, agent, ema, step, payload):
     ema_state = {key: value.detach().cpu() for key, value in ema_agent.state_dict().items()}
     tmp = path.with_name(path.name + ".tmp")
     torch.save({
-        "format": BASE_FORMAT, "contract": contract(), "weights": {"model": model_state, "ema": ema_state},
+        "format": checkpoint_format, "contract": contract(), "weights": {"model": model_state, "ema": ema_state},
         "step": int(step), "selected_weights": "ema", "payload": payload,
     }, tmp)
     os.replace(tmp, path)
@@ -408,8 +593,10 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
     random.seed(training["seed"]); np.random.seed(training["seed"]); torch.manual_seed(training["seed"])
+    profile = registration.get("action_encoding")
     dataset = PilotTrajectoryDataset(
-        demo_path, manifest_path, "direct", registration["selected_direct_ids"])
+        demo_path, manifest_path, "direct", registration["selected_direct_ids"], profile)
+    _assert_registered_dataset(dataset, registration)
     if len(dataset) < training["batch_size"]:
         raise RuntimeError("direct windows are fewer than the pre-registered batch size")
     agent = build_agent(device)
@@ -418,9 +605,10 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
     from diffusers.optimization import get_scheduler
     from diffusers.training_utils import EMAModel
     from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+    base_updates = expected_base_updates(registration)
     lr_sched = get_scheduler(
         "cosine", optimizer=optimizer, num_warmup_steps=training["warmup"],
-        num_training_steps=training["total_iters"])
+        num_training_steps=base_updates)
     ema = EMAModel(parameters=agent.parameters(), power=training["ema_power"])
     scheduler = DDPMScheduler(
         num_train_timesteps=100, beta_schedule="squaredcos_cap_v2", clip_sample=True, prediction_type="epsilon")
@@ -431,13 +619,20 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
         "selected_class": "direct", "episodes": len(dataset.trajectory_ids),
         "selected_episode_ids": dataset.trajectory_ids, "h5_sha256": dataset.h5_sha256,
         "manifest_sha256": dataset.manifest_sha256, "windows": len(dataset),
+        "data_path": str(dataset.data_path), "manifest_path": str(dataset.manifest_path),
         "training": training, "registration_version": registration["version"],
+        "action_encoding": profile,
+        "action_encoding_sha256": registration.get("action_encoding_sha256"),
+        "model_action_space": "encoded controller-range coordinates" if profile else "native identity coordinates",
+        "actual_training": {"updates": base_updates, "selected_weights": "ema"},
     }
+    checkpoint_format = FULLSCENE_BASE_FORMAT if profile is not None else BASE_FORMAT
     (run_dir / "run_config.json").write_text(json.dumps(payload, indent=2) + "\n")
     iterator = iter(loader)
     losses = []
     started = time.monotonic()
-    for step in range(1, training["total_iters"] + 1):
+    loss_log = (run_dir / "loss.jsonl").open("w")
+    for step in range(1, base_updates + 1):
         try:
             batch = next(iterator)
         except StopIteration:
@@ -459,18 +654,24 @@ def train_base(demo_path, manifest_path, run_dir, checkpoint_dir, registration, 
         lr_sched.step()
         ema.step(agent.parameters())
         losses.append(float(loss.detach().cpu()))
-        if step == 1 or step == training["total_iters"] or step % 1000 == 0:
-            print(f"base step {step}/{training['total_iters']} loss={losses[-1]:.6f}", flush=True)
+        loss_log.write(json.dumps({"step": step, "loss": losses[-1]}) + "\n")
+        if step % 1000 == 0 or step == base_updates:
+            loss_log.flush()
+        if step == 1 or step == base_updates or step % 1000 == 0:
+            print(f"base step {step}/{base_updates} loss={losses[-1]:.6f}", flush=True)
+    loss_log.close()
+    payload["source_identity_after_training"] = _recompute_registered_source(registration)
+    (run_dir / "run_config.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     final = checkpoint_dir / "final.pt"
-    _save_base(final, agent, ema, training["total_iters"], payload)
+    _save_base(final, agent, ema, base_updates, payload, checkpoint_format)
     summary = {
-        "status": "complete", "actual_updates": training["total_iters"],
+        "status": "complete", "actual_updates": base_updates,
         "selected_weights": "ema", "loss_first": losses[0], "loss_last": losses[-1],
         "all_losses_finite": bool(np.isfinite(losses).all()),
         "elapsed_seconds": time.monotonic() - started, "checkpoint": str(final),
         "checkpoint_sha256": sha256_file(final),
         "dataset_coverage": dataset_coverage(
-            len(dataset), len(dataset.trajectory_ids), training["total_iters"], training["batch_size"]),
+            len(dataset), len(dataset.trajectory_ids), base_updates, training["batch_size"]),
     }
     (run_dir / "train_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
@@ -483,14 +684,36 @@ def expected_base_updates(registration):
     return int(training["total_iters"])
 
 
+def expected_constrain_updates(registration):
+    training = registration["training"]
+    return int(training.get("constrain_updates", training["total_iters"]))
+
+
 def _load_base_ema(checkpoint, registration):
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     payload = ck.get("payload") or {}
-    if (ck.get("format") != BASE_FORMAT or ck.get("selected_weights") != "ema"
+    expected_format = FULLSCENE_BASE_FORMAT if registration.get("action_encoding") else BASE_FORMAT
+    if (ck.get("format") != expected_format or ck.get("selected_weights") != "ema"
             or int(ck.get("step", -1)) != expected_base_updates(registration)
             or payload.get("selected_class") != "direct"
-            or payload.get("selected_episode_ids") != list(registration["selected_direct_ids"])):
+            or payload.get("selected_episode_ids") != list(registration["selected_direct_ids"])
+            or (registration.get("kind") == "frozen_fullscene500_action_codec" and (
+                payload.get("action_encoding") != registration.get("action_encoding")
+                or payload.get("action_encoding_sha256") != registration.get("action_encoding_sha256")
+                or payload.get("model_action_space") != "encoded controller-range coordinates"
+                or payload.get("actual_training") != {"updates": expected_base_updates(registration), "selected_weights": "ema"}))):
         raise ValueError("pilot base checkpoint is not the matched final EMA")
+    matched_base = registration.get("matched_base_checkpoint") or {}
+    if matched_base and (Path(checkpoint).resolve() != Path(matched_base["path"]).resolve()
+                         or sha256_file(checkpoint) != matched_base["sha256"]):
+        raise ValueError("Base EMA path/hash differs from the preregistered matched checkpoint")
+    if registration.get("kind") == "frozen_fullscene500_action_codec":
+        identity = registration["datasets"]
+        if (payload.get("h5_sha256") != identity["h5"]["sha256"]
+                or payload.get("manifest_sha256") != identity["manifest"]["sha256"]
+                or Path(payload.get("data_path", "")).resolve() != Path(identity["h5"]["path"]).resolve()
+                or Path(payload.get("manifest_path", "")).resolve() != Path(identity["manifest"]["path"]).resolve()):
+            raise ValueError("base checkpoint data hashes differ from full-scene500 registration")
     agent = build_agent("cpu")
     agent.load_state_dict(ck["weights"]["ema"], strict=True)
     return ck, agent
@@ -514,14 +737,22 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
     _, base_agent = _load_base_ema(base_checkpoint, registration)
+    profile = registration.get("action_encoding")
     dataset = PilotTrajectoryDataset(
-        demo_path, manifest_path, "obstacle", registration["selected_obstacle_ids"])
+        demo_path, manifest_path, "obstacle", registration["selected_obstacle_ids"], profile)
+    _assert_registered_dataset(dataset, registration)
     if len(dataset) < training["batch_size"]:
         raise RuntimeError("obstacle windows are fewer than the pre-registered batch size")
+    if profile is not None:
+        random.seed(training["seed"]); np.random.seed(training["seed"]); torch.manual_seed(training["seed"])
     denoiser = build_constrain_denoiser(MODEL_CONFIG, device="cpu")
     denoiser.base_net.load_state_dict(base_agent.noise_pred_net.state_dict(), strict=True)
     denoiser.to(device)
     base_sha = _state_sha(denoiser.base_net.state_dict())
+    equivalence_before = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None else None
+    if equivalence_before is not None and not (
+            equivalence_before["epsilon_matches"] and equivalence_before["sampling_matches"]):
+        raise RuntimeError("new Base EMA and disabled Constrain path differ before training")
     params = denoiser.trainable_parameters()
     if any(param.requires_grad for param in denoiser.base_net.parameters()):
         raise RuntimeError("base network is trainable")
@@ -532,9 +763,10 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
     from diffusers.optimization import get_scheduler
     from diffusers.training_utils import EMAModel
     from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+    constrain_updates = expected_constrain_updates(registration)
     lr_sched = get_scheduler(
         "cosine", optimizer=optimizer, num_warmup_steps=training["warmup"],
-        num_training_steps=training["total_iters"])
+        num_training_steps=constrain_updates)
     ema = EMAModel(parameters=params, power=training["ema_power"])
     scheduler = DDPMScheduler(
         num_train_timesteps=100, beta_schedule="squaredcos_cap_v2", clip_sample=True, prediction_type="epsilon")
@@ -542,8 +774,19 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         dataset, batch_sampler=BatchSampler(RandomSampler(dataset), training["batch_size"], drop_last=True),
         num_workers=0)
     norm = PickCubeConditionNorm()
+    checkpoint_format = FULLSCENE_CONSTRAIN_FORMAT if profile is not None else CONSTRAIN_FORMAT
     config = {
         "model": dict(MODEL_CONFIG),
+        "policy": {
+            "robot": "panda", "obs_dim": 42, "obstacle_obs_dim": 45, "act_dim": 7,
+            "obs_horizon": 2, "pred_horizon": 16, "act_horizon": 8,
+            "control_mode": "pd_ee_delta_pose", "observation_mode": "state",
+            "named_state_fields": NAMED_FIELDS,
+        },
+        "diffusion": {"training_scheduler": "DDPMScheduler", "inference_scheduler": "DDIMScheduler" if profile else "DDPMScheduler",
+                      "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
+                      "prediction_type": "epsilon", "num_train_timesteps": 100,
+                      "inference_steps": 50 if profile else 100, "eta": 0.0 if profile else None},
         "normalization": norm.to_dict(),
         "base_weights": {
             "source": str(base_checkpoint), "sha256": sha256_file(base_checkpoint),
@@ -553,10 +796,16 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
             "selected_class": "obstacle", "episodes": len(dataset.trajectory_ids),
             "selected_episode_ids": dataset.trajectory_ids, "h5_sha256": dataset.h5_sha256,
             "manifest_sha256": dataset.manifest_sha256,
+            "data_path": str(dataset.data_path), "manifest_path": str(dataset.manifest_path),
         },
-        "training": training,
+        "training": dict(training, total_iters=constrain_updates),
         "selected_weights": SELECTED_WEIGHTS,
         "loss_weight": training.get("loss_weight"),
+        "action_encoding": profile,
+        "action_encoding_sha256": registration.get("action_encoding_sha256"),
+        "model_action_space": "encoded controller-range coordinates" if profile else "native identity coordinates",
+        "actual_training": {"updates": expected_constrain_updates(registration), "selected_weights": "ema"},
+        "pretraining_disabled_control_equivalence": equivalence_before,
     }
     weight_spec = training.get("loss_weight")
     if weight_spec is not None and weight_spec.get("name") != "obstacle_proximity":
@@ -566,7 +815,9 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
     losses = []
     unweighted_losses = []
     started = time.monotonic()
-    for step in range(1, training["total_iters"] + 1):
+    loss_log_path = run_dir / "loss.jsonl"
+    loss_log = loss_log_path.open("w")
+    for step in range(1, constrain_updates + 1):
         try:
             batch = next(iterator)
         except StopIteration:
@@ -600,22 +851,33 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         ema.step(params)
         losses.append(float(loss.detach().cpu()))
         unweighted_losses.append(float(unweighted.detach().cpu()))
-        if step == 1 or step == training["total_iters"] or step % 1000 == 0:
+        loss_log.write(json.dumps({"step": step, "loss": losses[-1],
+                                   "unweighted_loss": unweighted_losses[-1]}) + "\n")
+        if step % 1000 == 0 or step == constrain_updates:
+            loss_log.flush()
+        if step == 1 or step == constrain_updates or step % 1000 == 0:
             print(
-                f"constrain step {step}/{training['total_iters']} loss={losses[-1]:.6f} "
+                f"constrain step {step}/{constrain_updates} loss={losses[-1]:.6f} "
                 f"unweighted={unweighted_losses[-1]:.6f} mean_weight={mean_weight:.4f}",
                 flush=True,
             )
+    loss_log.close()
+    config["source_identity_after_training"] = _recompute_registered_source(registration)
+    _json_atomic(run_dir / "run_config.json", config)
     if _state_sha(denoiser.base_net.state_dict()) != base_sha:
         raise RuntimeError("frozen base changed during constrain training")
     if not any(not torch.equal(param, start) for param, start in zip(denoiser.trainable_parameters(), initial)):
         raise RuntimeError("control branch did not change")
+    equivalence_after = fullscene_disabled_equivalence(base_agent, denoiser, device) if profile is not None else None
+    if equivalence_after is not None and not (
+            equivalence_after["epsilon_matches"] and equivalence_after["sampling_matches"]):
+        raise RuntimeError("frozen base/disabled control equivalence failed after training")
     final = checkpoint_dir / "final.pt"
     save_constrain_checkpoint(
-        final, denoiser, ema, optimizer, lr_sched, training["total_iters"],
-        {"torch": torch.get_rng_state()}, config, checkpoint_format=CONSTRAIN_FORMAT)
+        final, denoiser, ema, optimizer, lr_sched, constrain_updates,
+        {"torch": torch.get_rng_state()}, config, checkpoint_format=checkpoint_format)
     summary = {
-        "status": "complete", "actual_updates": training["total_iters"],
+        "status": "complete", "actual_updates": constrain_updates,
         "selected_weights": SELECTED_WEIGHTS, "base_unchanged": True,
         "control_parameter_changed": True, "loss_first": losses[0], "loss_last": losses[-1],
         "unweighted_loss_first": unweighted_losses[0], "unweighted_loss_last": unweighted_losses[-1],
@@ -624,9 +886,10 @@ def train_constrain(demo_path, manifest_path, base_checkpoint, run_dir, checkpoi
         "elapsed_seconds": time.monotonic() - started, "checkpoint": str(final),
         "checkpoint_sha256": sha256_file(final),
         "dataset_coverage": dataset_coverage(
-            len(dataset), len(dataset.trajectory_ids), training["total_iters"], training["batch_size"]),
+            len(dataset), len(dataset.trajectory_ids), constrain_updates, training["batch_size"]),
         "base_state_sha256": base_sha,
         "strict_ema_load": True,
+        "disabled_control_equivalence_after_training": equivalence_after,
     }
     (run_dir / "train_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return summary
@@ -761,13 +1024,37 @@ def _json_atomic(path, payload):
     temporary.replace(path)
 
 
+def _pickcube_ddim_scheduler(inference_steps=50):
+    if not isinstance(inference_steps, int) or inference_steps not in (50, 100):
+        raise ValueError("PickCube action-codec DDIM inference supports exactly 50 or 100 steps")
+    from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+
+    scheduler = DDIMScheduler(
+        num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
+        clip_sample=True, prediction_type="epsilon")
+    scheduler.set_timesteps(inference_steps)
+    expected_first = 99 if inference_steps == 100 else 98
+    if len(scheduler.timesteps) != inference_steps or int(scheduler.timesteps[0]) != expected_first:
+        raise RuntimeError("DDIM scheduler did not construct the registered endpoint sequence")
+    return scheduler
+
+
 class PilotBaseAdapter:
-    def __init__(self, checkpoint, registration, device="cpu"):
+    def __init__(self, checkpoint, registration, device="cpu", inference_steps=50):
         ck, self.agent = _load_base_ema(checkpoint, registration)
         self.agent.to(device).eval()
         self.device = torch.device(device)
-        self.metadata = {"format": BASE_FORMAT, "selected_weights": "ema",
-                         "checkpoint_sha256": sha256_file(checkpoint)}
+        self.action_profile = registration.get("action_encoding")
+        self.scheduler = None
+        if self.action_profile is not None:
+            self.scheduler = _pickcube_ddim_scheduler(inference_steps)
+        self.inference_steps = inference_steps if self.scheduler is not None else 100
+        self.metadata = {"format": FULLSCENE_BASE_FORMAT if self.action_profile else BASE_FORMAT,
+                         "selected_weights": "ema",
+                         "checkpoint_sha256": sha256_file(checkpoint),
+                         "inference_scheduler": "DDIMScheduler" if self.action_profile else "DDPMScheduler",
+                         "inference_steps": self.inference_steps,
+                         "eta": 0.0 if self.action_profile else None}
 
     def get_action(self, queued):
         obs = torch.as_tensor(queued, dtype=torch.float32, device=self.device)
@@ -775,12 +1062,22 @@ class PilotBaseAdapter:
             raise ValueError(f"expected (2,45) observations, got {tuple(obs.shape)}")
         if obs.ndim == 2:
             obs = obs[None]
+        if self.scheduler is not None:
+            from examples.baselines.constrain.pickcube_action_codec import decode_prediction_to_native
+            sample = torch.randn((obs.shape[0], 16, 7), device=self.device)
+            condition = obs[..., :42].flatten(start_dim=obs.ndim - 2)
+            with torch.no_grad():
+                for timestep in self.scheduler.timesteps:
+                    prediction = self.agent.noise_pred_net(
+                        sample, timestep, global_cond=condition)
+                    sample = self.scheduler.step(prediction, timestep, sample, eta=0.0).prev_sample
+            return decode_prediction_to_native(sample[:, 1:9], self.action_profile)
         with torch.no_grad():
             return self.agent.get_action(obs[..., :42])
 
 
 class PilotConstrainAdapter:
-    def __init__(self, checkpoint, registration, device="cpu"):
+    def __init__(self, checkpoint, registration, device="cpu", inference_steps=50):
         from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
         from diffusers.training_utils import EMAModel
         from examples.baselines.constrain.constrain_denoiser import build_constrain_denoiser
@@ -788,10 +1085,35 @@ class PilotConstrainAdapter:
         ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
         config = ck.get("config") or {}
         data = config.get("data_identity") or {}
-        if (ck.get("format") != CONSTRAIN_FORMAT or int(ck.get("step", -1)) != registration["training"]["total_iters"]
+        matched_control = registration.get("matched_constrain_checkpoint") or {}
+        expected_format = FULLSCENE_CONSTRAIN_FORMAT if registration.get("action_encoding") else CONSTRAIN_FORMAT
+        if (ck.get("format") != expected_format or int(ck.get("step", -1)) != expected_constrain_updates(registration)
                 or config.get("selected_weights") != SELECTED_WEIGHTS
+                or (registration.get("kind") == "frozen_fullscene500_action_codec"
+                    and (config.get("diffusion") != {
+                        "training_scheduler": "DDPMScheduler", "inference_scheduler": "DDIMScheduler",
+                        "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
+                        "prediction_type": "epsilon", "num_train_timesteps": 100,
+                        "inference_steps": 50, "eta": 0.0}
+                         or config.get("policy", {}).get("obs_dim") != 42
+                         or config.get("policy", {}).get("act_dim") != 7
+                         or config.get("model_action_space") != "encoded controller-range coordinates"))
                 or data.get("selected_class") != "obstacle"
-                or data.get("selected_episode_ids") != list(registration["selected_obstacle_ids"])):
+                or data.get("selected_episode_ids") != list(registration["selected_obstacle_ids"])
+                or config.get("action_encoding") != registration.get("action_encoding")
+                or config.get("action_encoding_sha256") != registration.get("action_encoding_sha256")
+                or (registration.get("kind") == "frozen_fullscene500_action_codec" and (
+                    config.get("model_action_space") != "encoded controller-range coordinates"
+                    or config.get("actual_training") != {"updates": expected_constrain_updates(registration), "selected_weights": "ema"}))
+                or (matched_control and (
+                    Path(checkpoint).resolve() != Path(matched_control["path"]).resolve()
+                    or sha256_file(checkpoint) != matched_control["sha256"]))
+        or (registration.get("kind") == "frozen_fullscene500_action_codec"
+            and (data.get("h5_sha256") != registration["datasets"]["h5"]["sha256"]
+                 or data.get("manifest_sha256") != registration["datasets"]["manifest"]["sha256"]
+                 or Path(data.get("data_path", "")).resolve() != Path(registration["datasets"]["h5"]["path"]).resolve()
+                 or Path(data.get("manifest_path", "")).resolve() != Path(registration["datasets"]["manifest"]["path"]).resolve()
+                 or config.get("base_weights", {}).get("sha256") != sha256_file(registration["paths"]["base_checkpoint"])) )):
             raise ValueError("pilot constrain checkpoint failed strict load")
         self.denoiser = build_constrain_denoiser(MODEL_CONFIG, device=device)
         self.denoiser.load_state_dict(ck["model"], strict=True)
@@ -804,12 +1126,22 @@ class PilotConstrainAdapter:
         self.scheduler = DDPMScheduler(
             num_train_timesteps=100, beta_schedule="squaredcos_cap_v2",
             clip_sample=True, prediction_type="epsilon")
-        self.scheduler.set_timesteps(100)
-        self.metadata = {"format": CONSTRAIN_FORMAT, "selected_weights": SELECTED_WEIGHTS,
-                         "checkpoint_sha256": sha256_file(checkpoint)}
+        self.inference_scheduler = None
+        if registration.get("action_encoding"):
+            self.inference_scheduler = _pickcube_ddim_scheduler(inference_steps)
+        else:
+            self.scheduler.set_timesteps(100)
+        self.action_profile = registration.get("action_encoding")
+        self.inference_steps = inference_steps if self.inference_scheduler is not None else 100
+        self.metadata = {"format": expected_format, "selected_weights": SELECTED_WEIGHTS,
+                         "checkpoint_sha256": sha256_file(checkpoint),
+                         "inference_scheduler": "DDIMScheduler" if self.action_profile else "DDPMScheduler",
+                         "inference_steps": self.inference_steps,
+                         "eta": 0.0 if self.action_profile else None}
 
     def get_action(self, queued):
         from examples.baselines.constrain.pickcube_constrain import pickcube_relative_condition
+        from examples.baselines.constrain.pickcube_action_codec import decode_prediction_to_native
         obs = torch.as_tensor(queued, dtype=torch.float32, device=self.device)
         if obs.ndim == 2:
             obs = obs[None]
@@ -817,10 +1149,16 @@ class PilotConstrainAdapter:
         sample = torch.randn(obs.shape[0], 16, 7, device=self.device)
         cond = obs[..., :42].flatten(start_dim=obs.ndim - 2)
         with torch.no_grad():
-            for timestep in self.scheduler.timesteps:
+            scheduler = self.inference_scheduler or self.scheduler
+            for timestep in scheduler.timesteps:
                 prediction = self.denoiser(sample, timestep, global_cond=cond, hint=hint, enabled=True)
-                sample = self.scheduler.step(prediction, timestep, sample).prev_sample
+                if self.inference_scheduler is not None:
+                    sample = scheduler.step(prediction, timestep, sample, eta=0.0).prev_sample
+                else:
+                    sample = scheduler.step(prediction, timestep, sample).prev_sample
         action = sample[:, 1:9]
+        if self.action_profile is not None:
+            return decode_prediction_to_native(action, self.action_profile)
         if bool((action.abs() > 1.000001).any()):
             raise ValueError("constrain action left [-1, 1]")
         return action
@@ -844,7 +1182,7 @@ def _episode_deadline(_signum, _frame):
 def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
     from examples.baselines.constrain.diagnose_pickcube_contact import classify_contact_phase
     from examples.baselines.constrain.evaluate_pickcube_paired import classify_termination
-    from examples.baselines.constrain.pickcube_expert import make_pickcube_env
+    from examples.baselines.constrain.pickcube_expert import make_pickcube_env, snapshot_execution_state
     from examples.baselines.constrain.pickcube_scenes import _tree_hash
 
     scene = scene_set.load(index)
@@ -857,6 +1195,10 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
             raise ValueError("restored state mismatch")
         if not np.array_equal(obs, scene["observation"].reshape(-1)):
             raise ValueError("restored observation mismatch")
+        initial_state, initial_controller = snapshot_execution_state(env)
+        restored_state_sha = _tree_hash(initial_state)
+        restored_controller_sha = _tree_hash(initial_controller)
+        restored_observation_sha = hashlib.sha256(np.ascontiguousarray(obs).tobytes()).hexdigest()
         history = np.repeat(obs[None, :], 2, axis=0)
         torch.manual_seed(int(scene["metadata"]["seed"]))
         elapsed = 0
@@ -866,9 +1208,12 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
         first_contact = None
         native_success = terminated = truncated = False
         termination = None
+        first_grasp_step = first_lift_step = first_transport_step = first_success_step = None
+        step_trace = []
         while elapsed < max_steps:
             prediction = adapter.get_action(history)
-            for action in prediction[0][:min(8, max_steps - elapsed)]:
+            execution_horizon = 2 if getattr(adapter, "action_profile", None) is not None else 8
+            for action in prediction[0][:min(execution_horizon, max_steps - elapsed)]:
                 action_cpu = action.detach().cpu().numpy()
                 obs, _, step_terminated, step_truncated, info = env.step(action_cpu[None])
                 elapsed += 1
@@ -888,6 +1233,21 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
                 near_goal = bool(np.linalg.norm(cube[:2] - goal_xy) < 0.10)
                 lifted |= lifted_now
                 transported |= near_goal
+                if grasped_now and first_grasp_step is None:
+                    first_grasp_step = elapsed
+                if lifted_now and first_lift_step is None:
+                    first_lift_step = elapsed
+                if near_goal and first_transport_step is None:
+                    first_transport_step = elapsed
+                if step_success and first_success_step is None:
+                    first_success_step = elapsed
+                step_trace.append({
+                    "step": elapsed, "native_action": action_cpu.tolist(),
+                    "grasped": grasped_now, "lifted": lifted_now, "near_goal": near_goal,
+                    "native_success": step_success, "terminated": bool(step_terminated),
+                    "truncated": bool(step_truncated), "obstacle_collision": step_collision,
+                    "obstacle_crossing": _bool_info(info, "obstacle_crossing"),
+                })
                 if step_collision and first_contact is None:
                     stored = getattr(env.unwrapped, "_first_obstacle_contact", None) or {}
                     first_contact = {
@@ -909,8 +1269,13 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
         return {
             "scene_index": index, "scene_id": scene["metadata"]["scene_id"],
             "seed": int(scene["metadata"]["seed"]), "status": "evaluated",
-            "restored_state_sha256": scene["metadata"]["state_sha256"],
+            "restored_state_sha256": restored_state_sha,
+            "restored_controller_state_sha256": restored_controller_sha,
+            "restored_observation_sha256": restored_observation_sha,
             "first_contact": first_contact,
+            "step_trace": step_trace,
+            "first_grasp_step": first_grasp_step, "first_lift_step": first_lift_step,
+            "first_transport_step": first_transport_step, "first_native_success_step": first_success_step,
             "result": {
                 "termination_reason": termination, "elapsed_steps": elapsed,
                 "terminated": terminated, "truncated": truncated,
@@ -955,16 +1320,93 @@ def paired_counts(left_rows, right_rows, field):
     }
 
 
-def freeze_pilot_identity(repo_root=None):
+def fullscene500_engineering_comparison(registration, output_dir, current_rows):
+    """Compare final EMA outcomes to the preregistered retained 90k trial."""
+    from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
+
+    paired_root = Path(output_dir) / "baseline_snapshot" / "paired"
+    if file_tree_hash(paired_root) != registration["baseline"]["paired_episode_tree_sha256"]:
+        raise ValueError("historical baseline snapshot changed after pinning")
+    baselines = {
+        "base_dp": load_episode_directory(paired_root / "base_dp"),
+        "constrain_dp": load_episode_directory(paired_root / "constrain_dp"),
+    }
+    fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
+    transitions = {}
+    pairing_failures = []
+    new_base = sorted(current_rows["base_dp"], key=lambda row: int(row["scene_index"]))
+    new_constrain = sorted(current_rows["constrain_dp"], key=lambda row: int(row["scene_index"]))
+    for left, right in zip(new_base, new_constrain):
+        if left.get("status") != "evaluated" or right.get("status") != "evaluated" or any(left.get(field) != right.get(field) for field in (
+                "scene_id", "restored_state_sha256", "restored_controller_state_sha256",
+                "restored_observation_sha256")):
+            pairing_failures.append(int(left["scene_index"]))
+    for policy, current in current_rows.items():
+        old = baselines[policy]
+        if len(old) != 30 or len(current) != 30:
+            raise ValueError("primary engineering comparison requires all 30 paired scenes")
+        old = sorted(old, key=lambda row: int(row["scene_index"]))
+        current = sorted(current, key=lambda row: int(row["scene_index"]))
+        for left, right in zip(old, current):
+            if (left.get("status") != "evaluated" or right.get("status") != "evaluated"
+                    or left.get("scene_id") != right.get("scene_id")
+                    or left.get("restored_state_sha256") != right.get("restored_state_sha256")):
+                pairing_failures.append(int(right["scene_index"]))
+        if pairing_failures:
+            transitions[policy] = None
+        else:
+            transitions[policy] = {}
+            for name in fields:
+                counts = paired_counts(old, current, name)
+                if name in ("native_success", "safe_success"):
+                    transitions[policy][name] = {
+                        "improved_new_only": counts["constrain_only"],
+                        "regressed_baseline_only": counts["base_only"],
+                        "both": counts["both"], "neither": counts["neither"],
+                    }
+                else:
+                    transitions[policy][name] = {
+                        "cleared_new_only": counts["base_only"],
+                        "introduced_new_only": counts["constrain_only"],
+                        "both": counts["both"], "neither": counts["neither"],
+                    }
+    return {
+        "comparison_type": "engineering pipeline comparison; not isolated codec/data/inference effect",
+        "formal_performance_claim": False, "generalization_claim": False,
+        "baseline": registration["baseline"],
+        "new_checkpoints": {
+            name: {"path": registration["paths"][f"{name.split('_')[0]}_checkpoint"],
+                   "sha256": sha256_file(registration["paths"][f"{name.split('_')[0]}_checkpoint"])}
+            for name in ("base_dp", "constrain_dp")
+        },
+        "metrics": {"baseline": {name: metric_counts(rows) for name, rows in baselines.items()},
+                    "new": {name: metric_counts(rows) for name, rows in current_rows.items()}},
+        "transitions": transitions,
+        "pairing_failure_scene_indices": sorted(set(pairing_failures)),
+        "transition_order": "both, baseline_only (cleared for violations), new_only (introduced for violations), neither",
+    }
+
+
+def freeze_pilot_identity(repo_root=None, fullscene=False):
     repo = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[3]
-    files = (
+    files = [
         "examples/baselines/constrain/pickcube_learning_pilot.py",
         "examples/baselines/constrain/pickcube_transport_detour.py",
         "examples/baselines/constrain/pickcube_expert.py",
         "examples/baselines/constrain/pickcube_base_dp.py",
         "examples/baselines/constrain/pickcube_constrain.py",
         "examples/baselines/constrain/constrain_denoiser.py",
-    )
+    ]
+    if fullscene:
+        files.extend((
+            "examples/baselines/constrain/pickcube_action_codec.py",
+            "examples/baselines/constrain/pickcube_obstacle.py",
+            "examples/baselines/constrain/constrain_ckpt.py",
+            "examples/baselines/constrain/diagnose_pickcube_contact.py",
+            "examples/baselines/constrain/evaluate_pickcube_paired.py",
+            "examples/baselines/constrain/pickcube_scenes.py",
+            "examples/baselines/constrain/materialize_pickcube_fullscene500.py",
+        ))
     hashed = {rel: hashlib.sha256((repo / rel).read_bytes()).hexdigest() for rel in files}
     return {
         "basis": "working-tree bytes frozen before pilot runs",
@@ -2635,7 +3077,7 @@ def _run_window_gap_diagnosis(registration, device):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=(
-        "preregister", "preregister-expansion", "preregister-obstacle-increment",
+        "preregister", "preregister-fullscene500", "preregister-expansion", "preregister-obstacle-increment",
         "collect-train", "collect-dev", "package",
         "include-original", "collect-pairs", "collect-direct", "package-expansion",
         "collect-obstacle-increment", "package-obstacle-increment",
@@ -2657,6 +3099,8 @@ def main(argv=None):
     parser.add_argument("--base-checkpoint", type=Path)
     parser.add_argument("--constrain-checkpoint", type=Path)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--inference-steps", type=int, default=50,
+                        help="opt-in DDIM inference steps for the frozen action-codec pair")
     parser.add_argument("--seed", type=int, default=20261023)
     parser.add_argument("--max-attempts", type=int, default=120)
     parser.add_argument("--max-wall-seconds", type=float, default=2400)
@@ -2679,6 +3123,104 @@ def main(argv=None):
                 "paired": str(exp / "paired"),
             }, reason=args.reason, prior_version=args.prior_version, dedup_mode=args.dedup_mode)
         payload["source_identity"] = freeze_pilot_identity()
+        write_preregistration(args.registration, payload)
+        print(args.registration, flush=True)
+        return payload
+    if args.command == "preregister-fullscene500":
+        import importlib.util
+        from examples.baselines.constrain.pickcube_action_codec import profile_sha256
+        from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
+        exp = args.registration.parent
+        dataset = Path("demos/PickCube-transport-detour/20261028_164500_frozen500")
+        dev = Path(FROZEN_DEV_SCENES)
+        baseline_exp = Path("outputs/exp/20261025_065159_pickcube_exposure90000")
+        baseline = {
+            "base_checkpoint": "outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt",
+            "base_checkpoint_sha256": sha256_file("outputs/ckpt/20261024_104348_pickcube_expansion_base/final.pt"),
+            "constrain_checkpoint": "outputs/ckpt/20261025_065159_pickcube_exposure90000_constrain/final.pt",
+            "constrain_checkpoint_sha256": sha256_file("outputs/ckpt/20261025_065159_pickcube_exposure90000_constrain/final.pt"),
+            "paired_base": str(baseline_exp / "paired/base_dp"),
+            "paired_constrain": str(baseline_exp / "paired/constrain_dp"),
+            "paired_base_summary_sha256": sha256_file(baseline_exp / "paired/base_dp/summary.json"),
+            "paired_constrain_summary_sha256": sha256_file(baseline_exp / "paired/constrain_dp/summary.json"),
+            "paired_episode_tree_sha256": file_tree_hash(baseline_exp / "paired"),
+            "baseline_summary": {"base": {"task": "10/30", "safe": "0/30", "contact": "30/30", "xy": "15/30"},
+                                 "constrain": {"task": "27/30", "safe": "15/30", "contact": "15/30", "xy": "3/30"}},
+            "comparison_interpretation": "engineering pipeline comparison; data, codec, training budget and DDIM stride differ",
+        }
+        paths = {
+            "exp": str(exp), "demos": str(dataset), "dev_scenes": str(dev),
+            "base_run": str(exp / "train_base"), "constrain_run": str(exp / "train_constrain"),
+            "base_checkpoint_dir": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_base",
+            "constrain_checkpoint_dir": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_constrain",
+            "base_checkpoint": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_base/final.pt",
+            "constrain_checkpoint": f"outputs/ckpt/{exp.name.split('_pickcube')[0]}_pickcube_fullscene500_constrain/final.pt",
+            "paired": str(exp / "paired"),
+        }
+        matched_base_identity = None
+        matched_constrain_identity = None
+        if args.base_checkpoint is not None:
+            base_path = Path(args.base_checkpoint).resolve()
+            base_ck = torch.load(base_path, map_location="cpu", weights_only=False)
+            base_payload = base_ck.get("payload") or {}
+            if (base_ck.get("format") != FULLSCENE_BASE_FORMAT
+                    or base_ck.get("selected_weights") != "ema"
+                    or int(base_ck.get("step", -1)) != 30000
+                    or base_payload.get("action_encoding_sha256") != profile_sha256()
+                    or base_payload.get("h5_sha256") != sha256_file(dataset / "trajectory.h5")
+                    or base_payload.get("manifest_sha256") != sha256_file(dataset / "trajectory.json")):
+                raise ValueError("reused Base is not the completed 1000-direct full-scene500 EMA")
+            matched_base_identity = {"path": str(base_path), "sha256": sha256_file(base_path),
+                                     "step": 30000, "selected_weights": "ema"}
+            paths["base_checkpoint"] = str(base_path)
+            paths["base_checkpoint_dir"] = str(base_path.parent)
+            paths["base_run"] = "outputs/exp/20261028_111705_pickcube_fullscene500_action_codec/train_base"
+        if args.constrain_checkpoint is not None:
+            control_path = Path(args.constrain_checkpoint).resolve()
+            control_ck = torch.load(control_path, map_location="cpu", weights_only=False)
+            control_config = control_ck.get("config") or {}
+            if (control_ck.get("format") != FULLSCENE_CONSTRAIN_FORMAT
+                    or int(control_ck.get("step", -1)) != 150000
+                    or control_config.get("action_encoding_sha256") != profile_sha256()
+                    or control_config.get("data_identity", {}).get("h5_sha256") != sha256_file(dataset / "trajectory.h5")
+                    or control_config.get("base_weights", {}).get("sha256")
+                    != (matched_base_identity or {}).get("sha256")):
+                raise ValueError("reused Constrain checkpoint is not the completed matched 500-obstacle EMA")
+            matched_constrain_identity = {"path": str(control_path), "sha256": sha256_file(control_path),
+                                          "step": 150000, "selected_weights": "ema"}
+            paths["constrain_checkpoint"] = str(control_path)
+            paths["constrain_checkpoint_dir"] = str(control_path.parent)
+        source = freeze_pilot_identity(fullscene=True)
+        identities = {
+            "datasets": {
+                "h5": {"path": str(dataset / "trajectory.h5"), "sha256": sha256_file(dataset / "trajectory.h5")},
+                "manifest": {"path": str(dataset / "trajectory.json"), "sha256": sha256_file(dataset / "trajectory.json")},
+                "validation": {"path": str(dataset / "validation.json"), "sha256": sha256_file(dataset / "validation.json")},
+            },
+            "baseline": baseline,
+            "matched_base_checkpoint": matched_base_identity,
+            "matched_constrain_checkpoint": matched_constrain_identity,
+            "validation": {
+                "dev_manifest": {"path": str(dev / "manifest.json"), "sha256": sha256_file(dev / "manifest.json")},
+                "dev_scenes_h5": {"path": str(dev / "scenes.h5"), "sha256": sha256_file(dev / "scenes.h5")},
+                "dataset_validation_reference": "frozen validation.json: native channels 0..5 [-.35,.35], gripper [-1,1], held-success tail CLOSED",
+                "action_encoding_audit": audit_fullscene_action_encoding(
+                    dataset / "trajectory.h5", dataset / "trajectory.json"),
+            },
+        }
+        runtime_module = importlib.util.find_spec("mani_skill.envs.tasks.tabletop.pick_cube")
+        if runtime_module is None or runtime_module.origin is None:
+            raise RuntimeError("cannot resolve the ManiSkill PickCube task source")
+        identities["validation"]["maniskill_pickcube_source"] = {
+            "path": runtime_module.origin, "sha256": sha256_file(runtime_module.origin),
+        }
+        payload = build_fullscene500_preregistration(paths, identities, source)
+        if args.prior_version:
+            prior_path = Path(args.prior_version)
+            payload["training_preregistration"] = {
+                "path": str(prior_path), "sha256": sha256_file(prior_path),
+                "source_identity_sha256": json.loads(prior_path.read_text())["source_identity"]["files_sha256"],
+            }
         write_preregistration(args.registration, payload)
         print(args.registration, flush=True)
         return payload
@@ -2796,7 +3338,11 @@ def main(argv=None):
             raise RuntimeError("CUDA requested but unavailable")
         return run_window_gap_diagnosis(registration, args.device)
     registration = load_preregistration(args.registration)
-    enforce_runtime_source_identity(registration, freeze_pilot_identity(), args.command)
+    enforce_runtime_source_identity(
+        registration,
+        freeze_pilot_identity(fullscene=registration.get("kind") == "frozen_fullscene500_action_codec"),
+        args.command,
+    )
     if registration.get("kind") == "authorized_data_expansion" and args.command in (
             "collect-train", "collect-dev", "package"):
         raise SystemExit("expansion registration does not use the small-pilot collector")
@@ -3001,6 +3547,12 @@ def main(argv=None):
         print(dest, flush=True)
         return dest
     if args.command == "train-base":
+        if registration.get("kind") == "frozen_fullscene500_action_codec":
+            expected = registration["paths"]
+            if (Path(args.run_dir).resolve() != Path(expected["base_run"]).resolve()
+                    or Path(args.checkpoint_dir).resolve() != Path(expected["base_checkpoint_dir"]).resolve()
+                    or Path(args.demo_dir).resolve() != Path(expected["demos"]).resolve()):
+                raise SystemExit("base training output/data paths differ from preregistration")
         if registration.get("changed_factor") == "constrain_updates":
             raise SystemExit("this slice does not retrain base")
         if registration.get("kind") == "authorized_obstacle_increment":
@@ -3011,6 +3563,13 @@ def main(argv=None):
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.run_dir, args.checkpoint_dir, registration, args.device)
     if args.command == "train-constrain":
+        if registration.get("kind") == "frozen_fullscene500_action_codec":
+            expected = registration["paths"]
+            if (Path(args.run_dir).resolve() != Path(expected["constrain_run"]).resolve()
+                    or Path(args.checkpoint_dir).resolve() != Path(expected["constrain_checkpoint_dir"]).resolve()
+                    or Path(args.base_checkpoint).resolve() != Path(expected["base_checkpoint"]).resolve()
+                    or Path(args.demo_dir).resolve() != Path(expected["demos"]).resolve()):
+                raise SystemExit("constrain training output/base/data paths differ from preregistration")
         if registration.get("kind") == "authorized_data_expansion":
             resolve_running_identity(registration, freeze_pilot_identity())
         if registration.get("kind") == "authorized_obstacle_increment":
@@ -3030,7 +3589,24 @@ def main(argv=None):
             args.demo_dir / "trajectory.h5", args.demo_dir / "trajectory.json",
             args.base_checkpoint, args.run_dir, args.checkpoint_dir, registration, args.device)
     if args.command == "evaluate":
+        import shutil
+        from examples.baselines.constrain.materialize_pickcube_fullscene500 import file_tree_hash
         from examples.baselines.constrain.pickcube_transport_detour import TransportDetourSceneSet
+        if registration.get("kind") == "frozen_fullscene500_action_codec":
+            expected = registration["paths"]
+            if (Path(args.output_dir).resolve() != Path(expected["paired"]).resolve()
+                    or Path(args.base_checkpoint).resolve() != Path(expected["base_checkpoint"]).resolve()
+                    or Path(args.constrain_checkpoint).resolve() != Path(expected["constrain_checkpoint"]).resolve()):
+                raise SystemExit("paired evaluation output/checkpoint paths differ from preregistration")
+            if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
+                raise SystemExit("full-scene500 evaluation must use the preregistered dev scenes")
+            for spec in registration["validation"].values():
+                if isinstance(spec, dict) and "path" in spec and sha256_file(spec["path"]) != spec["sha256"]:
+                    raise RuntimeError("frozen dev scene identity differs from preregistration")
+            for key in ("h5", "manifest"):
+                spec = registration["datasets"][key]
+                if sha256_file(spec["path"]) != spec["sha256"]:
+                    raise RuntimeError("frozen training dataset changed after preregistration")
         if registration.get("kind") == "authorized_data_expansion":
             resolve_running_identity(registration, freeze_pilot_identity())
             if Path(args.scene_dir).resolve() != Path(registration["paths"]["dev_scenes"]).resolve():
@@ -3060,7 +3636,13 @@ def main(argv=None):
             expected_dev = int(recorded["achieved_dev_count"])
         if len(catalog) != expected_dev:
             raise ValueError("dev scene count does not match the frozen denominator")
-        train_layouts = layouts_from_manifest(args.exclude_manifest[0]) if args.exclude_manifest else []
+        if not args.exclude_manifest:
+            train_layouts = []
+        elif registration.get("kind") == "frozen_fullscene500_action_codec":
+            train_layouts = (layouts_from_episodes(args.exclude_manifest[0], "direct")
+                             + layouts_from_episodes(args.exclude_manifest[0], "obstacle"))
+        else:
+            train_layouts = layouts_from_manifest(args.exclude_manifest[0])
         dev_layouts = layouts_from_manifest(args.scene_dir / "manifest.json")
         prior = layouts_from_manifest(PRIOR_MANIFEST)
         cylinder = registration["layout_dedup"]["cylinder_proximity_is_conflict"]
@@ -3076,7 +3658,7 @@ def main(argv=None):
         allow_within_train = (
             registration.get("kind") == "authorized_data_expansion" and addendum_path.exists()
             and load_expansion_addendum(addendum_path)["direct_rule"]["within_run_mutual_exclusion"] is False
-        )
+        ) or registration.get("kind") == "frozen_fullscene500_action_codec"
         if train_layouts and (
             (not allow_within_train and _internal(train_layouts)) or _internal(dev_layouts)
             or _hit(train_layouts, dev_layouts) or _hit(train_layouts, prior) or _hit(dev_layouts, prior)
@@ -3086,11 +3668,32 @@ def main(argv=None):
             "base_dp": args.base_checkpoint,
             "constrain_dp": args.constrain_checkpoint,
         }
+        if args.inference_steps not in (50, 100):
+            raise SystemExit("registered action-codec inference supports only 50 or 100 DDIM steps")
         adapters = {
-            "base_dp": PilotBaseAdapter(args.base_checkpoint, registration, args.device),
-            "constrain_dp": PilotConstrainAdapter(args.constrain_checkpoint, registration, args.device),
+            "base_dp": PilotBaseAdapter(args.base_checkpoint, registration, args.device, args.inference_steps),
+            "constrain_dp": PilotConstrainAdapter(
+                args.constrain_checkpoint, registration, args.device, args.inference_steps),
         }
         args.output_dir.mkdir(parents=True, exist_ok=False)
+        _json_atomic(args.output_dir / "inference_profile.json", {
+            "scheduler": "DDIMScheduler" if registration.get("action_encoding") else "DDPMScheduler",
+            "inference_steps": args.inference_steps if registration.get("action_encoding") else 100,
+            "training_timesteps": 100, "beta_schedule": "squaredcos_cap_v2",
+            "prediction_type": "epsilon", "eta": 0.0 if registration.get("action_encoding") else None,
+            "prediction_horizon": 16, "executed_prediction_slice": [1, 9],
+            "execution_stride": 2, "plans_per_call": 1,
+            "action_encoding_sha256": registration.get("action_encoding_sha256"),
+            "base_checkpoint_sha256": sha256_file(args.base_checkpoint),
+            "constrain_checkpoint_sha256": sha256_file(args.constrain_checkpoint),
+            "scene_manifest_sha256": sha256_file(args.scene_dir / "manifest.json"),
+            "source_identity": freeze_pilot_identity(fullscene=True),
+        })
+        if registration.get("kind") == "frozen_fullscene500_action_codec":
+            baseline_root = args.output_dir / "baseline_snapshot"
+            shutil.copytree(Path(registration["baseline"]["paired_base"]).parent, baseline_root / "paired")
+            if file_tree_hash(baseline_root / "paired") != registration["baseline"]["paired_episode_tree_sha256"]:
+                raise RuntimeError("immutable historical paired-record snapshot hash mismatch")
         summaries = {}
         stored = {}
         reuse_rows = None
@@ -3118,7 +3721,9 @@ def main(argv=None):
                 reuse_rows = expansion_rows
                 adapters.pop("base_dp")
         import signal
-        episode_wall = registration["eval"]["episode_wall_seconds"]
+        episode_wall = (registration["evaluation"]["episode_wall_seconds"]
+                        if registration.get("kind") == "frozen_fullscene500_action_codec"
+                        else registration["eval"]["episode_wall_seconds"])
         if reuse_rows is not None:
             policy_dir = args.output_dir / "base_dp"
             policy_dir.mkdir()
@@ -3133,7 +3738,8 @@ def main(argv=None):
             summaries["base_dp"] = summarize_pilot(rows, len(catalog))
             stored["base_dp"] = rows
             index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints["base_dp"]))
-            index["source_identity"] = freeze_pilot_identity()
+            index["source_identity"] = freeze_pilot_identity(
+                fullscene=registration.get("kind") == "frozen_fullscene500_action_codec")
             index["reused_expansion_base"] = True
             _json_atomic(policy_dir / "summary.json", summaries["base_dp"])
             _json_atomic(policy_dir / "index.json", index)
@@ -3162,7 +3768,8 @@ def main(argv=None):
             stored[name] = rows
             _json_atomic(policy_dir / "summary.json", summaries[name])
             index = build_episode_index(rows, checkpoint_sha, checkpoint=str(checkpoints[name]))
-            index["source_identity"] = freeze_pilot_identity()
+            index["source_identity"] = freeze_pilot_identity(
+                fullscene=registration.get("kind") == "frozen_fullscene500_action_codec")
             _json_atomic(policy_dir / "index.json", index)
         paired = {
             "policies": summaries,
@@ -3179,6 +3786,9 @@ def main(argv=None):
             "formal_performance_claim": False,
         }
         _json_atomic(args.output_dir / "paired_summary.json", paired)
+        if registration.get("kind") == "frozen_fullscene500_action_codec":
+            comparison = fullscene500_engineering_comparison(registration, args.output_dir, stored)
+            _json_atomic(args.output_dir / "engineering_comparison.json", comparison)
         print(json.dumps(summaries, indent=2), flush=True)
         return paired
     if args.command == "gate":

@@ -2,6 +2,98 @@
 
 ## Cleanup status
 
+## Round 34 — fixed-weight PickCube 50→100 DDIM inference (2026-10-28)
+
+This was one paired, exploratory inference-only comparison on the same 30 frozen
+development scenes and the same R33 EMA checkpoints. R33's **actual** registered
+native run used DDIM 50, eta 0, stride 2 for both policies; it did not execute
+the 100-step inference originally requested for that round. Its preregistration
+and native records are preserved unchanged and snapshotted under the R34 output.
+R34 changes only inference from 50 to 100 DDIM steps. Training remains 100-step
+DDPM with the same squared-cosine schedule; both checkpoint hashes, the codec,
+data, episode limit, controller and held native-success condition remain fixed.
+This is not a formal or generalization result.
+
+The R33 training evidence inventory resolved a real directory-path mismatch:
+Base's 30,000-step run/config/loss/summary are at the registered
+`20261028_111705.../train_base/`; Constrain's actual 150,000-step run/config/loss/
+summary are at `20261028_113532_pickcube_fullscene500_action_codec_retry1/
+train_constrain/`, while R33 preregistration pointed at the separate
+`20261028_125137.../train_constrain/` path. The retry tree contains exactly
+150,000 contiguous finite loss rows and a matching summary/checkpoint; it was
+catalogued in place, not fabricated or copied over the registered path. The
+Base standalone checkpoint stores model/EMA and step but not optimizer,
+scheduler, or RNG states. The Constrain checkpoint contains optimizer step
+150,000, scheduler and RNG states, plus 100 EMA shadow tensors. Details and all
+file hashes are in `r33_training_evidence.json`; the historical preregistration
+remains the source of its original frozen identities.
+
+### R34 preregistered execution and result
+
+Registration: `outputs/exp/20261028_170000_pickcube_ddim100_paired_r34/
+preregistration.json`; immutable R33 comparison inputs:
+`r33_50step_snapshot/`; actual paired records and traces:
+`paired_eval/`; derived paired analysis and gate:
+`analysis.json`. The run strictly loaded the existing Base EMA
+`2bd91abc5484559e3d7406b27c3e75e12d307e4df206d2361ed956a46533e1c2` and
+Constrain EMA `e66c5ac700998648ec293ee29c2ca664fc00b1ad6cdfc2514140ac8533d236b3`.
+The unchanged frozen package is HDF5
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f` and
+manifest `6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`.
+All source identities were recomputed after the run and matched the new
+registration (`2abd51ea93ce7bf7ea795bf441d44cc603d7de584722f244bc3dd28b8cc9e03b`).
+R33's 50-step records were copied byte-for-byte before analysis; both paired
+tree hashes and the preregistration/hash match their originals.
+
+| Policy | Inference | Task | Safe | Contact | XY crossing | Runtime errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Base | R33 50 → R34 100 | 14/30 → 11/30 | 0 → 0 | 30 → 30 | 19 → 19 | 0 |
+| Constrain | R33 50 → R34 100 | 17/30 → 15/30 | 9 → 6 | 21 → 24 | 4 → 6 | 0 |
+
+Each 100-step episode paired exactly on scene, seed, restored native-state,
+controller and observation hashes; all 60 completed, with no runtime errors.
+Constrain's task transitions (50→100) were both 14, improved 1, regressed 3,
+neither 12; safe success both 6, regressed 3, neither 21; contact both 21,
+introduced 3, neither 6; XY crossing both 3, cleared 1, introduced 3, neither
+23. The Base had 3 task regressions and no task improvements; its contact stayed
+30/30 and XY had one cleared and one introduced scene. R34 Constrain first
+contact phases were transport 21, grasp approach 1, lift 1, goal stabilization
+1; reported links were Panda hand 21, cube 1, and each finger 1. Terminal
+phases were 15 task successes, 14 transport/place failures, and 1 lift/no
+transport failure. First grasp/lift steps had medians 31.5/41; successful native
+termination step median was 90 among 15 successes. Full step/action traces and
+per-episode first-grasp, lift, transport, success, contact, phase and flags are
+retained. The evaluator does not save final native poses/heights, 3D goal
+distance, or complete contact entity-pair geometry; per-episode wall time was
+not logged (the frozen wall deadline was 600 seconds). Those values are not
+reconstructed.
+
+The frozen exploratory gate (task ≥27, safe ≥26, contact ≤3, XY ≤3, complete
+30/30 and zero runtime errors) is **pause**: Constrain scored 15/30 task, 6/30
+safe, 24/30 contact and 6/30 XY crossing. The 100-step result is lower on task
+and safe success and higher on contact and crossing than the R33 50-step result.
+The prior 90k comparison remains secondary and multi-factor, not a causal
+inference-step comparator. No training, new data/layouts, or checkpoint selection
+occurred. PlaceSphere outputs/configuration and ManiSkill source were untouched.
+
+Reproduction (bounded native run; run under the activated `maniskill` env):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && \
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=30s 36000s \
+python -m examples.baselines.constrain.pickcube_learning_pilot evaluate \
+  --registration outputs/exp/20261028_170000_pickcube_ddim100_paired_r34/preregistration.json \
+  --scene-dir outputs/exp/20261023_235744_pickcube_learning_pilot_r2/dev_scenes \
+  --base-checkpoint outputs/ckpt/20261028_111705_pickcube_fullscene500_base/final.pt \
+  --constrain-checkpoint outputs/ckpt/20261028_113532_pickcube_fullscene500_constrain/final.pt \
+  --output-dir outputs/exp/20261028_170000_pickcube_ddim100_paired_r34/paired_eval \
+  --inference-steps 100 --device cuda
+```
+
+Focused codec/pilot tests passed 48/48; the complete constrain suite passed
+551/551 with 28 warnings in 83.23 seconds. A source-identity-checked native run
+completed both 30-episode policy cohorts, and `git diff --check` passed.
+
 ## Round 32 — PickCube full-scene existing-pool inventory (2026-10-28)
 
 The user-approved target is 500 distinct real demonstrations, not 500 task-
@@ -109,6 +201,175 @@ One earlier registered packaging attempt at
 failed during HDF5 state-series serialization; its incomplete package remains
 retained as a failed attempt. The corrected 164500 registration persisted each
 replay before assembly and produced the audited final dataset above.
+
+## Round 33 — matched PickCube action codec, training, and paired dev (2026-10-28)
+
+Ticket 05 has no local issue file in this checkout; this is the execution record
+for its next bounded optimization slice. The retained data was not collected,
+replayed, copied, or rewritten. Training used exactly the frozen direct IDs
+0–999 and obstacle IDs 1000–1499 from the dataset above, with the same 30
+development scenes as the retained PickCube 90k exposure experiment. PlaceSphere
+data, weights, and configs were not used or changed. ManiSkill source was not
+modified.
+
+### Frozen action representation and matched training
+
+The before-training profile is `pickcube_controller_range_v1`:
+
+```json
+{"name":"pickcube_controller_range_v1","version":1,
+ "scale":[0.35,0.35,0.35,0.35,0.35,0.35,1.0],"offset":[0,0,0,0,0,0,0]}
+```
+
+Profile SHA-256: `f64e54ecd8eb26749fd4d0dbb18512ace929169d180334473d4e6e85a7053163`.
+It maps the six stored native controller channels into `[-1,1]` and keeps the
+native gripper channel unchanged. These are dimensionless normalized controller
+coordinates, not meters/radians. The audit recomputed all source actions from
+HDF5 before registration: both classes reach `[-0.349999994,+0.349999994]` in
+each of the first six channels and `[-1,+1]` for grip; their encoded ranges are
+`[-1,+1]`. Direct/obstacle episode RMS quantiles and the recomputed values are
+frozen in each preregistration. Every obstacle terminal grip is `-1` (CLOSED).
+Padding remains six zero pose values plus the final CLOSED grip; the PlaceSphere
+OPEN-tail convention was not imported. Raw demonstration arrays were encoded
+transiently when windows were read; no encoded HDF5 was made. Prediction decoding
+is multiplication only, without clipping, and rejects any decoded native action
+outside the existing `[-1,1]` controller bound.
+
+The initial Base preregistration is
+`outputs/exp/20261028_111705_pickcube_fullscene500_action_codec/preregistration.json`
+(SHA-256 `35da4d1045cb138216294129d2fe514ca91f5f47bc7f5f7c569af5baf9907b1a`,
+source identity `4c14662c929dd96c46d46ef1a0b61655a86fd29d840860056afd0e502b214751`).
+Base trained from scratch on direct-only IDs 0–999 for 30,000 updates, seed 1,
+batch 1,024, AdamW `1e-4`, warmup 500, cosine schedule, EMA power 0.75. It used
+the existing 42-D state input, 7-D encoded action, `2/16/8` horizons and the
+100-step squared-cosine DDPM epsilon objective. Final EMA was selected before
+training. It completed in 867.82 s with 30,000 finite losses (first
+`1.14611423`, last `0.00446880`, mean final 100 `0.00472909`); 83,004 windows
+were sampled. Checkpoint:
+`outputs/ckpt/20261028_111705_pickcube_fullscene500_base/final.pt`, SHA-256
+`2bd91abc5484559e3d7406b27c3e75e12d307e4df206d2361ed956a46533e1c2`.
+
+The matched control preregistration is
+`outputs/exp/20261028_113532_pickcube_fullscene500_action_codec_retry1/preregistration.json`
+(SHA-256 `eae50f326255fda93f09ebecc4a2c521b0bda37640b641ab42fde20cf77a536c`,
+source identity `40cc412da7821cb3d46d8ccb16d03e487e33d7f676503ad86367ac8788e66707`).
+It binds the exact Base EMA hash above, the same codec/profile hash, obstacle
+IDs 1000–1499, HDF5/manifest hashes, and all source paths. The first Control
+attempt under the earlier 111705 registration stopped before update 1 because
+`NAMED_FIELDS` was missing from the config writer; it left only empty attempt
+directories and is retained at
+`outputs/exp/20261028_111705_pickcube_fullscene500_action_codec/train_constrain/`
+and `outputs/ckpt/20261028_111705_pickcube_fullscene500_constrain/`. The import
+was fixed and tested, and the corrected source/Base identities were frozen in
+the retry registration before the next training command. No checkpoint was
+written in the failed attempt.
+
+Constrain trained only the existing control branch from that Base EMA, on the
+500 obstacle episodes, for 150,000 updates (same seed/batch/optimizer/schedule,
+unweighted epsilon MSE); 45,840 windows were sampled. It completed in 4,288.78 s
+with 150,000 finite losses (first `0.11801428`, last `0.00433297`, mean final
+100 `0.00454327`). The checkpoint's metadata records the actual 150,000 update
+tuple and selected final EMA. Frozen Base state hash remained
+`14b37834c0148ef02261c440a12b771e78e1f23c26eb5c27367aace1962d6cf3`, matching
+an independent load of the matched Base EMA; all 100 reconstructed trainable
+control tensors differ from their seed-1 initialized values. Before training,
+zero-control epsilon and 50-step DDIM outputs matched the Base exactly (`0`
+max absolute difference); after training, disabled-control epsilon/DDIM still
+matched exactly (`0`). Checkpoint:
+`outputs/ckpt/20261028_113532_pickcube_fullscene500_constrain/final.pt`, SHA-256
+`e66c5ac700998648ec293ee29c2ca664fc00b1ad6cdfc2514140ac8533d236b3`.
+
+### Paired 30-scene native evaluation
+
+The final before-scene preregistration is
+`outputs/exp/20261028_125137_pickcube_fullscene500_action_codec_paired_r2/preregistration.json`
+(SHA-256 `8cd2821fc6c256305ba52f464f70408d6659bf829bdb497f2394a707839fc2a9`,
+current evaluation-source identity
+`b7494c1fdd1b4db700f0ba7329ccd9491bcf8a6714f4cc2204f0de0315819dbd`). It pins
+the Base/Constrain hashes, training preregistration, retained old paired-record
+tree, 30-scene manifest/HDF5, current ManiSkill PickCube source hash, all 1,500
+training IDs and the 500-step/18,000-second evaluation budget. Two earlier
+evaluation preregistration drafts were not run on scenes: 124911 preceded the
+explicit decoded-native-bound guard; 125034 exposed a manifest-format reader
+assumption before environment initialization. The corrected evaluator was
+focused-tested and preregistered as 125137 before any native evaluation.
+
+Both policies used a single 16-action DDIM plan per call (50 inference steps,
+eta 0, stride 2), executed actions `[1:9]` two at a time, and refreshed the
+latest-two-frame history. Base received the same 42-D state condition used in
+training; Constrain received 42-D state plus the existing 3-value normalized
+obstacle hint from the 45-D observation. Actions were decoded before native
+execution. The existing native held-success condition was used with a 500-step
+cap; there was no added release requirement, safety shield, grasp override, or
+hand-coded pose/action. Each requested policy/scene episode is retained, with
+native action trace, first contact, grasp/lift/transport/success steps, actual
+terminated/truncated flags, and state/controller/observation restore hashes.
+All 30 scenes ran for both policies, with zero runtime errors. The paired Base
+and Constrain initial native state, controller state, and observation hashes
+match scene-by-scene. Record span from Base episode 000 through the paired
+summary is approximately 20m35s; the per-episode cap was 300 seconds.
+
+| Policy | Task success | Safe success | Obstacle contact | XY crossing | Runtime errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| New encoded Base DP | 14/30 (46.7%) | 0/30 | 30/30 (100%) | 19/30 (63.3%) | 0/30 |
+| New encoded Constrain | 17/30 (56.7%) | 9/30 (30.0%) | 21/30 (70.0%) | 4/30 (13.3%) | 0/30 |
+
+Within this new pair (Base → Constrain), task success transitions were both 8,
+Constrain-only/improved 9, Base-only/regressed 6, neither 7. Safe success was
+both 0, improved 9, regressed 0, neither 21. Contact was both 21, cleared 9,
+introduced 0, neither 0. XY crossing was both 3, cleared 16, introduced 1,
+neither 10.
+
+The preregistered PRIMARY engineering comparator is the retained old PickCube
+90,000-update Constrain run at
+`outputs/exp/20261025_065159_pickcube_exposure90000/paired/`, with exact old
+Constrain SHA `8a5de3ac5f8c4caba5617c30605bc17201f6beb4e4ea139fe0b8cfa8bb6ed5db`
+and Base SHA `dd9457e380e6621b1092aee4cf8c894d6f71070bace0b547e2f8c1a4956ac33d`.
+Old Base was 10/30 task, 0 safe, 30 contact, 15 XY; old Constrain was 27/30
+task, 15 safe, 15 contact, 3 XY. Current Base transitions vs old Base:
+task both 5 / improved 9 / regressed 5 / neither 11; safe neither 30; contact
+both 30; XY both 8 / cleared 7 / introduced 11 / neither 4. Current Constrain
+transitions vs old Constrain: task both 16 / improved 1 / regressed 11 / neither
+2; safe both 5 / improved 4 / regressed 10 / neither 11; contact both 11 /
+cleared 4 / introduced 10 / neither 5; XY both 1 / cleared 2 / introduced 3 /
+neither 24. This is an overall engineering-pipeline comparison, not an isolated
+codec/data/inference effect: the 500-obstacle data, action codec, 150k control
+training, and DDIM stride-2 actor all differ from the old 300-obstacle/90k,
+native-coordinate/DDPM-100 inference baseline. Repeated use of the frozen dev30
+is engineering feedback, not independent generalization evidence.
+
+The registered performance gate is **pause / Ticket 07 remains blocked**:
+Constrain misses all four thresholds (task 56.7% <90%, safe 30.0% <85%, contact
+70.0% >10%, XY 13.3% >10%). Against the current Base it improves task by 3,
+safe by 9, contact by 9 fewer, and XY by 15 fewer; against the retained old
+Constrain it regresses task by 10, safe by 6, contact by 6, and XY by 1. First
+contact phases for the new Constrain were transport 17, lift 2, grasp approach
+1, goal stabilization 1 (among 21 contacts); most remaining failures still
+involve transport-phase contact. No additional independent trial was run.
+
+Authoritative outputs are in
+`outputs/exp/20261028_125137_pickcube_fullscene500_action_codec_paired_r2/paired/`:
+`paired_summary.json` SHA-256
+`56d1c1a2682aafdd440ebfa537e82926ea38e2e1c7fd5805fe8f0f6d0e50f4e7`,
+`engineering_comparison.json` SHA-256
+`5fbac5093b210149c0e05bc6b10aef899bddcf2857a52be767b9159acd81c887`, and
+`gate.json` SHA-256
+`0ca9b9f10f33a28830502aa90ee1a18d6f2d64ad5306b0f82c31ac6320d265ff`. The
+historical paired directory was copied and its tree hash verified before
+comparison; `pairing_failure_scene_indices` is empty. Final HDF5, manifest,
+validation hashes remain unchanged at `0c74b88e…c349349f4f`,
+`6b9d2c75…76e5c486`, and `f4756f69…d46d5b8f`. No new demos or layouts were
+created. No evaluation was run for PlaceSphere.
+
+Verification: complete constrain suite before the final eval-only corrections
+passed 549 tests / 28 warnings in 529.60 s. After those bounded corrections,
+codec, PickCube pilot, and paired-evaluator focused tests passed 56/56; both
+edited Python modules compile and `git diff --check` passes. CPU strict-load
+checks rejected an old native-action Base, incorrect codec identity and wrong
+step count; both new actor adapters returned `(1,8,7)` finite native actions.
+The final native-trace audit independently recomputed all policy counts, bounds,
+success/contact/crossing flags and initial-state pairing from the 60 episode
+records. No worker remained after the runs.
 
 ## Round 31 — PickCube existing-pool audit (2026-10-28)
 

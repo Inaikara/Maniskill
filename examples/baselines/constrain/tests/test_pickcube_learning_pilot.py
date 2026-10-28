@@ -33,6 +33,7 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     build_expansion_preregistration,
     build_obstacle_increment_preregistration,
     build_preregistration,
+    build_fullscene500_preregistration,
     dataset_coverage,
     decide_gate,
     direct_candidate_accepted,
@@ -42,6 +43,7 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     freeze_pilot_identity,
     expansion_transitions,
     layouts_conflict,
+    load_preregistration,
     layouts_from_episodes,
     load_preregistration,
     main,
@@ -54,6 +56,7 @@ from examples.baselines.constrain.pickcube_learning_pilot import (
     validate_expansion_ids,
     validate_obstacle_increment_ids,
     write_preregistration,
+    _pickcube_ddim_scheduler,
 )
 from examples.baselines.constrain.pickcube_transport_detour import (
     _write_attempt_scene,
@@ -186,6 +189,65 @@ def test_dataset_refuses_an_undeclared_trajectory_and_trains_direct_without_obst
         handle.create_group("traj_7")
     with pytest.raises(ValueError, match="undeclared"):
         PilotTrajectoryDataset(dest / "trajectory.h5", dest / "trajectory.json", "direct", [0])
+
+
+def test_fullscene500_dataset_encodes_native_actions_and_preserves_closed_terminal_padding(tmp_path):
+    from examples.baselines.constrain.pickcube_action_codec import CONTROLLER_RANGE
+
+    direct = _record("direct", 0, length=20)
+    direct["actions"][:, 0] = 0.175
+    direct["actions"][-1, 6] = -1.0
+    obstacle = _record("obstacle", 1000, length=20)
+    dest = package_records([direct, obstacle], tmp_path / "encoded-source", {
+        "selected_direct_ids": [0], "selected_obstacle_ids": [1000],
+        "train_direct_count": 1, "train_obstacle_count": 1, "obstacle_plan_cap": 100,
+    })
+    dataset = PilotTrajectoryDataset(
+        dest / "trajectory.h5", dest / "trajectory.json", "direct", [0], CONTROLLER_RANGE)
+    last = dataset[-1]["actions"]
+    assert torch.allclose(last[:3, 0], torch.full((3,), 0.5))
+    assert torch.equal(last[3:, :6], torch.zeros((13, 6)))
+    assert torch.equal(last[:, 6], torch.full((16,), -1.0))
+
+
+def test_fullscene500_preregistration_freezes_matched_training_and_codec(tmp_path):
+    from examples.baselines.constrain.pickcube_action_codec import profile_sha256
+
+    registration = build_fullscene500_preregistration(
+        {"dev_scenes": "outputs/exp/frozen/dev"},
+        {"datasets": {"h5": {"sha256": "h"}, "manifest": {"sha256": "m"}},
+         "baseline": {}, "validation": {}},
+        {"files_sha256": "source"},
+    )
+    assert registration["selected_direct_ids"] == list(range(1000))
+    assert registration["selected_obstacle_ids"] == list(range(1000, 1500))
+    assert registration["training"]["base_updates"] == 30000
+    assert registration["training"]["constrain_updates"] == 150000
+    assert registration["action_encoding_sha256"] == profile_sha256()
+    assert registration["training"]["inference"]["execution_horizon"] == 2
+    registration["gate"] = {"formal_performance_claim": False}
+    path = tmp_path / "fullscene500-preregistration.json"
+    path.write_text(json.dumps(registration))
+    assert load_preregistration(path)["train_obstacle_count"] == 500
+    registration["action_encoding_sha256"] = "0" * 64
+    path.write_text(json.dumps(registration))
+    with pytest.raises(ValueError, match="contract mismatch"):
+        load_preregistration(path)
+
+
+def test_pickcube_ddim_runtime_option_preserves_50_default_and_uses_full_endpoint_sequence():
+    legacy = _pickcube_ddim_scheduler()
+    full = _pickcube_ddim_scheduler(100)
+    assert len(legacy.timesteps) == 50
+    assert len(full.timesteps) == 100
+    assert int(legacy.timesteps[0]) == 98
+    assert int(full.timesteps[0]) == 99
+    assert int(full.timesteps[-1]) == 0
+    assert legacy.config.num_train_timesteps == full.config.num_train_timesteps == 100
+    assert legacy.config.beta_schedule == full.config.beta_schedule == "squaredcos_cap_v2"
+    assert legacy.config.prediction_type == full.config.prediction_type == "epsilon"
+    with pytest.raises(ValueError, match="exactly 50 or 100"):
+        _pickcube_ddim_scheduler(75)
 
 
 def test_attempt_scene_persists_matching_direct_terminals(tmp_path):
