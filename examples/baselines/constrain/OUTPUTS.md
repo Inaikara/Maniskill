@@ -1,5 +1,188 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 37 — matched PickCube direct-observation z-score retraining (2026-10-28)
+
+Round 37 completed one matched Base/Constrain retraining and one paired 30-scene
+native trial. The single changed factor was the shared 42-D observation encoding:
+both policies were trained from scratch/initialized from the newly trained Base
+EMA with `pickcube_direct_zscore_v1`. This is an end-to-end observation-profile
+comparison, **not** an isolated Constrain-control or data-effect attribution.
+No demonstrations, layouts, or encoded HDF5 files were created; the frozen
+500-scene physical dataset and PlaceSphere artifacts were not modified.
+
+### Frozen inputs, observation profile, and preregistration
+
+The experiment registration is
+`outputs/exp/20261028_200000_pickcube_direct_zscore_r37/preregistration.json`
+(SHA-256 `d480bae967ae59d3ed3619e1da4b16ef6a42adcf99d83202ba7ac6d736494284`).
+The fitted artifact is
+`outputs/exp/20261028_220000_pickcube_zscore_r37/normalizer_stats.json`, file
+SHA-256 `730d2e297253f9b4b14a3059902921ae226f7abe20094917d2e2a99f6396642f`,
+statistics identity `d0bbcd4c00d6320635f97972d3211c1ed2b150b22b46a59780ad6d6259d08645`.
+It fits float64 population statistics over all **85,004 native T+1 frames** in
+the 1,000 direct trajectories only (IDs 0–999); every feature count is 85,004.
+The transform is `(raw42 - mean42) / max(population_std42, 0.01)`, cast to
+float32 at runtime, with no observation clipping. The 42-value named schema is
+the existing PickCube state prefix; the named 3-value obstacle suffix is never
+in the Base/Constrain state condition. Binary and quaternion values remain
+linear channels; no features or model dimensions were added. The old relative
+obstacle hint remains clipped according to its existing config and is calculated
+from the raw 45-D latest frame, never from normalized TCP coordinates.
+
+| Feature (native unit) | Mean | Population std | Minimum | RMS | Floored at 0.01 |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| `agent/qpos[0]` (rad) | 0.044140794 | 0.106621053 | -0.248344913 | 0.115396961 | no |
+| `agent/qpos[1]` (rad) | 0.463923214 | 0.178997469 | 0.0439996161 | 0.497257320 | no |
+| `agent/qpos[2]` (rad) | 0.0107171889 | 0.0749889268 | -0.205471188 | 0.0757508896 | no |
+| `agent/qpos[3]` (rad) | -2.09797907 | 0.360908903 | -2.59803200 | 2.12879577 | no |
+| `agent/qpos[4]` (rad) | -0.00823821533 | 0.0640477291 | -0.221264020 | 0.0645753807 | no |
+| `agent/qpos[5]` (rad) | 2.55457824 | 0.219548003 | 1.90018857 | 2.56399518 | no |
+| `agent/qpos[6]` (rad) | 0.843373261 | 0.377329590 | -0.0951657072 | 0.923935105 | no |
+| `agent/qpos[7]` (m) | 0.0268357181 | 0.0105686175 | 0.0182817224 | 0.0288418350 | no |
+| `agent/qpos[8]` (m) | 0.0268155991 | 0.0105849011 | 0.0182602946 | 0.0288290910 | no |
+| `agent/qvel[0]` (rad/s) | 0.00802788499 | 0.101574173 | -0.501390398 | 0.101890920 | no |
+| `agent/qvel[1]` (rad/s) | 0.105793320 | 0.319833605 | -0.767346501 | 0.336876478 | no |
+| `agent/qvel[2]` (rad/s) | 0.00151065718 | 0.0481899872 | -0.302984983 | 0.0482136594 | no |
+| `agent/qvel[3]` (rad/s) | 0.148600861 | 0.433286034 | -1.15135872 | 0.458060043 | no |
+| `agent/qvel[4]` (rad/s) | -0.00197533956 | 0.0493963883 | -0.375561386 | 0.0494358690 | no |
+| `agent/qvel[5]` (rad/s) | -0.0529015899 | 0.292213551 | -1.07203209 | 0.296963529 | no |
+| `agent/qvel[6]` (rad/s) | 0.00711125312 | 0.157346644 | -0.841103375 | 0.157507258 | no |
+| `agent/qvel[7]` (m/s) | -0.0186116932 | 0.0299030074 | -0.379620582 | 0.0352219388 | no |
+| `agent/qvel[8]` (m/s) | 0.00439317390 | 0.0310723083 | -0.418345451 | 0.0313813371 | no |
+| `extra/is_grasped[0]` (binary) | 0.597430709 | 0.490415392 | 0 | 0.772936420 | no |
+| `extra/tcp_pose[0]` (m) | -0.0473682268 | 0.0850955015 | -0.184164703 | 0.0973909302 | no |
+| `extra/tcp_pose[1]` (m) | 0.0310782897 | 0.0506820379 | -0.0610247739 | 0.0594519054 | no |
+| `extra/tcp_pose[2]` (m) | 0.0948521102 | 0.0440245605 | 0.0216526166 | 0.104570956 | no |
+| `extra/tcp_pose[3]` (quaternion) | -0.000136261643 | 0.00183554629 | -0.0294772387 | 0.00184059703 | **yes** |
+| `extra/tcp_pose[4]` (quaternion) | 0.980205160 | 0.0206232690 | 0.911496222 | 0.980422090 | no |
+| `extra/tcp_pose[5]` (quaternion) | 0.00140957371 | 0.196833353 | -0.411276847 | 0.196838400 | no |
+| `extra/tcp_pose[6]` (quaternion) | -0.00264409096 | 0.00410619275 | -0.0698821619 | 0.00488385461 | **yes** |
+| `extra/goal_pos[0]` (m) | 0.147484437 | 0.0246798569 | 0.0482905619 | 0.149535128 | no |
+| `extra/goal_pos[1]` (m) | 0.0321654257 | 0.0555496288 | -0.0599714406 | 0.0641901540 | no |
+| `extra/goal_pos[2]` (m) | 0.119999997 | 0 | 0.119999997 | 0.119999997 | **yes** |
+| `extra/obj_pose[0]` (m) | -0.0527428751 | 0.0880923124 | -0.183461741 | 0.102674565 | no |
+| `extra/obj_pose[1]` (m) | 0.0330848460 | 0.0521981803 | -0.0616050027 | 0.0618001380 | no |
+| `extra/obj_pose[2]` (m) | 0.0700521921 | 0.0543431891 | 0.0199918468 | 0.0886594147 | no |
+| `extra/obj_pose[3]` (quaternion) | 0.645150211 | 0.297919692 | -0.00562614622 | 0.710615886 | no |
+| `extra/obj_pose[4]` (quaternion) | 0.000126041122 | 0.00139330437 | -0.00717262086 | 0.00139899372 | **yes** |
+| `extra/obj_pose[5]` (quaternion) | 0.000421706013 | 0.00136281550 | -0.00555317104 | 0.00142657002 | **yes** |
+| `extra/obj_pose[6]` (quaternion) | -0.0380681045 | 0.702546763 | -1 | 0.703577383 | no |
+| `extra/tcp_to_obj_pos[0]` (m) | -0.00537464825 | 0.0236640297 | -0.203784332 | 0.0242667085 | no |
+| `extra/tcp_to_obj_pos[1]` (m) | 0.00200655628 | 0.0136905664 | -0.0874460638 | 0.0138368304 | no |
+| `extra/tcp_to_obj_pos[2]` (m) | -0.0247999181 | 0.0347967981 | -0.204242811 | 0.0427300023 | no |
+| `extra/obj_to_goal_pos[0]` (m) | 0.200227312 | 0.0897430491 | 0.00101563334 | 0.219419214 | no |
+| `extra/obj_to_goal_pos[1]` (m) | -0.000919420356 | 0.0734646972 | -0.176836476 | 0.0734704503 | no |
+| `extra/obj_to_goal_pos[2]` (m) | 0.0499478052 | 0.0543431890 | -0.0183884129 | 0.0738103342 | no |
+
+The physical dataset remains
+`demos/PickCube-transport-detour/20261028_164500_frozen500/`: HDF5 SHA-256
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`, manifest
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, validation
+`f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`. The
+selected classes are direct IDs 0–999 and obstacle IDs 1000–1499, with the
+registered 83,004 / 45,840 window counts. Raw HDF5 actions remain native
+seven-channel identity values; obstacle terminal gripper padding remains -1.
+
+The registered runtime/checkpoint profile is typed separately from legacy
+identity-normalized checkpoints: Base `pickcube_direct_zscore_base_v1`, Constrain
+`pickcube_direct_zscore_constrain_v1`. Model dimensions remain Base 42-D / 7-D,
+Constrain 84-D condition / 7-D action, horizons 2/16/8 and channels 64/128/256.
+Training used 30,000 direct-only Base updates, then 150,000 obstacle-only
+Constrain updates initialized from that new Base EMA with the Base frozen. Both
+used seed 1, batch 1,024, AdamW `1e-4`, betas `(0.95,0.999)`, weight decay
+`1e-6`, 500-step warmup, cosine schedule, EMA power 0.75, unweighted epsilon
+MSE, and final EMA fixed before training. The inference protocol is archived
+DDPM-100 with `squaredcos_cap_v2`, epsilon prediction, `clip_sample=True`,
+prediction slice `[1:9]`, execute/replan 8, direct native actions and no decode
+or explicit clamp.
+
+### Training and artifact identities
+
+Base run/logs/config: `outputs/exp/20261028_200000_pickcube_direct_zscore_r37/train_base/`;
+recovery/final checkpoints:
+`outputs/ckpt/20261028_200000_pickcube_direct_zscore_r37_base/`. It completed
+30,000/30,000 updates in **841.96 s**, all losses finite, first `1.16361868`,
+last `0.00290657`; final checkpoint SHA-256
+`7498cbeaffd3675b504b4b448927e3288b9e20703fe62803e6d134e0ee9e8cbf`.
+Atomic recovery checkpoints were retained at 10,000-update intervals.
+
+Constrain run/logs/config:
+`outputs/exp/20261028_200000_pickcube_direct_zscore_r37/train_constrain/`;
+recovery/final checkpoints:
+`outputs/ckpt/20261028_200000_pickcube_direct_zscore_r37_constrain/`. It
+completed 150,000/150,000 updates in **4,236.80 s**, all losses finite, first
+`0.03401160`, last `0.00181310`; strict final EMA load passed and the frozen
+Base state hash is `4a1d8b29b65f08f526960088652b724737f0bbad1c9c88aef949156474a00fa6`.
+Final checkpoint SHA-256 is
+`20d5bb6e2027b34275a9a4d9d81b46d0d4d6c24ad01b91fe2c4cb318d4279ba3`.
+Both post-training source and frozen-data identities match preregistration.
+The real-data Base and Constrain preflights were finite with the planned schemas;
+disabled-control epsilon max difference was 0.0.
+CUDA allocator peak memory was not recorded by these trainers and cannot be
+reconstructed from the retained artifacts.
+
+### Paired native trial and gate
+
+The one native trial is retained under
+`outputs/exp/20261028_200000_pickcube_direct_zscore_r37/paired/`. Its evaluation
+preregistration (written before the first native step) pins both final checkpoint
+hashes, normalizer file/statistics hashes, sampler and the existing 30 R36
+development-scene state/controller/observation source. All **30/30 per policy**
+completed with zero runtime errors; all 30 initial native state, controller,
+observation and normalized-condition identities paired across policies, and the
+restored physical scene hashes match R36 scene-by-scene.
+
+| Policy | Task | Safe | Obstacle contact | XY crossing | Runtime errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Normalized Base DP, 30k | 1/30 | 0/30 | 25/30 | 11/30 | 0 |
+| Normalized Constrain, 150k | 7/30 | 3/30 | 13/30 | 2/30 | 0 |
+| R36 Base reference | 10/30 | 0/30 | 30/30 | 15/30 | 0 |
+| R36 Constrain reference | 25/30 | 16/30 | 13/30 | 4/30 | 0 |
+
+Constrain versus Base transitions (task / safe / contact / XY): task improved 7,
+regressed 1, both 0, neither 22; safe improved 3, regressed 0, both 0, neither
+27; contact cleared 15, introduced 3, both 10, neither 2; XY cleared 10,
+introduced 1, both 1, neither 18.
+
+Against R36, normalized Base transitions were task improved 1 / regressed 10 /
+both 0 / neither 19; contact cleared 5 / introduced 0 / both 25 / neither 0;
+XY cleared 8 / introduced 4 / both 7 / neither 11. Normalized Constrain versus
+R36 Constrain transitions were task improved 1 / regressed 19 / both 6 / neither
+4; safe improved 1 / regressed 14 / both 2 / neither 13; contact cleared 9 /
+introduced 9 / both 4 / neither 8; XY cleared 4 / introduced 2 / both 0 /
+neither 24. The frozen gate **failed**: 7 task <27, 3 safe <26, 13 contacts >3,
+and 2 XY crossings <=3. This is a repeated-dev engineering result, not a formal
+performance or generalization claim.
+
+Terminal phases (Base / Constrain) were no-grasp 4/0, grasp-no-lift 3/1,
+lift-no-transport 10/20, transport/place failure 12/2, task success 1/7.
+First-contact phases (Base / Constrain) were grasp approach 2/1, lift 15/1,
+transport 8/9, goal stabilization 0/2. Contact links were retained per episode;
+complete contact entity-pair positions were unavailable. Per-episode wall time,
+native action/flag traces, final cube XYZ, goal XYZ and 3-D goal distance are in
+the episode JSONs. Wall time min/median/p90/max was 8.925/15.587/16.008/16.125 s
+(Base) and 4.820/23.082/23.964/24.227 s (Constrain). Final goal-distance
+min/median/p90/max was 0.0247/0.1406/0.3180/0.3672 m (Base) and
+0.0069/0.2510/0.3866/0.4305 m (Constrain). Success step was 279 for the single
+Base success; Constrain success step min/median/p90/max was 91/110/158.4/225.
+
+The native evaluator retained all 60 episodes before its report aggregation hit
+an analysis-only missing phase-summary field. No rollout was repeated. The
+report was recomputed from those retained rows at
+`paired/analysis.json`; `paired/preregistration.json` preserves the exact
+runtime source identity. The subsequent analysis-only correction changed only
+`pickcube_zscore_round37.py` (registered SHA-256
+`768ac8e45e94b49521ecc3a771febf0b6b764dd23dc2cebd3e0d581738094310`, post-report
+SHA-256 `5cbae523c95130a8161c92ef52a804c2b37651bcce94d2c8857616fb1adfd906`);
+all other registered source hashes remained identical. It adds an offline
+reader for retained rows and does not change inference/training. Dataset hashes
+were rechecked after the trial and remain unchanged. The machine-readable data,
+checkpoint, episode-count, scene-pairing and source-difference audit passed at
+`paired/post_trial_audit.json`. Registered source aggregate SHA-256 was
+`c8262d9a03ba3d8028097c792c29c396692536a9a53f3143fbb7f5048eaba1ac`; the
+post-report source aggregate is `1d974752580036acf582e10d66897fb9e304989470c7648ae2dddf4d8659045f`.
+No process was intentionally left running.
+
 ## Round 36 — R35 report correction and archived PickCube sampler recovery (2026-10-28)
 
 R35's original paired records, preregistration, and analysis JSON are preserved

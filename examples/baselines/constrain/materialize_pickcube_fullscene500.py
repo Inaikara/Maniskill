@@ -827,10 +827,12 @@ class PickCubeFullScene500Dataset(Dataset):
     """Opt-in manifest-pinned PickCube window reader for the 1,000/500 format."""
 
     def __init__(self, data_path, manifest_path, *, expected_h5_sha256,
-                 expected_manifest_sha256, kind, obs_horizon=2, pred_horizon=16):
+                 expected_manifest_sha256, kind, obs_horizon=2, pred_horizon=16,
+                 include_obstacle=False):
         self.data_path, self.manifest_path = Path(data_path), Path(manifest_path)
         if kind not in ("direct", "obstacle"):
             raise ValueError("kind must be direct or obstacle")
+        self.kind = kind
         if sha(self.data_path) != expected_h5_sha256 or sha(self.manifest_path) != expected_manifest_sha256:
             raise ValueError("fullscene500 dataset identity mismatch")
         manifest = json.loads(self.manifest_path.read_text())
@@ -844,6 +846,7 @@ class PickCubeFullScene500Dataset(Dataset):
         if len(by_id) != 1500 or set(ids) != {int(row["episode_id"]) for row in episodes if row["kind"] == kind}:
             raise ValueError("fullscene500 explicit class IDs disagree with episode manifest")
         self.obs_horizon, self.pred_horizon = obs_horizon, pred_horizon
+        self.include_obstacle = bool(include_obstacle)
         self.observations, self.actions, self.windows = [], [], []
         before, after = obs_horizon - 1, pred_horizon - obs_horizon
         with h5py.File(self.data_path, "r") as handle:
@@ -884,7 +887,8 @@ class PickCubeFullScene500Dataset(Dataset):
             action_window = torch.cat((action_window, padding.repeat(end - length, 1)))
         if obs_window.shape != (self.obs_horizon, 45) or action_window.shape != (self.pred_horizon, 7):
             raise AssertionError("fullscene500 official window/padding invariant failed")
-        return {"observations": obs_window[..., :42], "actions": action_window}
+        observations = obs_window if self.include_obstacle and self.kind == "obstacle" else obs_window[..., :42]
+        return {"observations": observations, "actions": action_window}
 
 
 def main():

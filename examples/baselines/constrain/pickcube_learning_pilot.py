@@ -1494,6 +1494,9 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
                 break
         if termination is None:
             termination = classify_termination(native_success, terminated, truncated, elapsed, max_steps)
+        final_cube_xyz = env.unwrapped.cube.pose.p[0].detach().cpu().numpy()
+        final_goal_xyz = env.unwrapped.goal_site.pose.p[0].detach().cpu().numpy()
+        final_goal_distance_3d = float(np.linalg.norm(final_cube_xyz - final_goal_xyz))
         return {
             "scene_index": index, "scene_id": scene["metadata"]["scene_id"],
             "seed": int(scene["metadata"]["seed"]), "status": "evaluated",
@@ -1504,6 +1507,8 @@ def run_pilot_episode(adapter, scene_set, index, device, max_steps=500):
             "step_trace": step_trace,
             "first_grasp_step": first_grasp_step, "first_lift_step": first_lift_step,
             "first_transport_step": first_transport_step, "first_native_success_step": first_success_step,
+            "final_cube_xyz": final_cube_xyz.tolist(), "goal_xyz": final_goal_xyz.tolist(),
+            "final_goal_distance_3d": final_goal_distance_3d,
             "result": {
                 "termination_reason": termination, "elapsed_steps": elapsed,
                 "terminated": terminated, "truncated": truncated,
