@@ -43,7 +43,8 @@ DIFFUSION = {"training_scheduler": "DDPMScheduler", "inference_scheduler": "DDPM
              "beta_schedule": "squaredcos_cap_v2", "clip_sample": True,
              "prediction_type": "epsilon", "num_train_timesteps": 100,
              "inference_steps": 100, "executed_prediction_slice": [1, 9],
-             "execution_stride": 8}
+              "execution_stride": 8}
+EPISODE_TIMEOUT_SECONDS = 120
 CONSTRAIN_CONFIG = {"input_dim": 7, "global_cond_dim": 84,
                     "diffusion_step_embed_dim": 64, "down_dims": [64, 128, 256],
                     "n_groups": 8, "cond_dim": 3, "num_diffusion_iters": 100}
@@ -794,7 +795,7 @@ def evaluate_round37(registration_path):
                 else:
                     started = time.monotonic()
                     prior_handler = signal.signal(signal.SIGALRM, _episode_alarm)
-                    signal.alarm(120)
+                    signal.alarm(EPISODE_TIMEOUT_SECONDS)
                     try:
                         row = run_pilot_episode(adapter, scene_set, index, "cuda", max_steps=500)
                     except Exception as exc:
@@ -835,7 +836,8 @@ def evaluate_round37(registration_path):
                 "policy_metrics": stats, "disabled_control_equivalence": equivalence,
                 "r36_reference": registration["native_evaluation"]["primary_reference"],
                 "formal_performance_claim": False,
-                "comparison_interpretation": registration["comparison_interpretation"]}
+                "comparison_interpretation": registration.get(
+                    "comparison_interpretation", registration.get("interpretation"))}
     fields = ("native_success", "safe_success", "obstacle_contact", "xy_forbidden_crossing")
     analysis["paired_base_vs_constrain"] = {
         field: _transitions(base_rows, control_rows, field) for field in fields}
@@ -874,7 +876,7 @@ def evaluate_round37(registration_path):
 
 
 def _episode_alarm(_signum, _frame):
-    raise TimeoutError("native episode exceeded 120-second wall timeout")
+    raise TimeoutError(f"native episode exceeded {EPISODE_TIMEOUT_SECONDS}-second wall timeout")
 
 
 def _phase_counts(rows):
@@ -890,16 +892,27 @@ def _transitions(left_rows, right_rows, field):
     right = [bool(row.get("result", {}).get(field, False)) for row in right_rows]
     positive = field in ("native_success", "safe_success")
     if positive:
-        return {"improved_new_only": sum(not a and b for a,b in zip(left,right)),
-                "regressed_old_only": sum(a and not b for a,b in zip(left,right)),
-                "both": sum(a and b for a,b in zip(left,right)),
-                "neither": sum(not a and not b for a,b in zip(left,right)),
-                "old_marginal": sum(left), "new_marginal": sum(right)}
-    return {"cleared_old_only": sum(a and not b for a,b in zip(left,right)),
-            "introduced_new_only": sum(not a and b for a,b in zip(left,right)),
-            "both": sum(a and b for a,b in zip(left,right)),
-            "neither": sum(not a and not b for a,b in zip(left,right)),
-            "old_marginal": sum(left), "new_marginal": sum(right)}
+        table = {"improved_new_only": sum(not a and b for a,b in zip(left,right)),
+                 "regressed_old_only": sum(a and not b for a,b in zip(left,right)),
+                 "both": sum(a and b for a,b in zip(left,right)),
+                 "neither": sum(not a and not b for a,b in zip(left,right)),
+                 "old_marginal": sum(left), "new_marginal": sum(right)}
+        categories = ("improved_new_only", "regressed_old_only", "both", "neither")
+    else:
+        table = {"cleared_old_only": sum(a and not b for a,b in zip(left,right)),
+                 "introduced_new_only": sum(not a and b for a,b in zip(left,right)),
+                 "both": sum(a and b for a,b in zip(left,right)),
+                 "neither": sum(not a and not b for a,b in zip(left,right)),
+                 "old_marginal": sum(left), "new_marginal": sum(right)}
+        categories = ("cleared_old_only", "introduced_new_only", "both", "neither")
+    if (any(not isinstance(table[key], int) for key in table)
+            or sum(table[key] for key in categories) != len(left)
+            or table["old_marginal"] != (table["regressed_old_only"] + table["both"] if positive
+                                         else table["cleared_old_only"] + table["both"])
+            or table["new_marginal"] != (table["improved_new_only"] + table["both"] if positive
+                                         else table["introduced_new_only"] + table["both"])):
+        raise ValueError("paired transition table does not reconcile to exact integer marginals")
+    return table
 
 
 def _read_json(path):
@@ -1004,7 +1017,8 @@ def analyze_existing_round37(registration_path):
         "analysis_source_identity_after_reporting_fix": source_after,
         "analysis_only_source_changes": changed_sources,
         "formal_performance_claim": False,
-        "interpretation": registration["comparison_interpretation"],
+        "interpretation": registration.get(
+            "comparison_interpretation", registration.get("interpretation")),
         "contact_geometry_gap": "native records retain first contact link/phase; complete contact entity-pair positions were unavailable",
     }
     analyses["gate"]["passed"] = all(analyses["gate"]["criteria"].values())

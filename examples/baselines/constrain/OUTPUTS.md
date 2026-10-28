@@ -1,5 +1,151 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 38 — fixed PickCube position/controller-unit matched retraining (2026-10-28)
+
+Round 38 completed exactly one matched Base/Control retraining and one paired
+30-scene native development trial. It is a repeated-development engineering
+result, not a formal performance/generalization claim. No demos, HDF5 variants,
+or layouts were created; ManiSkill task/controller code and PlaceSphere artifacts
+were not modified. Ticket 05 has no local issue file in this checkout; this is
+the next-slice execution record.
+
+### Frozen contract and fixed observation profile
+
+The preregistration is
+`outputs/exp/20261028_221700_pickcube_position_units_r38/preregistration.json`
+(file SHA-256 `49b659941b3e7a36c492dc17f83cf27428593ac6f647113efc170fa26ec9dcd9`,
+registration identity `65963d4c4c01f95e497e4387051b17153a63384584af0b824461131cce4b1b38`).
+The fixed profile is `pickcube_position_controller_units_v1`, profile identity
+`8bcb1df3252e86b085d51507f72ce4d7722eadea7cc46d676d6da7d33b3d7fef`, stored at
+`position_encoding.json` (file SHA-256
+`d14d56e3645504b81db4a41f32cf6869b805dbf003194b26433cfceb6023f543`). It has
+42 dimensions, zero offset, no fitted/data-derived statistics, no clipping, and
+the following scale vector, derived from `NAMED_FIELDS` (not bare offsets):
+
+| Named field slice | Scale | Reason |
+| --- | ---: | --- |
+| `agent/qpos[0:9]`, `agent/qvel[0:9]`, `extra/is_grasped[0]` | 1 | unchanged |
+| `extra/tcp_pose[0:3]` | 10 | meters / 0.1 m controller translation reference |
+| `extra/tcp_pose[3:7]` | 1 | quaternion unchanged |
+| `extra/goal_pos[0:3]` | 10 | meters / 0.1 m reference |
+| `extra/obj_pose[0:3]` | 10 | meters / 0.1 m reference |
+| `extra/obj_pose[3:7]` | 1 | quaternion unchanged |
+| `extra/tcp_to_obj_pos[0:3]`, `extra/obj_to_goal_pos[0:3]` | 10 | meters / 0.1 m reference |
+
+Thus the scaled state indices are exactly 19–21, 26–31, and 36–41; all other
+state channels are bitwise identity. The `0.1 m` reference is the checked Panda
+`pd_ee_delta_pose` contract (`translation_scale_m: 0.1`), with runtime named
+observation schema verification passing at 45 raw / 42 policy values. The
+obstacle hint remains the existing latest-frame relative condition computed
+from raw 45-D world-meter observations. Encoding is applied once at the common
+42-D training/inference condition seam; no encoded observations are stored.
+
+Action representation is unchanged native identity 7-D `pd_ee_delta_pose`:
+DDPM samples are used directly, without codec, decode, explicit clamp, new
+action meaning, or policy shield. The frozen-data reader still enforces the
+existing `[-1,1]` action bounds and CLOSED (`-1`) obstacle terminal padding.
+Base and Control have distinct typed checkpoint formats and both store the
+same profile identity; a legacy identity or R37 z-score Base cannot initialize
+this Control contract despite identical tensor dimensions.
+
+Frozen data remains
+`demos/PickCube-transport-detour/20261028_164500_frozen500/`: HDF5
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`, manifest
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, validation
+`f4756f697540fdd21904d0cdd3c9fca83e35bec089f292271aa91695d46d5b8f`; exactly
+direct IDs 0–999 / 83,004 windows and obstacle IDs 1000–1499 / 45,840 windows.
+The R36 paired primary comparator and its same 30 restored development scenes
+remain unchanged. The optional R37-training-vs-initial-dev 5-sigma feature
+diagnostic was not run; no dev-derived quantities selected the fixed factor.
+
+### Matched training and audit
+
+Both networks retain the 42-D state / 84-D two-frame condition / 7-D action
+dimensions and official architecture. Base trained direct-only for 30,000
+updates, then Control trained obstacle-only for 150,000 from that Base final
+EMA with Base frozen. Seed 1, batch 1,024, AdamW `1e-4`, betas `(0.95,0.999)`,
+weight decay `1e-6`, warmup 500, cosine schedule, EMA power 0.75, and unweighted
+native epsilon MSE were held fixed. Both use squared-cosine DDPM-100 epsilon
+diffusion and final EMA selected before training. Atomic complete-state recovery
+checkpoints exist every 10,000 updates (3 Base, 15 Control); loss logs contain
+exactly 30,000 / 150,000 finite rows.
+
+| Policy | Updates | Elapsed | First → final loss | Final checkpoint SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| Base | 30,000 | 842.53 s | 1.17828774 → 0.00278578 | `6a7c1af04970d3eb871c7cf607e2028dd847706070a03ae26e8e6aa8053d9869` |
+| Control | 150,000 | 4,233.00 s | 0.03769969 → 0.00168165 | `1c3276e3d52efcb4f349c75612253750898a564f4ceb523c422b61c01763bf42` |
+
+Logs/config/summaries are under `outputs/exp/20261028_221700_pickcube_position_units_r38/train_base/`
+and `train_constrain/`; checkpoints/recovery states are under matching
+`outputs/ckpt/20261028_221700_pickcube_position_units_r38_{base,constrain}/`.
+Real-data Base and Control preflights were finite, with raw 45-D hint separation
+and zero-control epsilon max difference 0.0. Strict standalone checkpoint loads
+passed; independently seeded Base-vs-disabled-Control inference also matched
+exactly (max difference 0.0). Post-training source aggregate SHA-256
+`c4f468885eaa21ed741ac8ba48d064c77678eecce51b1fde4cb9c7ab39c03afd` and both
+training-data identities match preregistration. GPU allocator peak was not
+recorded.
+
+### One paired native trial and result
+
+Native preregistration was written before stepping at
+`paired/preregistration.json` (file SHA-256
+`c2202604a1442c5deec78c2ab8e477f2b9df53586e053b72763f05c3d64edd57`,
+evaluation identity `1c99b817656e519469f9915786681750298d4f786ac95c84ad3150c1bb60b3ed`).
+It pins both checkpoint hashes, profile, source aggregate
+`c4f468885eaa21ed741ac8ba48d064c77678eecce51b1fde4cb9c7ab39c03afd`, R36 scene
+manifest/HDF5, 30 episodes each, 500 control steps, per-episode 300 s and overall
+36,000 s limits. Sampling is archived DDPM-100, epsilon, squared-cosine, slice
+`[1:9]`, execute/replan 8; each policy is separately seeded from the same scene
+seed. All 30/30 per policy completed with zero runtime errors; native state,
+controller, raw observation and encoded-condition hashes pair scene-by-scene and
+match R36 restored states. Every episode retains actual terminated/truncated
+flags, native action-step traces, grasp/lift/transport/success stages, first
+contact phase, final cube/goal XYZ and 3-D goal error. Complete contact entity
+pair positions were not exposed by this record API and are not inferred.
+
+| Policy | Task success | Safe success | Contact | XY crossing | Runtime errors |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Position-unit Base | 22/30 | 0/30 | 30/30 | 23/30 | 0 |
+| Position-unit Control | 29/30 | 13/30 | 16/30 | 6/30 | 0 |
+| Primary R36 Base | 10/30 | 0/30 | 30/30 | 15/30 | 0 |
+| Primary R36 Control | 25/30 | 16/30 | 13/30 | 4/30 | 0 |
+| Secondary R37 z-score Control | 7/30 | 3/30 | 13/30 | 2/30 | 0 |
+
+Current Base → Control paired transitions (improved/cleared, regressed/introduced,
+both, neither): task `8,1,21,0`; safe `13,0,0,17`; contact `14,0,16,0`; XY
+`19,2,4,5`. Against R36 Control, this Control transitions task `5 improved / 1
+regressed / 24 both / 0 neither`; safe `2 / 5 / 11 / 12`; contact cleared /
+introduced / both / neither `2 / 5 / 11 / 12`; XY `2 / 4 / 2 / 22`. These are
+paired development comparisons, not isolated single-factor causal estimates.
+
+The frozen gate **fails**: task 29 ≥27 passes; safe 13 <26, contact 16 >3, and
+XY 6 >3 fail. The run is complete, but the blocker remains. Control terminal
+phases were 29 task success / 1 lift-no-transport; first contacts were 2 grasp
+approach / 1 lift / 11 transport / 2 goal stabilization. First-success steps
+min/median/p90/max were 58/104/181/269. Per-policy wall seconds min/median/p90/max
+were Base 3.422/7.554/15.736/16.749 and Control 3.440/5.291/9.333/23.466.
+Final 3-D goal error min/median/p90/max was Base 0.0060/0.0243/0.1551/0.2167 m
+and Control 0.0041/0.0076/0.0123/0.1190 m.
+
+The native evaluator completed and retained all 60 rows but its first report
+assembly hit an analysis-only missing-key mismatch (`interpretation` versus
+`comparison_interpretation`). No rollout was repeated. The report was rebuilt
+from immutable episode rows at `paired/analysis.json` (SHA-256
+`00f3e90ce90ed949ef36d799cd231f757866633d7ac3189f95d1ddf6226de7ee`); status
+records `analysis_repaired_from_retained_rows: true` and
+`native_evaluation_rerun: false`. Only the R37 report assembly fallback changed
+after native execution; preregistered runtime source identity remains intact in
+the paired preregistration and analysis. Post-report source SHA-256 is
+`249fc078e43a05116c4beaee58a2f23e2389e440fd0b7216d1edec0b99c48eae`; all other
+registered files match. Offline transition analysis validates integer cells,
+both cohort marginals, and the complete 30-row table; `cleared_old_only` is
+explicitly old-true/new-false and `introduced_new_only` old-false/new-true.
+
+Verification: full constrain suite **567 passed, 28 warnings** in 85.34 s after
+the report-only correction and exact-marginal validator; `git diff --check`
+passed. No evaluation worker remains active.
+
 ## Round 37 — matched PickCube direct-observation z-score retraining (2026-10-28)
 
 Round 37 completed one matched Base/Constrain retraining and one paired 30-scene

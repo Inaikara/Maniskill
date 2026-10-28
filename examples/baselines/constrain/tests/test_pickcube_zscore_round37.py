@@ -9,7 +9,7 @@ from examples.baselines.constrain.pickcube_observation_norm import (
 from examples.baselines.constrain.pickcube_zscore_round37 import (
     BASE_FORMAT, CONSTRAIN_FORMAT, CONSTRAIN_UPDATES, DATA_H5_SHA,
     DATA_MANIFEST_SHA, DIFFUSION, CONSTRAIN_CONFIG, TRAINING, _base_contract,
-    POLICY, _validate_control, prepare_control_observation,
+    POLICY, _validate_control, _transitions, prepare_control_observation,
 )
 from examples.baselines.constrain.pickcube_base_dp import MODEL_CONFIG, contract
 
@@ -91,3 +91,13 @@ def test_shared_control_input_seam_normalizes_42_once_and_builds_hint_from_raw_4
     assert encoded[0, 19].item() == pytest.approx(10.0)
     assert hint.shape == (3,)
     np.testing.assert_allclose(hint.numpy(), [0.6, 0.2, 0.375], atol=1e-6)
+
+
+def test_adverse_event_transitions_separate_cleared_from_introduced_and_reconcile():
+    left = [{"result": {"obstacle_contact": value}} for value in (True, False, True, False)]
+    right = [{"result": {"obstacle_contact": value}} for value in (False, True, True, False)]
+    transitions = _transitions(left, right, "obstacle_contact")
+    assert transitions == {
+        "cleared_old_only": 1, "introduced_new_only": 1,
+        "both": 1, "neither": 1, "old_marginal": 2, "new_marginal": 2,
+    }
