@@ -989,7 +989,10 @@ def evaluate_round37(registration_path):
     analysis["gate"] = {"passed": all(gate.values()), "criteria": gate}
     analysis["wall_seconds"] = {policy: [row.get("wall_seconds") for row in rows]
                                  for policy,rows in rows_by_policy.items()}
-    analysis["phase_counts"] = {policy: value["phase_counts"] for policy,value in stats.items()}
+    # Terminal phases are a property of retained episode results, not the
+    # summarize_pilot metric object.  Keep this independent of first contact.
+    analysis["phase_counts"] = {
+        policy: _terminal_phase_counts(rows) for policy, rows in rows_by_policy.items()}
     analysis["contact_first_phase_counts"] = {
         policy: _phase_counts(rows) for policy,rows in rows_by_policy.items()}
     analysis["source_identity_after_native"] = source_identity()
@@ -1009,6 +1012,18 @@ def _phase_counts(rows):
     for row in rows:
         phase = (row.get("first_contact") or {}).get("phase")
         if phase: result[phase] = result.get(phase, 0) + 1
+    return result
+
+
+def _terminal_phase_counts(rows):
+    """Count recorded terminal phases; report unknown only when metadata is absent."""
+    result = {}
+    for row in rows:
+        if row.get("status") != "evaluated":
+            continue
+        phase = row.get("result", {}).get("phase")
+        phase = phase if phase is not None else "unknown"
+        result[phase] = result.get(phase, 0) + 1
     return result
 
 

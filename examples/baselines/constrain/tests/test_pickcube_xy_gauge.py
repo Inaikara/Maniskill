@@ -164,3 +164,50 @@ def test_r38_primary_comparator_is_complete_and_content_pinned():
     assert len(tree["files"]) >= 60
     assert len([name for name in tree["files"] if name.startswith("base_dp/episode_")]) == 30
     assert len([name for name in tree["files"] if name.startswith("constrain_dp/episode_")]) == 30
+
+
+def test_round37_terminal_phase_report_uses_real_retained_rows_and_keeps_contact_phases_distinct():
+    import json
+    from pathlib import Path
+
+    from examples.baselines.constrain import pickcube_zscore_round37 as engine
+    from examples.baselines.constrain.pickcube_learning_pilot import summarize_pilot
+
+    root = Path("outputs/exp/20261029_052324_pickcube_clearance_r43/paired_native_r43")
+    policies = ("base_dp", "constrain_dp")
+    rows = {
+        policy: [json.loads((root / policy / f"episode_{index:03d}.json").read_text())
+                 for index in range(30)]
+        for policy in policies
+    }
+    for policy in policies:
+        summary = summarize_pilot(rows[policy], 30)
+        terminal = engine._terminal_phase_counts(rows[policy])
+        contacts = engine._phase_counts(rows[policy])
+        assert summary["complete"]
+        assert sum(terminal.values()) == 30
+        assert terminal == {
+            phase: sum(row["result"].get("phase", "unknown") == phase for row in rows[policy])
+            for phase in {row["result"].get("phase", "unknown") for row in rows[policy]}
+        }
+        assert contacts == {
+            phase: sum((row.get("first_contact") or {}).get("phase") == phase
+                       for row in rows[policy])
+            for phase in {(row.get("first_contact") or {}).get("phase")
+                          for row in rows[policy] if (row.get("first_contact") or {}).get("phase")}
+        }
+
+    # The new objective context is report metadata only and cannot supply phases.
+    objective_context = {"model_kind": "SE3_horizon8_clearance", "horizon": 8}
+    aggregate = {
+        "objective_context": objective_context,
+        "policy_metrics": {policy: summarize_pilot(rows[policy], 30)
+                           for policy in policies},
+        "terminal_phase_counts": {policy: engine._terminal_phase_counts(rows[policy])
+                                   for policy in policies},
+        "first_contact_phase_counts": {policy: engine._phase_counts(rows[policy])
+                                       for policy in policies},
+    }
+    assert aggregate["objective_context"]["model_kind"] == "SE3_horizon8_clearance"
+    assert aggregate["terminal_phase_counts"]["constrain_dp"]["task_success"] == 30
+    assert sum(aggregate["first_contact_phase_counts"]["constrain_dp"].values()) == 16

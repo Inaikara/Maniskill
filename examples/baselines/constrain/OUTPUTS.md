@@ -1,5 +1,143 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 44 — SE(3) horizon-8 clearance Control (2026-10-29)
+
+Round 44 completed one fixed response fit, one **150,000-update Control-only**
+training run from the immutable R40 Base, and one paired 30-scene trial (60 native
+episodes). The final analysis is
+`outputs/exp/20261029_160000_pickcube_horizon_clearance_r44/native_analysis_final_02.json`
+(SHA-256 `dc86724e8871090101d569621628e316e85826589ea7806ea1f1d8dfdd50bffc`).
+It is exploratory development evidence, not a formal performance or safety claim.
+
+### Frozen sources, response, and precheck
+
+The original pre-fit registration is `preregistration.json` (SHA-256
+`211789597dd795db2f32e1eee4751b3a01a47a05e29770bef07139df2b9d244b`). The fixed
+float64 ridge fit SHA-256 is
+`f052a2b187e25fdf70ab98866049e196929562b5acce94b8c7a58ade2c45751c`. The fit
+uses frozen obstacle IDs 1000–1499 only: 20,245 current-grasped carry windows
+from the 400 `id % 5 != 0` episodes and 5,118 validation windows from the 100
+`id % 5 == 0` episodes. It excludes 16,977 ungrasped and 3,500 incomplete-tail
+windows; grasp approach is outside its coverage claim. Its 72 inputs are eight
+planned native 6-D actions in physical units, current qpos9/qvel9, and the
+previous-to-current TCP world pose delta. Its 48 outputs are the next eight TCP
+world position deltas and world-rotation logs. No future observations, fitted
+policy rollouts, new labels, or synthetic states are inputs.
+
+The Panda source verifies root translation scale `+0.1 m` and root-aligned XYZ
+rotation scale `rot_lower=-0.1 rad` with controller norm limiting. Since the
+grasped carry labels contain no rotation-command variation, the frozen ridge
+residual is combined with this exact known controller Euler-command rotation
+map; the coefficients were not refit or tuned. This deterministic controller
+map is part of the frozen response runtime and is distinct from an inference
+shield. All current-response geometry uses the current finger q; actual future
+finger q is used only when calculating the registered validation error.
+The initial fit implementation had a positive rotation-action scale, but all
+eligible carry-window rotation labels are identically zero (their fitted feature
+std is the registered `1e-12` floor). The controller sign correction therefore
+left the fixed coefficients bit-identical. The pre-fit registration/fit remain
+byte-preserved; source-closure versions 2–8 revalidated the same fixed fit with
+the signed controller map and completed Phase B/C source closure.
+
+Source-closure versions and their fixed-model fresh prechecks are retained as
+`preregistration_sourceclosed*.json` and `precheck/sourceclosed*/`. Final admitted
+report SHA-256 is `011b0daf7fe1782319b713ae033d88a8e3aa64ddf8607bff5ce7c7865e14666f`
+with closure SHA-256
+`7c5a1f09088ac09b14d6816f2edf4ef271388a1255f206806df13c1e5bf48580`. It passes
+the unchanged response criteria: native four-link point-transform max
+`6.03e-8 m`; body-point p95 1.549 mm overall and 0.398–1.937 mm at horizons 1–8;
+98.55% mean improvement over zero motion; TCP position p95 1.614 mm (maximum
+6.046 mm). The eight forecast instants are discrete samples, not a continuous
+sweep proof; the hold-carry precheck does not claim grasp-approach coverage.
+
+### Registered Control training
+
+Training registration SHA-256 is
+`6d610e31e68fef78162c03290989f6c12b7f6e0c7baf2c6caa58835b4cc66683`. The typed
+model kind is `SE3_horizon8_clearance`; R41 hint-9, 42-D position-unit global
+condition, common-XY gauge seed 424243, native seven-channel actions and 100-step
+DDPM sampler are retained. The objective is unweighted epsilon MSE plus
+`0.01 * min(step/10000, 1)` times the sum of eight per-pose normalized body-SDF
+and carried-cube XY hinge costs, averaged over current-grasped rows with eight
+real future actions/states. Proxy rows are restricted to diffusion steps 10–30;
+epsilon training still uses all sampled windows. The loss uses eight discrete
+forecast positions, not continuous collision checking. No Base update occurred.
+
+The ten real-batch GPU benchmark recorded 0.701 s for the cold first batch and
+0.0553 s median / 0.0583 s p90 for the remaining nine. Retaining startup once
+gives an 8,747 s projected p90 within the registered 15,000 s finite wall cap;
+peak allocated CUDA memory was 579,302,400 bytes. Disabled-Control/Base epsilon
+and DDPM sample max differences were both 0. The real minibatch gradient audit
+reported XYZ norm 4.453, rotation norm 0.0294, and gripper norm 0; epsilon/body/
+cube parameter-gradient norms were 0.395/3.548/119.297.
+
+Exactly 150,000 updates completed in **11,824.64 s** on the RTX 5070. Batch 1,024,
+seed 1, AdamW `1e-4`, warmup 500, cosine schedule, EMA `.75`, R40 final EMA
+initialization, and R41 training profile were retained. All 150,000 loss rows
+were finite. The final EMA checkpoint is
+`outputs/ckpt/20261029_160000_pickcube_horizon_clearance_r44_control/final.pt`
+(SHA-256 `fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769`); 10k
+recovery checkpoints include model, EMA, optimizer, scheduler and RNG state. The
+final checkpoint was atomically saved before post-training audits. The frozen R40
+Base state remained `5e5e7e9ebd007bd1b9319825e537aa922943e25d4844787e0e3ebd148b848b2d`.
+Post-training EMA gradient audit at diffusion step 20 on 1,024 real eligible
+windows passed: XYZ norm 0.00420, rotation norm 0.00101, gripper norm 0; epsilon/
+body/cube component parameter-gradient norms 0.0332/0.3603/0.0566. No optimizer
+update occurred during that audit. Final EMA planned-action abs-value fractions
+over 0.35 were 0.87% XYZ-X, 0% Y, 4.39% Z, and 0% for rotation; full per-channel
+label/prediction range summaries are in the final analysis. The training-log
+mean x0 abs-value fraction above 0.35 was 5.94% (max 7.95%).
+
+### One paired 30-scene native trial
+
+Trial registration SHA-256 is
+`e064ca54643606be479709cd5bcc0afa0556281ecdc0d2ef94cea09a3ee0043d`. It pins the
+final EMA, R40 Base, frozen R41 and R43 reference cohorts, existing R36 30-scene
+set, and DDPM-100 / slice `[1:9]` / execute-eight protocol. One evaluator
+registration-source correction was required before any episode row was written;
+the first setup invocation failed immediately with
+`ValueError: Round 37 registered source bytes changed` before creating any
+episode rows. The original runtime/engine registration and its correction record
+are retained as `native_engine_registration_before_source_correction.json` and
+`native_engine_registration_source_correction.json`; zero episodes were
+repeated. Exactly 30 Base and 30 R44 Control rows completed with zero runtime
+errors in 416.62 s. R44 Base traces and outcomes match the R43/R40 Base exactly.
+Each episode row retains actual flags, action traces, scene/seed, checkpoint and
+profile hashes, first-contact and terminal-phase data, and native protocol;
+contact entity-pair positions remain unknown because the recorder does not
+expose them. Runtime clearance-cost calls were zero.
+
+| Policy | Task success | Safe success | Contact | XY crossing |
+| --- | ---: | ---: | ---: | ---: |
+| R40 matched Base (R43-exact) | 27/30 | 0/30 | 30/30 | 21/30 |
+| R43 swept-clearance Control (primary) | 30/30 | 14/30 | 16/30 | 5/30 |
+| R41 hint-9 Control (secondary) | 29/30 | 17/30 | 13/30 | 6/30 |
+| R44 SE(3) horizon-8 Control | 30/30 | 17/30 | 13/30 | 7/30 |
+
+The preregistered gate (`task >=27`, `safe >=26`, `contact <=3`, `XY <=3`)
+**failed**: task 30 passed; safe success 17, contact 13, and XY crossing 7 failed.
+Against R43 Control, R44 transitions were task both 30; safe improved 7,
+regressed 4, both 10, neither 9; contact cleared 7, introduced 4, both 9,
+neither 10; XY cleared 2, introduced 4, both 3, neither 21. Against R41 Control,
+safe improved 4 / regressed 4 / both 13 / neither 9; contact cleared 4 /
+introduced 4 / both 9 / neither 13; XY cleared 1 / introduced 2 / both 5 /
+neither 22. This is a combined training-objective/horizon/carry-mask/SE(3)
+response proposal comparison, not an isolated lambda effect. No further trial or
+checkpoint selection followed the failed gate.
+
+The matched 1,000 direct / 500 obstacle demonstration source remained unchanged
+(HDF5 `0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`, manifest
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`); R40 Base
+remained unchanged. Full retained rows are under `paired_native_r44/`; terminal
+and first-contact counts are distinct in the report. Ticket 05 has no local
+`.scratch/` issue file in this checkout.
+
+Verification: full constrain suite **605 passed, 28 warnings** in 86.47 s;
+frozen data and Base hashes match before/after. No new episodes, replay, demos,
+layouts, or training cohorts were created. All code changes are confined to
+`examples/baselines/constrain`; no agents were used and no commit/branch/push was
+performed.
+
 ## Round 43 — swept clearance-proxy Control trial (2026-10-29)
 
 The independently registered R43 frozen-data precheck is in
