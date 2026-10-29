@@ -138,6 +138,12 @@ layouts, or training cohorts were created. All code changes are confined to
 `examples/baselines/constrain`; no agents were used and no commit/branch/push was
 performed.
 
+Commit-reference correction: the `Ref` footer of implementation commit
+`0df133ed88954203002d391c1bb0d8747b9dd2cc` mistakenly names
+`05-pickcube-clearance-round44.md`. The originating issue is the historical
+`.scratch/transport-detour-optimization/issues/05-pickcube-learning-pilot.md`;
+no separate Round 44 ticket was created. The original commit is retained.
+
 ## Round 43 — swept clearance-proxy Control trial (2026-10-29)
 
 The independently registered R43 frozen-data precheck is in
