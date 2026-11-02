@@ -1,5 +1,45 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 45 — render-only geometry and XY constraint prototype (2026-11-02)
+
+This partial engineering slice changes only the experimental PickCube and
+PlaceSphere obstacle environments. Both accept `obstacle_mode="physical"`
+(unchanged default) or `"render_only"`; the latter builds the same visual
+cylinder with zero collision shapes. State dictionaries retain the configured
+cylinder radius, height, center, enable flag, and task-specific state, so saved
+scene restore remains geometrically identical. In render-only mode environment
+`success` is native task success; physical mode retains the historical
+collision/crossing-qualified success. No data, layouts, or checkpoints were
+created or changed.
+
+The standalone seam is
+`examples/baselines/constrain/inference_xy_constraint_r45.py`: `XYConstraint`
+uses measured TCP XY plus one native `pd_ee_delta_pose` action. XY action units
+are bounded to ±0.35 and map to ±0.035 m per step using the Panda 0.1 m/unit
+translation scale. Z, rotation, and gripper are passed through. It keeps the
+existing forbidden radius exactly: cylinder radius + cube circumscribed XY
+radius + 0.005 m for PickCube, and cylinder radius + sphere radius + 0.005 m for
+PlaceSphere. `validate_tcp_trace` scores every actual XY sample and chord,
+including the first-success sample. These interfaces are unit-tested, but the
+filter is not yet wired into either selected policy evaluator.
+
+TDD evidence: `tests/test_render_only_xy_constraint.py` first failed collection
+because the intended new public module did not exist. Once implemented, the
+focused suite passed (6 passed); an intermediate SAPIEN API assumption in the
+visual assertion was corrected to inspect the actual `RenderBodyComponent`.
+The complete command
+`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line`
+passed: 611 passed, 30 warnings, 86.19 s (conda environment `maniskill`).
+
+**Native acceptance is not complete.** No round-45 source/input registration,
+saved-scene policy rollout, full executed TCP trace, per-task success check, or
+30-scene evaluator was produced. Therefore the >=27/30-per-task and zero-TCP-XY
+violation criteria remain unverified, and there is no 30-scene trial command
+yet. Historical physical collision-aware reports and identities above are
+unchanged; this prototype has the explicit label `render_only_xy_r45` and must
+not be pooled with those reports. This is recorded as a blocker for the next
+round rather than as passed acceptance.
+
 ## Round 44 — SE(3) horizon-8 clearance Control (2026-10-29)
 
 Round 44 completed one fixed response fit, one **150,000-update Control-only**

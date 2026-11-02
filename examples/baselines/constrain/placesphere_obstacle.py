@@ -34,7 +34,8 @@ class PlaceSphereObstacleEnv(PlaceSphereEnv):
 
     def __init__(self, *args, robot_uids="panda", obstacle_radius=0.03,
                  obstacle_height=0.25, safety_margin=0.005,
-                 contact_impulse_threshold=1e-6, obstacle_enabled=False, **kwargs):
+                 contact_impulse_threshold=1e-6, obstacle_enabled=False,
+                 obstacle_mode="physical", **kwargs):
         backend = kwargs.get("sim_backend", "auto")
         if kwargs.get("num_envs", 1) != 1:
             raise NotImplementedError("PlaceSphere obstacle checks require one CPU environment")
@@ -47,6 +48,9 @@ class PlaceSphereObstacleEnv(PlaceSphereEnv):
         self.safety_margin = float(safety_margin)
         self.contact_impulse_threshold = float(contact_impulse_threshold)
         self.default_obstacle_enabled = bool(obstacle_enabled)
+        if obstacle_mode not in ("physical", "render_only"):
+            raise ValueError("obstacle_mode must be 'physical' or 'render_only'")
+        self.obstacle_mode = obstacle_mode
         self._obstacle_rotation = euler2quat(0, np.pi / 2, 0)
         super().__init__(*args, robot_uids=robot_uids, **kwargs)
         if self.gpu_sim_enabled or self.num_envs != 1:
@@ -57,10 +61,13 @@ class PlaceSphereObstacleEnv(PlaceSphereEnv):
         self.obstacle = actors.build_cylinder(
             self.scene, radius=self.obstacle_radius, half_length=self.obstacle_height / 2,
             color=[0.1, 0.2, 0.9, 1], name="placesphere_obstacle", body_type="static",
+            add_collision=self.obstacle_mode == "physical",
             initial_pose=sapien.Pose(p=[*PARKED_CENTER, self.obstacle_height / 2],
                                      q=self._obstacle_rotation))
-        self.obstacle_collision_radius = float(self.obstacle._bodies[0].collision_shapes[0].radius)
-        self.obstacle_collision_height = float(self.obstacle._bodies[0].collision_shapes[0].half_length * 2)
+        self.obstacle_collision_radius = (float(self.obstacle._bodies[0].collision_shapes[0].radius)
+                                          if self.obstacle_mode == "physical" else self.obstacle_radius)
+        self.obstacle_collision_height = (float(self.obstacle._bodies[0].collision_shapes[0].half_length * 2)
+                                          if self.obstacle_mode == "physical" else self.obstacle_height)
         self._obstacle_center = torch.tensor(PARKED_CENTER, device=self.device)[None]
         self._obstacle_enabled = torch.zeros(1, dtype=torch.bool, device=self.device)
         self._obstacle_collision = torch.zeros_like(self._obstacle_enabled)
@@ -198,5 +205,8 @@ class PlaceSphereObstacleEnv(PlaceSphereEnv):
         info["obstacle_collision"] = self._obstacle_collision.clone()
         info["obstacle_crossing"] = self._forbidden_crossing.clone()
         info["obstacle_enabled"] = self._obstacle_enabled.clone()
-        info["success"] = info["native_success"] & ~self._obstacle_collision & ~self._forbidden_crossing
+        if self.obstacle_mode == "physical":
+            info["success"] = info["native_success"] & ~self._obstacle_collision & ~self._forbidden_crossing
+        else:
+            info["success"] = info["native_success"]
         return info
