@@ -29,6 +29,21 @@ PROGRESS_GUARD_TOTAL_LIMIT = 60
 PROGRESS_GUARD_ARC_STEP_M = 0.005
 PROGRESS_GUARD_MIN_ARC_PROGRESS_M = 0.001
 PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M = 0.0005
+SELECTED_PROFILE = "selected_xy_80_v1"
+SELECTED_CATALOG_HASHES = {
+    "pickcube": {
+        "scene_manifest": "33520b09c500bb851c0a2f24a692fbdd4dff82f265c0e74513b3be54ad6d83ab",
+        "scene_h5": "a99e8d0183a62dadeb43491f0090b9e5d47bf48c9a6f2c6e8d8ec7b07767ae2f",
+    },
+    "placesphere": {
+        "scene_manifest": "8e24d2c53376496d64ab3e80e3dc7361b583b6cfad2380e11d44a0dcf008aa6e",
+        "scene_h5": "c586bb02ae03bb35e937869180e1beb02153051b4bc076420454e9e3a83236b1",
+    },
+}
+SELECTED_CHECKPOINT_HASHES = {
+    "pickcube": "fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769",
+    "placesphere": "6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f",
+}
 
 
 class BoundedProgressGuard:
@@ -124,6 +139,37 @@ def native_gripper_hold_from_qpos(qpos, lower=-0.01, upper=0.04):
 
 class EpisodeTimeout(TimeoutError):
     pass
+
+
+def selected_profile(task, *, event_replan, common_latent_replan,
+                     xy_feedback, progress_guard, xy_constraint):
+    """Return the approved task-specific R58 rollout switches or reject overrides."""
+    if task not in SELECTED_CATALOG_HASHES:
+        raise ValueError(f"unsupported selected-profile task: {task}")
+    expected = {
+        "event_replan": task == "pickcube",
+        "common_latent_replan": False,
+        "xy_feedback": False,
+        "progress_guard": False,
+        "xy_constraint": True,
+    }
+    supplied = {"event_replan": event_replan,
+                "common_latent_replan": common_latent_replan,
+                "xy_feedback": xy_feedback,
+                "progress_guard": progress_guard,
+                "xy_constraint": xy_constraint == "on"}
+    for key, value in supplied.items():
+        if value is not None and value != expected[key]:
+            raise ValueError(f"{key} conflicts with {SELECTED_PROFILE} for {task}")
+    return {**expected, "profile": SELECTED_PROFILE,
+            "minimum_native_successes": 24, "denominator": 30,
+            "required_xy_zero": 30, "required_runtime_errors": 0}
+
+
+def validate_selected_catalog_hashes(task, hashes):
+    expected = SELECTED_CATALOG_HASHES[task]
+    if any(hashes.get(name) != value for name, value in expected.items()):
+        raise ValueError(f"{task} catalog identity differs from the selected R52 catalog")
 
 
 class CommonInitialNoise:
@@ -511,7 +557,7 @@ def _atomic_json(path, value):
 
 def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False,
                         common_latent_replan=False, xy_feedback=False, xy_constraint=True,
-                        progress_guard=False):
+                        progress_guard=False, selected=None):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
@@ -526,10 +572,10 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
         shutil.copyfile(src, target)
         snapshots[name] = {"path": str(target), "sha256": sha256(target)}
     repo_root = Path(__file__).resolve().parents[3]
-    git_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root,
-                                       text=True).strip()
-    dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
-                                           text=True).splitlines()
+    git_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_root,
+                              text=True, capture_output=True, timeout=10, check=True).stdout.strip()
+    dirty_paths = subprocess.run(["git", "status", "--short"], cwd=repo_root,
+                                 text=True, capture_output=True, timeout=10, check=True).stdout.splitlines()
     body = {"format": "render_only_xy_eval_r47_v1", "task": task,
              "method": ("ConstrainNet+bufferedXY+bounded_progress_guard_v1"
                         if progress_guard else
@@ -574,7 +620,8 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
                 "forbidden_radius": "restored visible cylinder radius + 0.005 m",
                 "excluded_profiles": ["tcp_xy_object_footprint_r45", "physical_object_latch"],
                 "body_collision_gate": False, "obstacle_mode": "render_only"},
-            "formal_or_generalization_claim": False,
+             "formal_or_generalization_claim": False,
+             "selected_profile": selected,
             "source_snapshots": snapshots,
             "inputs": inputs or {},
             "sources": {name: {"path": str(Path(src)), "sha256": sha256(src)}
@@ -834,13 +881,31 @@ def main(argv=None):
                         help="explicit task-native scene catalog (defaults to the historical catalog)")
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--event-replan", action="store_true")
-    parser.add_argument("--common-latent-replan", action="store_true")
-    parser.add_argument("--xy-feedback", action="store_true")
-    parser.add_argument("--bounded-progress-guard", action="store_true")
+    parser.add_argument("--selected-profile", choices=(SELECTED_PROFILE,))
+    parser.add_argument("--event-replan", action="store_true", default=None)
+    parser.add_argument("--common-latent-replan", action="store_true", default=None)
+    parser.add_argument("--xy-feedback", action="store_true", default=None)
+    parser.add_argument("--bounded-progress-guard", action="store_true", default=None)
     parser.add_argument("--xy-constraint", choices=("on", "off"), default="on",
                         help="off preserves every actor action and scores actual violations")
     args = parser.parse_args(argv)
+    selected = None
+    if args.selected_profile:
+        selected = selected_profile(args.task, event_replan=args.event_replan,
+                                    common_latent_replan=args.common_latent_replan,
+                                    xy_feedback=args.xy_feedback,
+                                    progress_guard=args.bounded_progress_guard,
+                                    xy_constraint=args.xy_constraint)
+        args.event_replan = selected["event_replan"]
+        args.common_latent_replan = selected["common_latent_replan"]
+        args.xy_feedback = selected["xy_feedback"]
+        args.bounded_progress_guard = selected["progress_guard"]
+        args.scenes = Path("outputs/exp/20261102_133924_initial_clear_contract_r52") / args.task
+    else:
+        args.event_replan = bool(args.event_replan)
+        args.common_latent_replan = bool(args.common_latent_replan)
+        args.xy_feedback = bool(args.xy_feedback)
+        args.bounded_progress_guard = bool(args.bounded_progress_guard)
     if args.common_latent_replan and (args.task != "placesphere" or not args.event_replan):
         raise ValueError("common latent replanning is PlaceSphere-only and requires --event-replan")
     if args.xy_feedback and args.task != "placesphere":
@@ -902,7 +967,14 @@ def main(argv=None):
         input_paths.update({"training_registration": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/training_preregistration.json"),
                             "data_h5": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.h5"),
                              "data_manifest": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.json"),
-                            "checkpoint_correction": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/checkpoint_metadata_correction.json")})
+                             "checkpoint_correction": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/checkpoint_metadata_correction.json")})
+    if selected:
+        validate_selected_catalog_hashes(args.task, {
+            "scene_manifest": sha256(input_paths["scene_manifest"]),
+            "scene_h5": sha256(input_paths["scene_h5"]),
+        })
+        if sha256(checkpoint) != SELECTED_CHECKPOINT_HASHES[args.task]:
+            raise ValueError("checkpoint identity differs from selected R58 checkpoint")
     if len(set(args.indices)) != len(args.indices) or any(i < 0 for i in args.indices):
         raise ValueError("scene indices must be unique and non-negative")
     if args.register:
@@ -915,11 +987,13 @@ def main(argv=None):
                             {name: {"path": str(path), "sha256": sha256(path)}
                              for name, path in input_paths.items()},
                             event_replan=args.event_replan,
-                            common_latent_replan=args.common_latent_replan,
-                            xy_feedback=args.xy_feedback, xy_constraint=xy_constraint,
-                            progress_guard=args.bounded_progress_guard)
+                             common_latent_replan=args.common_latent_replan,
+                             xy_feedback=args.xy_feedback, xy_constraint=xy_constraint,
+                             progress_guard=args.bounded_progress_guard, selected=selected)
         return
     reg = validate_registration(args.registration)
+    if reg.get("selected_profile") != selected:
+        raise ValueError("registered profile differs from requested selected profile")
     registered_replan = bool(reg.get("constraint_profile", {}).get("event_replan", False))
     if registered_replan != bool(args.event_replan):
         raise ValueError("event-replan runtime flag differs from frozen registration")

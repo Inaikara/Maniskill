@@ -210,13 +210,17 @@ class PlaceSpherePairedEvaluator:
                         raise
                     elapsed += 1
                     term, trunc = bool(terminated), bool(truncated)
-                    attempt = env._render_only_xy_last_attempt
-                    actions.append((attempt["filtered_action"] if getattr(
+                    attempt = getattr(env, "_render_only_xy_last_attempt", None)
+                    task_action_executed = (attempt.get("task_action_executed", True)
+                                             if attempt is not None else True)
+                    if task_action_executed:
+                        task_action_count += 1
+                    actions.append((attempt["filtered_action"] if attempt is not None and getattr(
                         self, "progress_guard", False) else a.tolist()))
                     next_obs = np.asarray(next_obs.detach().cpu() if torch.is_tensor(next_obs) else next_obs,
                                           dtype=np.float32).reshape(-1)
                     history = np.concatenate((history[1:], next_obs[None]), axis=0)
-                    if feedback is not None:
+                    if feedback is not None and attempt is not None:
                         attempt["scheduled_chunk_index"] = int((elapsed - 1) // 8)
                         attempt["scheduled_chunk_offset"] = int(offset)
                         attempt["original_scheduled_action"] = scheduled_action.tolist()
@@ -224,7 +228,7 @@ class PlaceSpherePairedEvaluator:
                         attempt["executed_action_provenance"] = (
                             "scheduled_non_xy_plus_auxiliary_xy" if auxiliary_plan is not None
                             else "scheduled_full_action")
-                    if getattr(self, "progress_guard", False):
+                    if getattr(self, "progress_guard", False) and attempt is not None:
                         attempt["task_action_index"] = int(task_action_count + 1)
                         attempt["scheduled_chunk_index"] = int(task_action_count // 8)
                         attempt["scheduled_chunk_offset"] = int(task_action_count % 8)
@@ -253,10 +257,9 @@ class PlaceSpherePairedEvaluator:
                         writer.append_data(_frame(env))
                     if termination:
                         break
-                    if attempt.get("task_action_executed", True):
-                        task_action_count += 1
+                    if task_action_executed:
                         offset += 1
-                    if (feedback is not None and attempt.get("xy_feedback_requested")
+                    if (feedback is not None and attempt is not None and attempt.get("xy_feedback_requested")
                             and offset + 1 < len(chunk)):
                         from examples.baselines.constrain.render_only_xy_eval import auxiliary_xy_plan
                         queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)

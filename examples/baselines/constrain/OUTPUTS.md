@@ -1,5 +1,95 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 58 — selected XY profile, 80% development gate (2026-11-02)
+
+The user-authorized development gate is **at least 24/30 native successes per
+task**, 30/30 initial/sample/chord-clear TCP XY traces, and zero runtime errors.
+This supersedes the historical 27/30 development threshold in earlier round
+notes; the original formal 90% contract and Tickets 07–15 were not run or
+reclassified. No data, model, layout, or additional method scan was created.
+
+The CLI preset `--selected-profile selected_xy_80_v1` pins the R52 corrected
+catalogs and selected checkpoint hashes, rejects conflicting rollout switches
+and registration/profile mismatches, and records both task-specific methods and
+the 24/30 gate before outcomes. PickCube selects R54 event replanning
+(`ConstrainNet+bufferedXY+event_replan_v1`); PlaceSphere selects the R53 buffered
+stride-eight path (`ConstrainNet+XY constraint`, event replanning off). Both use
+the unchanged actual cylinder radius + 5 mm acceptance disk, 3 mm working buffer,
+native controller bounds (PickCube ±1, PlaceSphere ±0.35), DDPM-100 / DDIM-100
+eta=0 samplers, and their original 500 / 200 physical-control caps. Cylinder
+collision shapes remain absent and visible geometry is checked against restored
+task geometry. PlaceSphere keeps its historical action stream exactly: all 30
+action arrays and native outcomes match R53 scene-by-scene.
+
+### Frozen inputs and results
+
+Run directory: `outputs/exp/20261102_085808_selected_xy_80_r58/`. Both complete
+index lists `0..29`, source-byte snapshots, transitive runtime sources, controller,
+normalizers, checkpoints, training registrations/data, and scene HDF5/manifests
+were registered before either task executed. Registration identities:
+
+| Task | Registration SHA-256 | Scene manifest / HDF5 SHA-256 | Selected checkpoint SHA-256 |
+|---|---|---|---|
+| PickCube | `0306bf4f49ca739740fcb66f7a1e45d5586dfb341782e475c3813b59cad34afd` | `33520b09c500bb851c0a2f24a692fbdd4dff82f265c0e74513b3be54ad6d83ab` / `a99e8d0183a62dadeb43491f0090b9e5d47bf48c9a6f2c6e8d8ec7b07767ae2f` | `fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769` |
+| PlaceSphere | `97a7298991d73113a2ac17f8c9ff28e8953ae5d71a8970c272e5bc253e0c71ef` | `8e24d2c53376496d64ab3e80e3dc7361b583b6cfad2380e11d44a0dcf008aa6e` / `c586bb02ae03bb35e937869180e1beb02153051b4bc076420454e9e3a83236b1` | `6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f` |
+
+| Task | Native success | Runtime errors | XY-zero | Physical controls | Minimum TCP sample / chord clearance |
+|---|---:|---:|---:|---:|---:|
+| PickCube (selected R54) | **28/30 pass** | 0 | **30/30 pass** | 4,078 | +0.854 / +0.854 mm |
+| PlaceSphere (selected R53) | **24/30 pass** | 0 | **30/30 pass** | 4,297 | +0.554 / +0.554 mm |
+
+Independent offline recomputation covered all 60 full traces, initial TCP
+samples, every actual TCP control sample/chord through first native success or
+failed-task termination, visible render-only geometry, zero collision shapes,
+restoration flags, and PlaceSphere task-action counts. It found zero XY violations,
+zero counter mismatches, and zero PlaceSphere action-stream/outcome mismatches
+against R53. The failed-scene denominator remains 30 per task; no old successes
+or smoke rows were pooled. Prior PlaceSphere negatives R55 (14/30), R56 (20/30),
+and R57 (19/30), plus R53/R54, remain separately preserved in their historical sections. This passes
+the current development acceptance only; it is not the original formal gate or a
+generalization claim.
+
+### Reproduction
+
+Run after activating `maniskill`. Registration must finish for **both** tasks
+before either rollout. The evaluator bounds each episode to 300 s and the
+30-scene task run to 3,600 s; the outer command has a bounded 3,640 s timeout.
+The following are the retained invocation paths. To rerun, replace the R58
+experiment root in all output/registration arguments with a new timestamped
+directory: existing registrations and results are immutable and reject reuse.
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+indices=$(seq -s ' ' 0 29)
+timeout --signal=TERM --kill-after=20s 120s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --selected-profile selected_xy_80_v1 --indices $indices --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --output outputs/exp/20261102_085808_selected_xy_80_r58/pickcube_rows --registration outputs/exp/20261102_085808_selected_xy_80_r58/pickcube_registration.json --device cuda --register
+timeout --signal=TERM --kill-after=20s 120s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --selected-profile selected_xy_80_v1 --indices $indices --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --output outputs/exp/20261102_085808_selected_xy_80_r58/placesphere_rows --registration outputs/exp/20261102_085808_selected_xy_80_r58/placesphere_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3640s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --selected-profile selected_xy_80_v1 --indices $indices --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --output outputs/exp/20261102_085808_selected_xy_80_r58/pickcube_rows --registration outputs/exp/20261102_085808_selected_xy_80_r58/pickcube_registration.json --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3640s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --selected-profile selected_xy_80_v1 --indices $indices --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --output outputs/exp/20261102_085808_selected_xy_80_r58/placesphere_rows --registration outputs/exp/20261102_085808_selected_xy_80_r58/placesphere_registration.json --device cuda
+```
+
+Focused evaluator tests: **37 passed**. Required full suite:
+`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line`
+→ **653 passed, 30 warnings in 95.55 s**. Registrations and snapshots were
+revalidated after both runs. No ManiSkill source, data, checkpoint, or scene was
+modified. Formal 100-scene evaluation remains unstarted.
+
+Runtime source IDs: selected runner `render_only_xy_eval.py`
+`eea3d1449e2ac5be89238a49be4e98f216062d6e996e0a40e9ea15cd1e009f0b`, paired
+PlaceSphere evaluator `evaluate_placesphere_paired.py`
+`6ea787311b723e2f9f8d6430b349c7220d5ead0fddf0fb3bf1472099c0cdeb34`, and focused
+render-only tests `test_render_only_xy_eval.py`
+`80471ede122ff36faf6bb23d3d16db5f09407044cdd3b532beb1fa4422d56b69`. Full source
+and transitive-input snapshots are in the two registration-specific
+`*_registration_sources/` directories.
+
+Parent completion audit: the independent spec reviewer recomputed all 60 raw
+episode traces and confirmed both tasks pass the predeclared ≥80% development
+gate. The local tracker README and Tickets 05/06 record that this optimization
+is complete; the formal data/training/100-scene evaluation chain remains
+unexecuted. No additional method trial is needed to chase the superseded 90%
+development target. The goal branch is retained pending user confirmation to
+merge.
+
 ## Round 57 — PlaceSphere bounded task-progress tangent guard (2026-11-02)
 
 R57 evaluates the separately named **ConstrainNet+bufferedXY+bounded_progress_guard_v1** on the unchanged fixed R52 PlaceSphere cohort, with the R30 EMA and matched Base checkpoint. No task demonstrations, model weights, scenes, goal/task-state logic, or ManiSkill source changed. Pick remains the selected R54 result at 28/30 native and 30/30 XY-zero; it was not rerun. The selected Place reference remains R54's 21/30, not the Pick 28/30 result.

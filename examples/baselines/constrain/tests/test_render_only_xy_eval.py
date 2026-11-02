@@ -549,3 +549,27 @@ def test_explicit_catalog_is_pinned_bounded_and_unique(tmp_path):
     h5.write_bytes(b"mutated")
     with pytest.raises(ValueError, match="input mismatch"):
         validate_explicit_catalog(registration, "pickcube", [0], scene_dir)
+
+
+def test_selected_profile_pins_task_specific_methods_and_rejects_experimental_overrides():
+    from examples.baselines.constrain.render_only_xy_eval import selected_profile
+
+    pick = selected_profile("pickcube", event_replan=None, common_latent_replan=False,
+                            xy_feedback=False, progress_guard=False, xy_constraint="on")
+    place = selected_profile("placesphere", event_replan=None, common_latent_replan=False,
+                             xy_feedback=False, progress_guard=False, xy_constraint="on")
+    assert pick["event_replan"] is True
+    assert place["event_replan"] is False
+    assert pick["xy_constraint"] is place["xy_constraint"] is True
+    assert pick["minimum_native_successes"] == place["minimum_native_successes"] == 24
+    with pytest.raises(ValueError, match="conflicts"):
+        selected_profile("placesphere", event_replan=True, common_latent_replan=False,
+                         xy_feedback=False, progress_guard=False, xy_constraint="on")
+
+
+def test_selected_profile_rejects_wrong_catalog_identity():
+    from examples.baselines.constrain.render_only_xy_eval import validate_selected_catalog_hashes
+
+    with pytest.raises(ValueError, match="catalog identity"):
+        validate_selected_catalog_hashes("pickcube", {"scene_manifest": "0" * 64,
+                                                       "scene_h5": "0" * 64})

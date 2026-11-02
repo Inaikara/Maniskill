@@ -70,3 +70,63 @@ def test_paired_restore_audit_compares_actual_fingerprints(tmp_path):
     path.write_text(__import__("json").dumps(row))
     with pytest.raises(ValueError, match="scene index 17"):
         paired_audit(tmp_path)
+
+
+@pytest.mark.parametrize("native_success,expected_steps", [(True, 1), (False, 200)])
+def test_physical_rollout_without_render_instrumentation_counts_executed_task_actions(
+        monkeypatch, native_success, expected_steps):
+    import numpy as np
+    import torch
+    from types import SimpleNamespace
+    from examples.baselines.constrain import evaluate_placesphere_paired as rollout
+
+    class Env:
+        def __init__(self):
+            self.unwrapped = self
+            self.agent = SimpleNamespace(controller=SimpleNamespace(get_state=lambda: {}))
+            self.obj = SimpleNamespace(pose=SimpleNamespace(p=torch.tensor([[0., 0., .1]])))
+            self.bin = SimpleNamespace(pose=SimpleNamespace(p=torch.tensor([[.1, 0., 0.]])))
+            self.closed = False
+
+        def reset(self, *args, **kwargs):
+            return None
+
+        def get_state_dict(self):
+            return {}
+
+        def step(self, action):
+            self.steps += 1
+            success = native_success and self.steps == 1
+            info = {key: torch.tensor([value]) for key, value in {
+                "obstacle_collision": False, "obstacle_crossing": False,
+                "is_obj_grasped": False, "native_success": success,
+                "is_obj_on_bin": success, "is_obj_static": success}.items()}
+            return torch.zeros(42), 0., success, False, info
+
+        def close(self):
+            self.closed = True
+
+    env = Env()
+    env.steps = 0
+    monkeypatch.setattr(rollout, "_make_env", lambda *_args, **_kwargs: env)
+    monkeypatch.setattr(rollout, "_tree_hash", lambda _value: "fixed")
+    observation = np.zeros(42, dtype=np.float32)
+    scene = {"metadata": {"scene_id": "legacy-physical", "seed": 9,
+              "state_sha256": "fixed", "controller_sha256": "fixed",
+              "raw_observation_sha256": __import__("hashlib").sha256(observation.tobytes()).hexdigest()},
+             "policy_observation": observation[:39]}
+
+    class Catalog:
+        def restore(self, _index, _env):
+            return _env, {"raw_observation": observation}
+
+    class Adapter:
+        def base_cond(self, queued): return queued
+        def get_action(self, _condition): return torch.zeros((1, 16, 7))
+        def map_action_ee_delta_pose(self, action): return action
+
+    row = rollout.PlaceSpherePairedEvaluator(Adapter(), Catalog(), ".", "cpu").run_episode(0, scene)
+    assert row["task_action_count"] == expected_steps
+    assert row["result"]["elapsed_steps"] == expected_steps
+    assert len(row["actions_native_pd_ee_delta_pose"]) == expected_steps
+    assert env.closed
