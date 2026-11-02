@@ -1,5 +1,111 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 53 — preregistered corrected-XY full cohorts (2026-11-02)
+
+Both fixed R52 task cohorts were run sequentially, all indices `0..29`, at the
+R52 final runtime/profile without changing evaluator, filter, scenes, models,
+controller limits, demos, or training data. The preregistration timestamp and
+artifact directory are
+`outputs/exp/20261102_135852_corrected_xy_full_r53/`. The prior directory label
+`20261102_230000_corrected_xy_full_r53/` is retained as a symlink; migration
+details are in `MIGRATION.json`. Registrations and source snapshots preserve
+their original paths and bytes. Both registrations, their direct inputs, and
+source snapshots validated after execution.
+
+### Fixed inputs and acceptance
+
+The only method is **ConstrainNet+XY constraint**, an engineering result, not a
+formal performance or generalization claim. Frozen models are PickCube R44 EMA
+`fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769` and
+PlaceSphere R30 EMA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`. PickCube
+uses the R41 normalizer `d14d56e3645504b81db4a41f32cf6869b805dbf003194b26433cfceb6023f543`;
+PlaceSphere uses its raw/identity observation normalizer in the registered actor
+source. Training registrations remain
+`7969ff268f2780a98ecd5005a8ce9cf5d52cac9d702356ad6773a7556200c425` (PickCube)
+and `eb4a824224f649881a3511dc229d751d38c926255820d16c2016839e14f549a5`
+(PlaceSphere). Demo HDF5/manifest identities are unchanged from R52: PickCube
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f` /
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`; PlaceSphere
+`796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961` /
+`aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9`. Dataset
+sizes remain 1,000 direct + 500 obstacle episodes per task; no demos were
+created.
+
+The unchanged acceptance disk is `tcp_xy_cylinder_radius_plus_5mm_v1`: measured
+TCP XY samples and every chord must stay outside the actual restored cylinder
+radius + 5 mm, from the initial state through first native success, or through
+the full failed-task timeout. The distinct working path profile is
+`tcp_xy_working_clearance_3mm_v2` (3 mm); it is not substituted for acceptance.
+The native controller remains `pd_ee_delta_pose`, 0.1 m per XY action unit,
+PickCube bounds ±1 and PlaceSphere bounds ±0.35; other channels pass through.
+Both R52 zero-step preflights passed 30/30 with task-layout bounds, PickCube
+goal Z=0.12 m, exact restore/admission identities, visible cylinder agreement,
+zero collision shapes, and initial TCP gaps strictly positive against R+5 mm.
+Their minima were +4.004 mm (PickCube) and +8.542 mm (PlaceSphere).
+
+### Complete native results
+
+| Task | Fixed denominator / evaluated | Native success (gate ≥27) | Runtime errors | XY-zero (gate 30) | Minimum actual sample / chord gap | Filter interventions / controls | Native XY clipping / controls | Terminal phases |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| PickCube | 30 / 30 | 26/30 **fail** | 0 | 30/30 **pass** | +1.059 / +1.059 mm | 972 / 4,917 (19.77%) | 0 / 4,917 | task_success 26; grasp_no_lift 1; lift_no_transport 1; no_grasp 2 |
+| PlaceSphere | 30 / 30 | 24/30 **fail** | 0 | 30/30 **pass** | +0.554 / +0.554 mm | 207 / 4,297 (4.82%) | 0 / 4,297 | task_success 24; grasp_no_lift 3; no_grasp 1; release_or_stability_failed 2 |
+
+The fixed denominators include all native-task timeouts: PickCube indices
+10/14/15/16 at 500 controls and PlaceSphere indices 2/5/6/10/14/27 at 200
+controls. Every successful row includes its first native-success control and
+preceding chord in the geometry audit. Rows preserve full requested/filtered
+actions, live geometry, measured TCP controls, native results and restoration
+identity. Offline analysis checked all 60 rows against their catalog geometry;
+the runner also requires live task-state and visible-cylinder center agreement,
+visible cylinder, and zero obstacle collision shapes for each environment.
+All 60 full trajectories had zero actual-radius+5-mm sample or chord violations.
+The historical physical-object-crossing latch remains separate (25 PickCube,
+1 PlaceSphere); it is not the TCP XY gate. Body contact was 0 in both cohorts
+and is not a gate. Native success retains original task semantics: PickCube
+holds the cube at its task goal; PlaceSphere requires the sphere on-bin, static,
+and not grasped.
+
+The preregistration identities are PickCube
+`a395d7822bbfced991050d785c7e938e4a2a789b1af445621ded299dcc269d86` (18 source
+entries, 7 input entries) and PlaceSphere
+`0cd1542bcbafa64f25d26952e1c89b7539994382f662ef24a4dc803462141f5f` (14 source
+entries, 9 input entries). Their complete byte snapshots are retained under
+`pickcube_registration_sources/` and `placesphere_registration_sources/`.
+Registration files have SHA-256 `d88e8b491dadef7b840d22a2805e6a71f68667492ce50ac38e50e3e1bc6b67ae`
+and `23b9125eaabd795aca624ee053510e7d82d7216c81906a20748ae888b8a722fc`.
+Catalog manifest/HDF5 hashes match the R52 identities above. Full row files
+hash to PickCube `2e1f29741b724edecce835c1f1005c59b87cc286f34dd822df696a104b3e782d`
+and PlaceSphere `59bf3c1ad465bef56f65b72f16116cbf893a3546c43c9e902681d4ecbdc6ebbb`.
+
+### Reproduction and offline audit
+
+Both complete index lists were registered before either policy rollout; tasks
+were then run sequentially. The commands below use the final explicit catalogs,
+checkpoints and profile/source snapshot set described above:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_135852_corrected_xy_full_r53/pickcube_rows --registration outputs/exp/20261102_135852_corrected_xy_full_r53/pickcube_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_135852_corrected_xy_full_r53/placesphere_rows --registration outputs/exp/20261102_135852_corrected_xy_full_r53/placesphere_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_135852_corrected_xy_full_r53/pickcube_rows --registration outputs/exp/20261102_135852_corrected_xy_full_r53/pickcube_registration.json --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_135852_corrected_xy_full_r53/placesphere_rows --registration outputs/exp/20261102_135852_corrected_xy_full_r53/placesphere_registration.json --device cuda
+```
+
+The bounded offline analyzer is
+`examples/baselines/constrain/analyze_corrected_xy_full_r53.py` (SHA-256
+`76759c0e99b1b68e6f4d0e9441a3abe5e0f9d6ed599fabf5cbb39d72dce1a3b7`); it
+validates all row counts/order, registration and source/input/snapshot byte
+hashes, task/catalog geometry, native restoration IDs, trace sample/chord
+clearance including first success and timeouts, result phase counts and action
+filter-vs-bound clipping counts. Its report is
+`offline_analysis_r53.json` (SHA-256
+`48752bbcad430a42a66dab05352db4bfac35b82ab83dbcebf7d2f0b2f8d047ae`). It
+confirmed zero runtime errors and all XY gates, but native success gates failed
+for both tasks. This bounded row/provenance check passed; the prior 628-test
+R52 suite remains the valid suite result because no runtime source changed.
+R48/R49 native-reset OOD cohorts remain untouched and are not pooled here.
+
 ## Round 52 — restored task-layout sampling and lag-aware XY diagnostic (2026-11-02)
 
 R52 resolves the independently confirmed R51 task-definition blocker and adds one
