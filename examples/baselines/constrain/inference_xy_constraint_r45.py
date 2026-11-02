@@ -18,6 +18,8 @@ class XYConstraint:
     action_limit: float = 0.35
     boundary_epsilon_m: float = 1e-6
     angular_candidates: int = 1440
+    working_clearance_m: float = 0.003
+    xy_action_bounds: tuple = (-0.35, 0.35)
 
     @staticmethod
     def segment_violates(start, end, center, radius):
@@ -36,39 +38,60 @@ class XYConstraint:
         if action.size != 7 or not np.isfinite(action).all() or not np.isfinite(tcp).all() \
                 or not np.isfinite(center).all() or not np.isfinite(radius) or radius <= 0:
             raise ValueError("action and XY constraint inputs must be finite with positive radius")
+        bounds = np.asarray(self.xy_action_bounds, dtype=np.float64)
         if not np.isfinite(self.translation_scale_m) or self.translation_scale_m <= 0 \
-                or not np.isfinite(self.action_limit) or self.action_limit <= 0:
+                or not np.isfinite(self.action_limit) or self.action_limit <= 0 \
+                or bounds.shape != (2,) or not np.isfinite(bounds).all() or bounds[0] >= bounds[1] \
+                or not np.isfinite(self.working_clearance_m) or self.working_clearance_m < 0:
             raise ValueError("controller scale and action bound must be finite and positive")
-        target = tcp + np.clip(action[:2], -self.action_limit, self.action_limit) * self.translation_scale_m
-        safe_radius = radius + self.boundary_epsilon_m
-        if np.linalg.norm(tcp - center) >= safe_radius and not self.segment_violates(
-                tcp, target, center, radius):
-            action[:2] = np.clip(action[:2], -self.action_limit, self.action_limit)
-            return action
-        # Score boundary endpoints by displacement from the requested endpoint;
-        # reject any candidate whose executed chord still crosses the disk.
-        angles = np.linspace(0.0, 2 * np.pi, self.angular_candidates, endpoint=False)
-        candidates = center + safe_radius * np.stack((np.cos(angles), np.sin(angles)), axis=1)
-        safe = [point for point in candidates
-                if not self.segment_violates(tcp, point, center, radius)]
-        if not safe:
+        lower, upper = bounds
+        requested_xy = np.clip(action[:2], lower, upper)
+        target = tcp + requested_xy * self.translation_scale_m
+        radial = tcp - center
+        distance = float(np.linalg.norm(radial))
+        if distance < radius - 1e-12:
             raise ValueError("TCP starts inside the forbidden disk; XY constraint cannot recover")
-        endpoint = min(safe, key=lambda point: float(np.sum((point - target) ** 2)))
-        action[:2] = np.clip((endpoint - tcp) / self.translation_scale_m,
-                             -self.action_limit, self.action_limit)
-        executed = tcp + action[:2] * self.translation_scale_m
-        if self.segment_violates(tcp, executed, center, radius):
-            # Bounds may make the nearest boundary endpoint unreachable this step.
-            # Select the furthest safe point along its action chord by bisection.
-            delta = executed - tcp
-            lo, hi = 0.0, 1.0
-            for _ in range(48):
-                mid = (lo + hi) / 2
-                if self.segment_violates(tcp, tcp + mid * delta, center, radius):
-                    hi = mid
-                else:
-                    lo = mid
-            action[:2] *= lo
+        safe_radius = radius + self.working_clearance_m
+        if distance > safe_radius + 1e-10 and not self.segment_violates(
+                tcp, target, center, safe_radius):
+            action[:2] = requested_xy
+            return action
+        if distance <= safe_radius + 1e-10:
+            # Already in the working buffer: make an outward radial command.
+            direction = radial / distance
+        else:
+            # The shortest safe straight segments are tangents to the working disk.
+            direction = radial / distance
+            perpendicular = np.array([-direction[1], direction[0]])
+            cosine = safe_radius / distance
+            sine = np.sqrt(max(0.0, 1.0 - cosine * cosine))
+            candidates = [center + (safe_radius + 1e-9) *
+                          (cosine * direction + sign * sine * perpendicular)
+                          for sign in (-1.0, 1.0)]
+            endpoint = min(candidates, key=lambda point: float(np.sum((point-target) ** 2)))
+            delta = endpoint - tcp
+            proposed = delta / self.translation_scale_m
+            scale = 1.0
+            for value in proposed:
+                if value > upper:
+                    scale = min(scale, upper / value)
+                elif value < lower:
+                    scale = min(scale, lower / value)
+            action[:2] = proposed * scale
+            executed = tcp + action[:2] * self.translation_scale_m
+            if self.segment_violates(tcp, executed, center, safe_radius):
+                raise ValueError("controller bounds cannot preserve XY working clearance")
+            return action
+        proposed = direction * min(self.working_clearance_m + max(safe_radius-distance, 0.0),
+                                  self.translation_scale_m * max(abs(lower), abs(upper)))
+        proposed /= self.translation_scale_m
+        scale = 1.0
+        for value in proposed:
+            if value > upper:
+                scale = min(scale, upper / value)
+            elif value < lower:
+                scale = min(scale, lower / value)
+        action[:2] = proposed * scale
         return action
 
 

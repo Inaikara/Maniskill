@@ -1,5 +1,174 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 52 — restored task-layout sampling and lag-aware XY diagnostic (2026-11-02)
+
+R52 resolves the independently confirmed R51 task-definition blocker and adds one
+evidence-derived working-clearance profile. Changes are confined to
+`examples/baselines/constrain`; no ManiSkill source, demos, trained weights, or
+model parameters were changed. Existing R48/R49 poor and negative cohorts remain
+in place as out-of-distribution evidence; they were not deleted, cherry-picked,
+or relabeled as R52. The immutable physical training sets remain 1,000 direct +
+500 obstacle episodes per task. PickCube training manifest/HDF5 SHA-256 remain
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486` /
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`; PlaceSphere
+remain `aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9` /
+`796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961`.
+
+### Fixed task-layout sampler and restored admission
+
+`initial_clear_xy_scenes.py` now draws the task object and goal explicitly from
+the original task layouts, rather than accepting arbitrary native-reset goals.
+The PickCube contract is start X `[-0.18,-0.02]`, Y `[-0.06,0.12]`, goal X
+`[0.02,0.18]`, Y `[-0.06,0.12]`, goal Z exactly `0.12 m`, table bounds
+`[-0.25,-0.25,0.25,0.35]`, at least `0.14 m` transport and `0.06 m` base-line
+clearance. PlaceSphere uses start X `[-0.19,-0.08]`, Y `[-0.13,0.13]`, container
+X `[0.04,0.15]`, Y `[-0.13,0.13]`, at least `0.14 m` transport and `0.06 m`
+base-line clearance; the full container footprint must remain within table bounds.
+The manifest records `layout_contract_version=transport_detour_training_bounds_v1`
+and direct goal XYZ. The obstacle remains radius `0.03 m`, on the direct start-goal
+segment at a seeded fraction in `[0.4,0.6]`, with the fixed render heights `0.14 m`
+(PickCube) and `0.08 m` (PlaceSphere).
+
+The deterministic task streams use seeds 521100/522100, 1,000-attempt maximum,
+600-second sampler wall limit and 300-second reset alarm. They accept 30/30 in
+200 PickCube attempts (31 base-line, 24 too-short, 46 initial-inside and 69
+duplicate rejections) and 255 PlaceSphere attempts (30 base-line, 1 too-short,
+61 initial-inside and 133 duplicate rejections). Dedup checks include the frozen
+training manifests, old development catalogs, old R46 registration/rows, the
+entire frozen R48 task cohort, and already accepted rows; they reject same seed or
+start **and** goal componentwise within 2 cm. All input/source identities and
+per-attempt decisions are retained in each task directory. Sampling produced no
+policy calls or demo files.
+
+The sampling-time snapshot of `render_only_xy_eval.py` is SHA-256
+`bc0eee0c292ac9efaf9ba64f168e319ba221de945f6a523e8a489359439d888f`; before
+final policy registration it received only the registration metadata correction
+from a single shared `xy_action_limit` field to task-specific `xy_action_bounds`.
+The final runtime source and snapshot are both
+`a984fcfa56bb42c97546dfa1b778bf991a4c33fb220c2bfed2c12e08e808e1df`. The sampling
+behavior itself was unchanged by that metadata correction; this source transition
+is preserved rather than rewriting the generation-time registration.
+
+The selected new catalogs are
+`outputs/exp/20261102_133924_initial_clear_contract_r52/{pickcube,placesphere}/`.
+Their manifests/HDF5 hashes are PickCube
+`33520b09c500bb851c0a2f24a692fbdd4dff82f265c0e74513b3be54ad6d83ab` /
+`a99e8d0183a62dadeb43491f0090b9e5d47bf48c9a6f2c6e8d8ec7b07767ae2f`, and
+PlaceSphere `8e24d2c53376496d64ab3e80e3dc7361b583b6cfad2380e11d44a0dcf008aa6e` /
+`c586bb02ae03bb35e937869180e1beb02153051b4bc076420454e9e3a83236b1`. Final
+native restore preflights (`preflight_r52.json`) passed **30/30 per task**, with
+exact saved state/controller hashes, restored and visible center agreement, zero
+obstacle collision shapes, original layout assertions, and true measured initial
+TCP clearance against cylinder radius + 5 mm. Minimum restored signed gaps are
+PickCube `+0.0040043598 m` and PlaceSphere `+0.0085417679 m`; all 60 states are
+strictly outside before any policy call. Preflight report hashes are
+`1438528ec3b835ab701f651a280a58249d11b9234bcc030b61a3b8dcdf44636a` and
+`917e54e4a8fdfe9a5b263e6052969b02b07b2770d8c5e18058e4146716e69afe`.
+
+### Single lag-buffer profile and frozen native smoke
+
+The existing scoring and acceptance disk is unchanged:
+`tcp_xy_cylinder_radius_plus_5mm_v1`, actual cylinder radius + `0.005 m`, TCP XY
+samples **and every chord**, including the initial and first-success points. The
+separate working profile is `tcp_xy_working_clearance_3mm_v2`, a fixed `0.003 m`
+positive target-path clearance. Its evidence basis is R50's maximum measured
+2.614 mm endpoint/chord response error plus a declared 0.386 mm allowance. It is
+not claimed to prove native plant safety. The filter intervenes before a requested
+path enters this working disk; tangent segments preserve the buffer, and an
+already-in-buffer but acceptance-clear TCP is moved radially outward rather than
+rejected. A start inside the unchanged acceptance disk still fails closed. XY
+controller bounds are per task: PickCube `[-1,1]` native normalized units and
+PlaceSphere `[-0.35,0.35]`; no unrelated PickCube ±0.35 clipping is applied. Z,
+rotation, gripper and native controller frame pass through. Body collision is not
+a gate; cylinders are render-only with zero collision shapes.
+
+Before final smoke, the complete two-index-per-task list (indices 0 and 1) was
+registered against the final sampler outputs, source snapshots, selected frozen
+models, training registrations/data, and native controller. PickCube remains R44
+EMA SHA-256 `fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769`
+with R41 normalizer `d14d56e3645504b81db4a41f32cf6869b805dbf003194b26433cfceb6023f543`;
+PlaceSphere remains R30 EMA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f` and matched
+Base `491970382f3ed8dac7ed88ad1ab3f5cd23fb2d29065291a507ff766c75a6f071`. The
+final registrations are `pickcube_smoke_final_registration.json` and
+`placesphere_smoke_final_registration.json`; identities are
+`ab077491d94c37fde03680a3235a12c61ef02fec294a71132a45a23fa06bac96` and
+`d02f4f0f8ed0c38f39151a4ace4499d5b8f2d24cd92e996e1dd346d8a88e739d`. They freeze
+the exact final `0.003 m` profile, native per-task bounds and the actual source
+snapshots. Training-data identities are pinned directly in these registrations.
+
+The final frozen native smoke results (diagnostic only, **not** a 27/30 headline)
+are PickCube **2/2 native successes**, PlaceSphere **2/2**, and zero measured TCP
+sample/chord violations in all four rows. PickCube steps were 104 and 94; minimum
+actual acceptance-disk sample/chord gaps were `+8.182 mm` / `+7.687 mm` and
+`+2.962 mm` / `+2.962 mm`; XY interventions were 0 and 41. PlaceSphere steps were
+166 and 167; minimum gaps were `+29.977 mm` / `+29.976 mm` and `+1.903 mm` /
+`+1.903 mm`; interventions were 0 and 30. All smoke initial gaps were positive
+(PickCube 38.584/44.039 mm; PlaceSphere 37.846/31.551 mm). The rows retain full
+requested/filtered actions, actual TCP samples/chords and native results. Final
+row hashes are PickCube
+`514649ed7cfc03c9cbb9bf673f21402b209f4238de8d251ce3ceebbf37b0faed` and PlaceSphere
+`fb2da250c48086c1685fce62841241a09c2813f5d8c6f99f5d8e09cb9d031dd6`.
+
+An earlier smoke attempt using an intermediate target-only buffer implementation
+is also retained as `*_smoke_rows/`; it is superseded by the final registered
+profile and is not pooled with these rows. Its PlaceSphere index 1 timed out at
+200 controls. The final tangent-path implementation was tested, registered under
+new final registration files, and reran the same preregistered frozen indices; all
+four final outcomes above are from the final source hashes. The original R48/R49
+cohorts and outcomes remain separately retained and are not retroactively
+replaced. No full 30-scene R52 trial was run. Proceed to full evaluation only
+after an independent source/spec review of this diagnostic slice.
+
+Focused tests after the final filter change passed **23 tests** across scene
+sampling, filter, and evaluator seams. The required full suite passed **628 tests,
+30 warnings in 94.36 s** in the `maniskill` environment:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line
+```
+
+Current R52 source SHA-256 values:
+sampler `53bd6c3f0c6af733bb973401ec7c3aa6ef2696d5b2407cb7fa76f93ca9dea4bd`, layout
+geometry `3c5422ba3d29393241aa5494f8a24f7f45b6b03d7e99489ef5c61664e0c9f577`,
+preflight `89bd4c6cf76dc05fb2566766d2c8ca750950ead6955ccb40712803e1b28517cb`, filter
+`cb227bf472fae871db1befecdbd34cc0ae99ad8fad461a879a522b68115c4840`, evaluator
+`a984fcfa56bb42c97546dfa1b778bf991a4c33fb220c2bfed2c12e08e808e1df`, sampler tests
+`b23e8dd9081070df66cab9b833d6d042b8c6399a83f1216a36347bc88a71155c`, and filter
+tests `95cebb228cd0287e907dc3a42da6706124cfd9105974aeb412e287a8d8c615ee`.
+
+Exact bounded commands (each run sourced `maniskill`; sampler ≤600 s/task,
+preflight ≤300 s/task, native smoke ≤300 s/episode and ≤600 s/task):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 600s python -m examples.baselines.constrain.initial_clear_xy_scenes --task pickcube --output-dir outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --seed 521100 --target 30 --max-attempts 1000 --max-wall-seconds 600
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 600s python -m examples.baselines.constrain.initial_clear_xy_scenes --task placesphere --output-dir outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --seed 522100 --target 30 --max-attempts 1000 --max-wall-seconds 600
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.initial_clear_xy_preflight_r48 --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --output outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube/preflight_r52.json
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.initial_clear_xy_preflight_r48 --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --output outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere/preflight_r52.json
+timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 --output outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_smoke_final_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_smoke_final_registration.json --device cuda --register
+timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 --output outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_smoke_final_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_smoke_final_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 600s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 --output outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_smoke_final_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_smoke_final_registration.json --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 600s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 --output outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_smoke_final_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_smoke_final_registration.json --device cuda
+```
+
+The early R52 preflight files are retained alongside `preflight_r52.json`; the
+final R52-named preflights include the restored layout-version/goal-height checks.
+No branch change, commit, or push was made.
+
+After independent review, the next full-cohort trial must preregister the complete
+index list and run each task against the same frozen R52 catalog with new exclusive
+row/registration paths. The exact command shape is:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_full30_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_full30_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_full30_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/pickcube_full30_registration.json --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_full30_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_full30_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 --output outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_full30_rows --registration outputs/exp/20261102_133924_initial_clear_contract_r52/placesphere_full30_registration.json --device cuda
+```
+
 ## Round 51 — actor protocol and frozen-task distribution diagnosis (2026-11-02)
 
 R51 ran a zero-environment-step actor differential and read-only PickCube feature

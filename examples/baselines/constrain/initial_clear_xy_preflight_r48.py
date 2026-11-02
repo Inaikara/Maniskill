@@ -47,6 +47,27 @@ def audit(task, scenes_dir):
                 controller_hash = _tree_hash(controller)
                 admission = scene["metadata"]["initial_tcp_admission"]
                 gap = float(np.linalg.norm(tcp-center)-radius-.005)
+                metadata = scene["metadata"]
+                start = np.asarray(metadata["start_xy"], dtype=float)
+                goal = np.asarray(metadata.get("goal_xy", metadata.get("container_xy")), dtype=float)
+                fraction = float(metadata["sampling_fraction"])
+                direct_goal = metadata["direct_goal_xyz"]
+                if task == "pickcube":
+                    layout_valid = (-.18 <= start[0] <= -.02 and -.06 <= start[1] <= .12
+                        and .02 <= goal[0] <= .18 and -.06 <= goal[1] <= .12
+                        and np.asarray(direct_goal)[2] == .12 and radius == .03
+                        and metadata["cylinder"]["height"] == .14)
+                else:
+                    extent = max(float(v) for v in base.block_half_size[1:])
+                    layout_valid = (-.19 <= start[0] <= -.08 and -.13 <= start[1] <= .13
+                        and .04 <= goal[0] <= .15 and -.13 <= goal[1] <= .13
+                        and -.25 + extent <= goal[0] <= .25 - extent
+                        and -.25 + extent <= goal[1] <= .25 - extent
+                        and radius == .03 and metadata["cylinder"]["height"] == .08)
+                vector = goal - start
+                projected = float(np.dot(center-start, vector) / np.dot(vector, vector))
+                layout_valid = bool(layout_valid and .4 <= fraction <= .6
+                    and np.linalg.norm(goal-start) >= .14 and .4 <= projected <= .6)
                 row = {"scene_index": index, "scene_id": scene["metadata"]["scene_id"],
                     "seed": scene["metadata"]["seed"], "tcp_xy": tcp.tolist(),
                     "center_xy": center.tolist(), "visible_center_xy": visible_center.tolist(),
@@ -61,11 +82,14 @@ def audit(task, scenes_dir):
                     "controller_match": controller_hash == scene["metadata"]["controller_sha256"],
                     "initial_admission_hash_match": bool(np.allclose(tcp, admission["tcp_xy"], atol=1e-7, rtol=0)),
                     "collision_shapes": sum(len(body.collision_shapes) for body in base.obstacle._bodies),
+                    "layout_contract_version": metadata.get("layout_contract_version"),
+                    "layout_bounds_and_goal_height_match": layout_valid,
                     "restore_norms": restored.get("norms", {}) if isinstance(restored, dict) else {},
                     "zero_step": True}
                 valid = (row["state_match"] and row["controller_match"] and row["center_matches_metadata"]
                          and row["visible_center_matches"] and row["initial_admission_hash_match"]
-                         and row["collision_shapes"] == 0 and gap > 0)
+                         and row["collision_shapes"] == 0 and gap > 0 and layout_valid
+                         and row["layout_contract_version"] == "transport_detour_training_bounds_v1")
                 row["passed"] = bool(valid)
                 rows.append(row)
                 if not valid:
@@ -85,13 +109,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.output.exists():
         raise FileExistsError(args.output)
-    prereg = args.output.parent / f"{args.task}_preflight_registration_attempt03.json"
+    prereg = args.output.parent / f"{args.task}_preflight_registration_r52.json"
     if prereg.exists():
         raise FileExistsError(prereg)
     source_paths = [Path(__file__), Path(__file__).with_name("initial_clear_xy_scenes.py"),
                     Path(__file__).with_name("render_only_xy_eval.py"),
                     Path("mani_skill/agents/robots/panda/panda.py")]
-    snapshot_dir = args.output.parent / f"{args.task}_preflight_sources_attempt03"
+    snapshot_dir = args.output.parent / f"{args.task}_preflight_sources_r52"
     if snapshot_dir.exists():
         raise FileExistsError(snapshot_dir)
     snapshot_dir.mkdir(parents=True)
@@ -101,7 +125,7 @@ def main(argv=None):
         shutil.copyfile(path, snapshot)
         source_records[str(path)] = {"sha256": _sha(path), "snapshot": str(snapshot),
                                      "snapshot_sha256": _sha(snapshot)}
-    registration = {"format": "initial_clear_xy_restore_preflight_r48_v1", "task": args.task,
+    registration = {"format": "initial_clear_xy_restore_preflight_r52_v1", "task": args.task,
         "catalog": str(args.scenes), "sources": source_records,
         "inputs": {str(path): _sha(path) for path in (args.scenes/"manifest.json", args.scenes/"scenes.h5")},
         "command": f"python -m examples.baselines.constrain.initial_clear_xy_preflight_r48 --task {args.task} --scenes {args.scenes} --output {args.output}",

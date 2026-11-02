@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 PROFILE_NAME = "tcp_xy_cylinder_radius_plus_5mm_v1"
+LAYOUT_CONTRACT_VERSION = "transport_detour_training_bounds_v1"
 
 
 def _point(value, name):
@@ -32,8 +33,10 @@ def _coordinate_records(document, task):
     containers = document.get("episodes", document.get("scenes", []))
     for item in containers:
         metadata = item.get("metadata", item)
-        start = metadata.get("start_xy")
-        goal = metadata.get("goal_xy", metadata.get("container_xy"))
+        layout = metadata.get("layout", {})
+        start = metadata.get("start_xy", layout.get("start_xy"))
+        goal = metadata.get("goal_xy", metadata.get("container_xy",
+                              layout.get("goal_xy", layout.get("container_xy"))))
         if start is None or goal is None:
             continue
         records.append((metadata.get("seed", item.get("seed")), start, goal))
@@ -78,6 +81,35 @@ def initial_tcp_admission(tcp_xy, center_xy, cylinder_radius_m, margin_m, chord_
     return result
 
 
+def sample_layout(task, base_xy, rng, *, container_half_extent=None, native_goal_z=None):
+    """Draw a layout from the frozen training bounds, independent of native reset poses."""
+    from examples.baselines.constrain.layout_geometry import LayoutGeometryConfig, validate_layout
+
+    if task == "pickcube":
+        start = np.array([rng.uniform(-.18, -.02), rng.uniform(-.06, .12)])
+        goal = np.array([rng.uniform(.02, .18), rng.uniform(-.06, .12)])
+        goal_z = .12
+        bounds = (-.25, -.25, .25, .35)
+    elif task == "placesphere":
+        start = np.array([rng.uniform(-.19, -.08), rng.uniform(-.13, .13)])
+        goal = np.array([rng.uniform(.04, .15), rng.uniform(-.13, .13)])
+        if native_goal_z is None or not np.isfinite(native_goal_z):
+            raise ValueError("missing_native_container_height")
+        goal_z = float(native_goal_z)
+        bounds = (-.25, -.25, .25, .25)
+        extent = float(container_half_extent)
+        if not (-.25 + extent <= goal[0] <= .25 - extent
+                and -.25 + extent <= goal[1] <= .25 - extent):
+            raise ValueError("container_table_bounds")
+    else:
+        raise ValueError("task must be pickcube or placesphere")
+    layout = validate_layout(start, goal, base_xy, LayoutGeometryConfig(
+        table_bounds=bounds, min_transport_distance=.14, min_base_line_distance=.06))
+    if not layout.valid:
+        raise ValueError(f"layout_{layout.reason}")
+    return start, goal, goal_z, layout
+
+
 def _hash_tree(tree):
     from examples.baselines.constrain.pickcube_scenes import _tree_hash
     return _tree_hash(tree)
@@ -107,13 +139,14 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
         from examples.baselines.constrain import placesphere_obstacle
         from examples.baselines.constrain.placesphere_pilot import _obs_vector, _policy_observation
         env_factory = lambda: make_env(config=PlaceSpherePilotConfig(
-            max_steps=320, obstacle_radius=.03, obstacle_height=.12))
+            max_steps=320, obstacle_radius=.03, obstacle_height=.08))
         key, object_actor, goal_actor, obs_kind = "placesphere", "obj", "bin", "place"
     else:
         raise ValueError("task must be pickcube or placesphere")
 
     root = Path.cwd()
     source_rel = ["examples/baselines/constrain/initial_clear_xy_scenes.py",
+                  "examples/baselines/constrain/layout_geometry.py",
                   "examples/baselines/constrain/render_only_xy_eval.py",
                   f"examples/baselines/constrain/{task}_obstacle.py",
                   f"examples/baselines/constrain/{task}_transport_detour.py",
@@ -150,6 +183,9 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
             "old_eval_h5": Path("outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes/scenes.h5")}
     inputs = {key: {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
               for key, path in input_candidates.items() if path.is_file()}
+    missing_inputs = sorted(set(input_candidates) - set(inputs))
+    if missing_inputs:
+        raise FileNotFoundError(f"required frozen sampling inputs missing: {missing_inputs}")
     dedup_records = []
     for key in ("training_manifest", "old_eval_manifest"):
         path = Path(inputs[key]["path"])
@@ -169,9 +205,29 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
                     dedup_records.extend(_coordinate_records(json.loads(candidate.read_text()), task))
         except (OSError, ValueError, TypeError):
             pass
+    for prior_root in (Path("outputs/exp/20261102_160000_initial_clear_xy_r48_frozen") / task,):
+        manifest_path = prior_root / "manifest.json"
+        if manifest_path.is_file():
+            inputs["current_r48_manifest"] = {"path": str(manifest_path),
+                "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest()}
+            dedup_records.extend(_coordinate_records(json.loads(manifest_path.read_text()), task))
     registration = {"format": "initial_clear_xy_sampling_registration_v1", "task": task,
         "seed": int(seed), "target": int(target), "max_attempts": int(max_attempts),
         "max_wall_seconds": float(max_wall_seconds), "per_reset_alarm_seconds": 300,
+        "layout_contract_version": LAYOUT_CONTRACT_VERSION,
+        "layout_bounds": ({"start_x": [-.18, -.02], "start_y": [-.06, .12],
+                           "goal_x": [.02, .18], "goal_y": [-.06, .12], "goal_z_m": .12,
+                           "table_bounds_xy_m": [-.25, -.25, .25, .35],
+                           "minimum_transport_distance_m": .14,
+                           "minimum_base_line_distance_m": .06} if task == "pickcube" else
+                          {"start_x": [-.19, -.08], "start_y": [-.13, .13],
+                           "goal_x": [.04, .15], "goal_y": [-.13, .13],
+                           "table_bounds_xy_m": [-.25, -.25, .25, .25],
+                           "minimum_transport_distance_m": .14,
+                           "minimum_base_line_distance_m": .06}),
+        "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
+                                "admission": "measured restored TCP strictly outside radius+5mm",
+                                "body_collision_gate": False},
         "policy_rollouts": 0, "demonstration_outputs": 0, "checkpoint_identity_for_future_trial":
             inputs.get("checkpoint"), "sources": source_hashes, "inputs": inputs}
     registration["registration_sha256"] = hashlib.sha256(
@@ -196,8 +252,14 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
                 base = env.unwrapped
                 obj = getattr(base, object_actor)
                 goal = getattr(base, goal_actor)
-                start_xy = np.asarray(obj.pose.p).reshape(-1, 3)[0, :2].astype(float)
-                goal_xy = np.asarray(goal.pose.p).reshape(-1, 3)[0, :2].astype(float)
+                layout_rng = np.random.default_rng(attempt_seed ^ 0x52A)
+                base_xy = np.asarray(base.agent.robot.pose.p).reshape(-1, 3)[0, :2].astype(float)
+                native_goal_z = float(np.asarray(goal.pose.p).reshape(-1, 3)[0, 2])
+                extent = (max(float(v) for v in base.block_half_size[1:])
+                          if task == "placesphere" else None)
+                start_xy, goal_xy, goal_z, layout_ok = sample_layout(
+                    task, base_xy, layout_rng, container_half_extent=extent,
+                    native_goal_z=native_goal_z)
                 vector = goal_xy - start_xy
                 length = float(np.linalg.norm(vector))
                 if not np.isfinite(length) or length < .12:
@@ -208,7 +270,7 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
                 options = {"obstacle_enabled": True, "obstacle_center": center.tolist()}
                 options["cube_xy" if task == "pickcube" else "sphere_xy"] = start_xy.tolist()
                 options["goal_pos" if task == "pickcube" else "container_xy"] = (
-                    [*goal_xy, float(goal.pose.p.reshape(-1, 3)[0, 2])] if task == "pickcube" else goal_xy.tolist())
+                    [*goal_xy, goal_z] if task == "pickcube" else goal_xy.tolist())
                 obs, info = env.reset(seed=attempt_seed, options=options)
                 signal.alarm(0)
                 signal.signal(signal.SIGALRM, previous_alarm)
@@ -240,7 +302,8 @@ def sample_task(task, output_dir, *, seed, target=30, max_attempts=1000, max_wal
                     ("goal_xy" if task == "pickcube" else "container_xy"): goal_xy.tolist(),
                     "cylinder": {"center_xy": center.tolist(), "radius": radius, "height": height,
                                  "height_source": "frozen_render_only_profile_height"},
-                    "sampling_profile": "initial_clear_xy_v1", "sampling_fraction": fraction,
+                    "sampling_profile": "initial_clear_xy_v1", "layout_contract_version": LAYOUT_CONTRACT_VERSION,
+                    "direct_goal_xyz": [*goal_xy.tolist(), goal_z], "sampling_fraction": fraction,
                     "initial_tcp_admission": admission,
                     "state_sha256": _hash_tree(state), "controller_sha256": _hash_tree(controller),
                     "expert": {}}

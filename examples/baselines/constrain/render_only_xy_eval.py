@@ -18,6 +18,8 @@ _ACTIVE_SCENE_GEOMETRY = None
 EPISODE_WALL_SECONDS = 300
 TRIAL_WALL_SECONDS = 3600
 TCP_XY_MARGIN_M = 0.005
+XY_WORKING_CLEARANCE_M = 0.003
+XY_WORKING_PROFILE = "tcp_xy_working_clearance_3mm_v2"
 
 
 class EpisodeTimeout(TimeoutError):
@@ -116,7 +118,9 @@ def instrument_env(env, task, *, control_enabled=True):
     trace = []
     attempts = []
     original_step = env.step
-    constraint = XYConstraint(translation_scale_m=0.1, action_limit=0.35)
+    constraint = XYConstraint(translation_scale_m=0.1, action_limit=0.35,
+                              working_clearance_m=XY_WORKING_CLEARANCE_M,
+                              xy_action_bounds=(-1.0, 1.0) if task == "pickcube" else (-0.35, 0.35))
 
     def step(action):
         requested = _array(action).reshape(1, -1)[0].astype(float)
@@ -215,8 +219,11 @@ def freeze_registration(path, task, indices, sources, inputs=None):
             "method": "ConstrainNet+XY constraint", "indices": [int(i) for i in indices],
             "git_head_context": git_head, "worktree_dirty_paths": dirty_paths,
             "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
+                "working_clearance_profile": XY_WORKING_PROFILE,
+                "working_clearance_m": XY_WORKING_CLEARANCE_M,
                 "controller": "pd_ee_delta_pose", "frame": "world XY",
-                "translation_scale_m_per_action_unit": 0.1, "xy_action_limit": 0.35,
+                "translation_scale_m_per_action_unit": 0.1,
+                "xy_action_bounds": [-1.0, 1.0] if task == "pickcube" else [-0.35, 0.35],
                 "non_xy_channels": "pass through",
                 "forbidden_radius": "restored visible cylinder radius + 0.005 m",
                 "excluded_profiles": ["tcp_xy_object_footprint_r45", "physical_object_latch"],
@@ -417,7 +424,9 @@ def _evaluate_one(task, index, device, scenes_dir=None):
     row["actual_tcp_trace"] = trace
     row["xy_constraint"] = {"center_xy": center.tolist(), "forbidden_radius_m": radius,
                              "controller_translation_scale_m": 0.1,
-                             "controller_pose_action_limit": 0.35,
+            "controller_pose_action_limit": (1.0 if task == "pickcube" else 0.35),
+            "working_clearance_profile": XY_WORKING_PROFILE,
+            "working_clearance_m": XY_WORKING_CLEARANCE_M,
                              "visual_only_obstacle": True, "collision_shapes": 0}
     row["xy_validation"] = report
     row["xy_zero"] = bool(report["zero_xy_violations"])
