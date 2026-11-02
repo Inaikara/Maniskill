@@ -1,5 +1,132 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 46 — selected-policy render-only XY-constrained development trial (2026-11-02)
+
+**Review correction — XY evidence invalid:** instrumentation captured the
+obstacle center before scene restoration. PickCube scene 0 was filtered and
+scored against `[0, 0.20000000]`, whereas its catalog and restored cylinder
+center are `[0.03462751, 0.03612041]` (approximately 0.167 m apart).
+Consequently, the XY counts and XY-qualified results below describe the wrong
+circle, not avoidance of the restored obstacle, and cannot satisfy acceptance
+for either task. Native task outcomes remain recorded; the old rows and
+registrations are preserved. The scene-11 filter rejection likewise used the
+cached default center and does not establish an initial violation of the
+restored cylinder. The next slice must use live post-restoration geometry and
+the explicitly TCP-only disk (visible cylinder radius + 5 mm margin), then
+register exact source snapshots and run new trials. No obstacle or saved
+initial state is to be moved to obtain a pass.
+
+This is an engineering trial labeled **ConstrainNet+XY constraint**, not a formal
+performance or generalization claim. Frozen physical data remain unchanged at
+1,000 direct + 500 obstacle demonstrations per task; no checkpoint was trained,
+no scene sampled, and no demonstration/replay generated. Both existing 30-scene
+catalogs were restored in `obstacle_mode="render_only"`; each runtime audit
+found a visible cylinder and zero cylinder collision shapes. Native task success
+remains the task-specific gate; body collision is not an acceptance gate. The
+historical `obstacle_crossing` latch is retained separately from the fresh XY
+trace score.
+
+### Implementation and frozen inputs
+
+`render_only_xy_eval.py` wraps the selected actor's native `env.step` seam. For
+each actually executed control action it reads the current native TCP world XY,
+filters only XY, steps the environment once, and records the measured next TCP,
+requested and filtered seven-channel actions, and native `info`. Z, rotation,
+and gripper pass through. The unchanged forbidden radii are
+`cylinder + sqrt(2)*cube_half_size + 0.005 m` (PickCube) and
+`cylinder + sphere_radius + 0.005 m` (PlaceSphere). Runtime registrations pin the
+source and selected checkpoint/normalizer/scene identities before episodes.
+DDPM-100 epsilon, squared-cosine schedule, clipped samples, action decoding,
+selected EMA and `[1:9]` slice/execution protocol are preserved for PickCube R44;
+PlaceSphere uses R30 DDIM-100 eta=0, single plan and its existing decoded native
+actions. The controller source specifies ±0.1 m position bounds; the filter
+uses the native normalized ±0.35 XY action range (0.1 m/action unit) and does
+not clamp or recode other channels.
+
+Selected checkpoints: PickCube R44 Control EMA
+`outputs/ckpt/20261029_160000_pickcube_horizon_clearance_r44_control/final.pt`
+(SHA-256 `fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769`);
+PlaceSphere R30 Constrain final EMA
+`outputs/ckpt/20261027_224727_placesphere_action_codec_r30_constrain_verified_150k/final.pt`
+(SHA-256 `6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`),
+with matched Base identity `491970382f3ed8dac7ed88ad1ab3f5cd23fb2d29065291a507ff766c75a6f071`.
+The existing scene catalogs are PickCube
+`outputs/exp/20261023_235744_pickcube_learning_pilot_r2/dev_scenes/`
+(manifest `ffb2b54b6bf4f389d8bd81b0d5f282d833a297c6375ae2189c44b8359a9ee676`,
+HDF5 `3f2312dba450110a4deb839ea856aa95e41bbf77f1ea53de386b5a759f3dc1c8`) and
+PlaceSphere `outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes/`
+(manifest `9e1d8ee4786d2336f01e07d664ca37c3dcc7ca455e7876176def65c18b63c119`,
+HDF5 `adc7d1b2a16745c459db53d2c8f818ac87d1ffffe21fd44c54509f77cef342d7`).
+The immutable data identities remain PickCube HDF5/manifest
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f` /
+`6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486`, and
+PlaceSphere HDF5/manifest `796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961` /
+`aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9`.
+
+Fresh full-cohort registrations (30 indices, 0–29) are
+`outputs/exp/20261102_111155_render_only_xy_r46/pickcube_full_registration.json`
+(identity `48f6777f653c77eed9ad64b14a848c848d39e24b7fc2943aa27fd1f07a5976b3`) and
+`placesphere_full_registration.json` (identity
+`3ea969e26ae8c3cce82b950b1ecb9e66c4287a50e22678efedd508208dfba10f`). They
+label the method separately and set `formal_or_generalization_claim: false`.
+Successful smoke rows are retained at `pickcube_smoke02/` and
+`placesphere_smoke03/`; both native-successfully completed with zero measured
+TCP-XY violations (120 and 128 controls respectively). Earlier pre-episode
+setup failures and their immutable error rows remain under the separate
+`*_smoke/` and `*_smoke02/` attempt directories; they were not overwritten.
+
+### Constrained 30-scene outcomes
+
+| Task | Evaluated / denominator | Native success | XY-qualified native success | zero measured TCP-XY | Body contact (reported only) | Runtime error |
+|---|---:|---:|---:|---:|---:|
+| PickCube | 29 / 30 | 29 / 30 | 29 / 30 | 29 / 30 | 0 / 30 | 1 / 30 |
+| PlaceSphere | 30 / 30 | 27 / 30 | 27 / 30 | 30 / 30 | 0 / 30 | 0 / 30 |
+
+PickCube failed before its first action on saved scene index 11 because the
+restored initial TCP was already inside the exact forbidden disk; the filter
+correctly refused to claim recovery. A no-step inspection of that retained
+scene found TCP `[0.01031554, 0.00547008]`, center `[0.04309617, 0.02342713]`,
+radius `0.06328427 m`, initial signed gap `-0.02590747 m`; state SHA-256
+`7d942ee613be8e5f1d900572c14b9abd635b73ec89db39b7a5363e3b91b0509a`. This stays
+in the 30-scene denominator and is not rerun. PickCube's live historical crossing
+latch was true on 7 evaluated scenes even though all 29 executed TCP traces
+passed the independent sample-and-chord test; these are separate measurements.
+PlaceSphere's latch was false on all 30. Thus the native-success threshold is
+met for both (29/30 and 27/30), but the across-all-30 zero-XY criterion is **not
+met for PickCube** because of its initial violating state. No safety or
+generalization claim follows.
+
+Full retained rows: `pickcube_constrained30/rows.json` SHA-256
+`d3069c7b0df41e2f655ff3e409a355d8aefc8304d285c616496655b0e7d1b180`;
+`placesphere_constrained30/rows.json` SHA-256
+`6bf0546c2f8768d6dc1ef6202deed76b96e1d6ac8a7633808993c2c5e8156645`.
+Rows retain restored state/observation hashes, every executed native request and
+filtered action, per-control TCP before/after, native info, and actual trace
+validation through first success. Runtime errors count against the full 30.
+
+TDD: new tests first failed collection because the integration module did not
+exist; behavior tests then caught fixture-contract assumptions before reaching
+4/4 passing. They cover measured per-step TCP, unchanged non-XY channels, radius
+preservation, filtering when Control is disabled, immutable source guards, and
+failure denominators. The required full command
+`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line`
+passed **615 tests, 30 warnings, 97.82 s** in `maniskill`.
+
+Execution used finite per-episode `timeout --signal=TERM --kill-after=20s 300s`
+smoke bounds and finite full-trial `... 3600s` bounds. A source-metadata-only
+edit to the runner followed the completed trials to add explicit constraint and
+physical-data identities to subsequent registration creation; the full trial
+registrations record runner hash `eb134252f77f6dae79325a666f92de3ad2c1917b9546aa63d344922d94ec7e5c`,
+while the current runner is `76b39032bd4e5aa9c268d9ead0e22cf42868d7ca2f7f09b809d47915c8099e62`.
+The edit did not change the rollout path, but the original source bytes were not
+snapshotted, so this post-trial source-file mismatch is retained as a provenance
+limitation. Also, the frozen pre-episode registrations directly pin checkpoint,
+normalizer and scene files, but do not directly list the demonstration HDF5,
+manifest, or training-registration hashes; these identities are recorded above
+from their frozen artifacts/checkpoint lineage, not from those trial JSONs.
+Historical physical-mode results remain untouched; a same-mode unfiltered
+30-scene comparator was not run.
+
 ## Round 45 — render-only geometry and XY constraint prototype (2026-11-02)
 
 This partial engineering slice changes only the experimental PickCube and
