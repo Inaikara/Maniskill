@@ -3,6 +3,10 @@
 import argparse
 import hashlib
 import json
+import signal
+import shutil
+import subprocess
+import time
 from pathlib import Path
 
 import numpy as np
@@ -10,17 +14,44 @@ import numpy as np
 from examples.baselines.constrain.inference_xy_constraint_r45 import XYConstraint, validate_tcp_trace
 
 _ACTIVE_TRACES = []
+EPISODE_WALL_SECONDS = 300
+TRIAL_WALL_SECONDS = 3600
+TCP_XY_MARGIN_M = 0.005
+
+
+class EpisodeTimeout(TimeoutError):
+    pass
+
+
+def _episode_timeout(_signum, _frame):
+    raise EpisodeTimeout(f"episode exceeded {EPISODE_WALL_SECONDS}s wall limit")
 
 def _array(value):
     return value.detach().cpu().numpy() if hasattr(value, "detach") else np.asarray(value)
 
 
 def _radius(base, task):
-    cylinder = float(base.obstacle_collision_radius)
-    margin = float(getattr(base, "safety_margin", 0.005))
-    if task == "pickcube":
-        return cylinder + float(base._cube_xy_radius) + margin
-    return cylinder + float(base.radius) + margin
+    return float(base.obstacle_collision_radius) + TCP_XY_MARGIN_M
+
+
+def score_native_xy_trace(trace, initial_tcp_xy, expected_center_xy, expected_radius):
+    """Independently score the native TCP samples/chords against frozen scene geometry."""
+    from examples.baselines.constrain.inference_xy_constraint_r45 import validate_tcp_trace
+
+    center = np.asarray(expected_center_xy, dtype=np.float64).reshape(2)
+    radius = float(expected_radius)
+    if not trace:
+        raise ValueError("native trace has no geometry or control samples")
+    points = [np.asarray(initial_tcp_xy, dtype=np.float64).reshape(2)]
+    for step in trace:
+        live_center = np.asarray(step["obstacle_center_xy"], dtype=np.float64).reshape(2)
+        live_radius = float(step["forbidden_radius_m"])
+        if not np.allclose(live_center, center, atol=1e-6, rtol=0) or abs(live_radius-radius) > 1e-7:
+            raise ValueError("live obstacle geometry differs from frozen scene geometry")
+        points.append(np.asarray(step["tcp_xy_after"], dtype=np.float64).reshape(2))
+    return validate_tcp_trace(points, center, radius,
+                              first_success_step=next((i for i, step in enumerate(trace, 1)
+                                                      if step.get("native_success", False)), None))
 
 
 def instrument_env(env, task, *, control_enabled=True):
@@ -40,13 +71,20 @@ def instrument_env(env, task, *, control_enabled=True):
         actor = base.agent.robot.links_map["panda_hand_tcp"]
     trace = []
     original_step = env.step
-    center = _array(base._obstacle_center).reshape(-1, 2)[0].astype(float)
-    radius = _radius(base, task)
     constraint = XYConstraint(translation_scale_m=0.1, action_limit=0.35)
 
     def step(action):
         requested = _array(action).reshape(1, -1)[0].astype(float)
         tcp = _array(actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
+        center = _array(base._obstacle_center).reshape(-1, 2)[0].astype(float)
+        radius = _radius(base, task)
+        env._render_only_xy_center = center.tolist()
+        env._render_only_xy_radius = float(radius)
+        visual_actor = obstacle._objs[0]
+        if hasattr(visual_actor, "pose"):
+            visual_center = _array(visual_actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
+            if not np.allclose(center, visual_center, atol=1e-6, rtol=0):
+                raise ValueError("live task-state center differs from visible cylinder pose")
         filtered = constraint.filter_action(requested, tcp, center, radius)
         result = original_step(filtered.reshape(1, 7))
         info = result[-1]
@@ -54,15 +92,16 @@ def instrument_env(env, task, *, control_enabled=True):
         trace.append({"step": len(trace) + 1, "tcp_xy_before": tcp.tolist(),
                       "tcp_xy_after": tcp_after.tolist(), "requested_action": requested.tolist(),
                       "filtered_action": filtered.tolist(),
+                      "obstacle_center_xy": center.tolist(), "forbidden_radius_m": radius,
                       "native_success": bool(np.asarray(info.get("native_success", False)).reshape(-1)[0]),
                       "info": _jsonable(info)})
         return result
 
     env.step = step
     env._render_only_xy_trace = trace
-    env._render_only_xy_center = center.tolist()
-    env._render_only_xy_radius = float(radius)
-    _ACTIVE_TRACES.append((trace, center.tolist(), float(radius)))
+    env._render_only_xy_center = None
+    env._render_only_xy_radius = None
+    _ACTIVE_TRACES.append((trace, None, None))
     return trace
 
 
@@ -85,19 +124,37 @@ def freeze_registration(path, task, indices, sources, inputs=None):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
-    body = {"format": "render_only_xy_eval_r46_v1", "task": task,
+    path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_root = path.parent / (path.stem + "_sources")
+    if snapshot_root.exists():
+        raise FileExistsError(snapshot_root)
+    snapshot_root.mkdir(parents=True)
+    snapshots = {}
+    for name, src in sorted(sources.items()):
+        target = snapshot_root / f"{name}_{Path(src).name}"
+        shutil.copyfile(src, target)
+        snapshots[name] = {"path": str(target), "sha256": sha256(target)}
+    repo_root = Path(__file__).resolve().parents[3]
+    git_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root,
+                                       text=True).strip()
+    dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
+                                           text=True).splitlines()
+    body = {"format": "render_only_xy_eval_r47_v1", "task": task,
             "method": "ConstrainNet+XY constraint", "indices": [int(i) for i in indices],
-            "constraint_profile": {"controller": "pd_ee_delta_pose", "frame": "world XY",
+            "git_head_context": git_head, "worktree_dirty_paths": dirty_paths,
+            "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
+                "controller": "pd_ee_delta_pose", "frame": "world XY",
                 "translation_scale_m_per_action_unit": 0.1, "xy_action_limit": 0.35,
-                "non_xy_channels": "pass through", "pickcube_radius": "cylinder + sqrt(2)*cube_half_size + safety_margin",
-                "placesphere_radius": "cylinder + sphere_radius + safety_margin",
+                "non_xy_channels": "pass through",
+                "forbidden_radius": "restored visible cylinder radius + 0.005 m",
+                "excluded_profiles": ["tcp_xy_object_footprint_r45", "physical_object_latch"],
                 "body_collision_gate": False, "obstacle_mode": "render_only"},
             "formal_or_generalization_claim": False,
+            "source_snapshots": snapshots,
             "inputs": inputs or {},
             "sources": {name: {"path": str(Path(src)), "sha256": sha256(src)}
                         for name, src in sorted(sources.items())}}
     body["registration_sha256"] = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
-    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
     return body
 
@@ -112,6 +169,12 @@ def validate_registration(path):
     for name, item in reg["sources"].items():
         if sha256(item["path"]) != item["sha256"]:
             raise ValueError(f"registered source mismatch: {name}")
+    for name, item in reg["inputs"].items():
+        if sha256(item["path"]) != item["sha256"]:
+            raise ValueError(f"registered input mismatch: {name}")
+    for name, item in reg["source_snapshots"].items():
+        if sha256(item["path"]) != item["sha256"]:
+            raise ValueError(f"source snapshot mismatch: {name}")
     return reg
 
 
@@ -220,15 +283,15 @@ def _evaluate_one(task, index, device):
         runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
         row = runner.run_episode(index, scene)
     traces = [item for item in _ACTIVE_TRACES if item[0]]
-    trace, center, radius = traces[-1] if traces else ([], [0, 0], 0.03)
-    points = ([trace[0]["tcp_xy_before"]] + [step["tcp_xy_after"] for step in trace]) if trace else []
-    report = validate_tcp_trace(points, center, radius,
-                                first_success_step=next((i for i, step in enumerate(trace, 1)
-                                                         if step["native_success"]), None)) if points else {
+    trace = traces[-1][0] if traces else []
+    center = np.asarray(scene["metadata"]["cylinder"]["center_xy"], dtype=float)
+    radius = float(scene["metadata"]["cylinder"]["radius"]) + 0.005
+    initial_tcp = trace[0]["tcp_xy_before"] if trace else []
+    report = score_native_xy_trace(trace, initial_tcp, center, radius) if trace else {
         "zero_xy_violations": False, "violating_samples": [], "violating_segments": []}
     row["native_success"] = bool(row.get("result", {}).get("native_success", False))
     row["actual_tcp_trace"] = trace
-    row["xy_constraint"] = {"center_xy": center, "forbidden_radius_m": radius,
+    row["xy_constraint"] = {"center_xy": center.tolist(), "forbidden_radius_m": radius,
                              "controller_translation_scale_m": 0.1,
                              "controller_pose_action_limit": 0.35,
                              "visual_only_obstacle": True, "collision_shapes": 0}
@@ -257,7 +320,18 @@ def main(argv=None):
         scenes = Path(DEV_SCENES)
         source_paths.update({"task": Path("examples/baselines/constrain/pickcube_obstacle.py"),
                              "actor": Path("examples/baselines/constrain/pickcube_clearance_train_r44.py"),
-                             "rollout": Path("examples/baselines/constrain/evaluate_pickcube_paired.py")})
+                             "rollout": Path("examples/baselines/constrain/evaluate_pickcube_paired.py"),
+                             "codec": Path("examples/baselines/constrain/pickcube_action_codec.py"),
+                             "normalizer_engine": Path("examples/baselines/constrain/pickcube_zscore_round37.py"),
+                             "profile_r40": Path("examples/baselines/constrain/pickcube_xy_gauge_round40.py"),
+                             "profile_r41": Path("examples/baselines/constrain/pickcube_body_hint_round41.py"),
+                             "base_actor": Path("examples/baselines/constrain/pickcube_base_dp.py"),
+                             "normalizer": Path("examples/baselines/constrain/pickcube_observation_norm.py"),
+                             "denoiser": Path("examples/baselines/constrain/constrain_denoiser.py"),
+                             "dataset_decoder": Path("examples/baselines/constrain/materialize_pickcube_fullscene500.py"),
+                             "scene_catalog": Path("examples/baselines/constrain/pickcube_scenes.py"),
+                             "scene_loader": Path("examples/baselines/constrain/pickcube_transport_detour.py"),
+                             "task_env_factory": Path("examples/baselines/constrain/pickcube_expert.py")})
         input_paths = {"checkpoint": checkpoint, "normalizer": STATS_PATH,
                        "scene_manifest": scenes / "manifest.json", "scene_h5": scenes / "scenes.h5"}
         from examples.baselines.constrain.pickcube_clearance_train_r44 import TRAIN_REG
@@ -271,13 +345,20 @@ def main(argv=None):
         source_paths.update({"task": Path("examples/baselines/constrain/placesphere_obstacle.py"),
                              "actor": Path("examples/baselines/constrain/placesphere_constrain.py"),
                              "rollout": Path("examples/baselines/constrain/evaluate_placesphere_paired.py"),
-                             "scene_loader": Path("examples/baselines/constrain/placesphere_transport_detour.py")})
+                             "scene_catalog": Path("examples/baselines/constrain/placesphere_scenes.py"),
+                             "scene_loader": Path("examples/baselines/constrain/placesphere_transport_detour.py"),
+                             "codec": Path("examples/baselines/constrain/placesphere_action_codec.py"),
+                             "base_actor": Path("examples/baselines/constrain/placesphere_base_dp.py"),
+                             "inference_sampler": Path("examples/baselines/constrain/placesphere_inference_sampler.py"),
+                             "manifest_dataset": Path("examples/baselines/constrain/placesphere_manifest_dataset.py"),
+                             "task_config": Path("examples/baselines/constrain/placesphere_pilot.py")})
         input_paths = {"checkpoint": checkpoint,
                        "base_checkpoint": Path("outputs/ckpt/20261027_224727_placesphere_action_codec_r30_base_verified/final.pt"),
+                       "normalizer": Path("examples/baselines/constrain/placesphere_constrain.py"),
                        "scene_manifest": scenes / "manifest.json", "scene_h5": scenes / "scenes.h5"}
         input_paths.update({"training_registration": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/training_preregistration.json"),
                             "data_h5": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.h5"),
-                            "data_manifest": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/manifest.json"),
+                             "data_manifest": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.json"),
                             "checkpoint_correction": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/checkpoint_metadata_correction.json")})
     if args.register:
         if args.output.exists():
@@ -293,13 +374,29 @@ def main(argv=None):
         raise ValueError("registered task/indices/input identity mismatch")
     original_make = _install_render_only_step_wrapper(args.task)
     rows = []
+    failures = False
+    started = time.monotonic()
     try:
         for index in args.indices:
+            if time.monotonic() - started >= TRIAL_WALL_SECONDS:
+                failures = True
+                rows.append({"scene_index": index, "status": "runtime_error",
+                             "error": f"trial exceeded {TRIAL_WALL_SECONDS}s wall limit"})
+                continue
+            previous_handler = signal.signal(signal.SIGALRM, _episode_timeout)
+            remaining = TRIAL_WALL_SECONDS - (time.monotonic() - started)
+            signal.setitimer(signal.ITIMER_REAL, min(EPISODE_WALL_SECONDS, remaining))
             try:
-                rows.append(_evaluate_one(args.task, index, args.device))
-            except BaseException as exc:
+                row = _evaluate_one(args.task, index, args.device)
+                rows.append(row)
+                failures |= row.get("status") != "evaluated"
+            except Exception as exc:
+                failures = True
                 rows.append({"scene_index": index, "status": "runtime_error",
                              "error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous_handler)
     finally:
         import gymnasium as gym
         gym.make = original_make
@@ -308,7 +405,10 @@ def main(argv=None):
     summary = summarize_rows(rows, len(args.indices))
     (args.output / "rows.json").write_text(json.dumps(rows, indent=2, default=_jsonable) + "\n")
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    validate_registration(args.registration)
     print(json.dumps(summary), flush=True)
+    if failures:
+        raise RuntimeError(f"evaluation had runtime errors: {summary}")
     return summary
 
 

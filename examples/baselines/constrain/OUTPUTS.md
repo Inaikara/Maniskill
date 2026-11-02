@@ -1,5 +1,72 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 47 — restored-geometry TCP-only XY preflight (2026-11-02)
+
+**Decision gate: native trials stopped.** The required no-step preflight restored
+all 30 saved scenes per task using the native catalog restore and render-only
+environment, then checked saved state/controller hashes, task-state center,
+visible cylinder pose, cylinder visibility and collision-shape count. All 60
+state/controller/center checks matched the frozen catalog; all cylinders were
+visible and had zero collision shapes. The report is
+`outputs/exp/20261102_130000_restored_tcp_xy_r47/preflight.json` (SHA-256
+`8c29494a56585787495dfe6b6318f021c22c005846134d90ae51bffbaa2d58cf`).
+
+The R47 profile is explicitly named/versioned
+`tcp_xy_cylinder_radius_plus_5mm_v1`: forbidden XY disk = restored visible
+cylinder radius + 0.005 m. It is TCP-only and excludes cube/sphere footprints;
+this differs from R45's object-footprint profile and from the historical
+physical object-crossing latch. Actual cylinder radius was 0.030 m for every
+scene and the optional margin was 0.005 m. Negative signed gaps below are
+measured against the **actual cylinder** (before margin); the second value is
+the gap to the R47 profile:
+
+| Task | Initial TCP already inside actual cylinder: scene index (actual gap m; R47 gap m) | Outside cylinder but within margin |
+|---|---|---|
+| PickCube | 14 (-0.014206; -0.019206), 18 (-0.014020; -0.019020), 23 (-0.012045; -0.017045) | none |
+| PlaceSphere | 1 (-0.003890; -0.008890), 5 (-0.000432; -0.005432), 8 (-0.014738; -0.019738), 10 (-0.004290; -0.009290), 15 (-0.000779; -0.005779), 16 (-0.003465; -0.008465), 17 (-0.018105; -0.023105), 19 (-0.007132; -0.012132), 22 (-0.013552; -0.018552), 26 (-0.006783; -0.011783) | 7 (+0.002496; -0.002504), 13 (+0.000326; -0.004674), 18 (+0.002462; -0.002538) |
+
+Because several saved TCP starts are already inside the actual cylinder disk,
+all-time zero-XY violation is impossible on the unchanged 30-scene cohorts.
+No scene/cylinder was moved, no initial point was waived, and no smoke or full
+policy rollout was run. This is a user-decision blocker for the requested
+acceptance; native task success >=27/30 is consequently not newly evaluated.
+The exact bounded command was
+`source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill && timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.restored_xy_preflight_r47 --output outputs/exp/20261102_130000_restored_tcp_xy_r47/preflight.json`
+and completed successfully.
+
+The evaluator fix now reads restored task-state center and cylinder radius at
+each native control step, verifies the visible actor's center, records that
+geometry with each measured TCP endpoint, and independently scores every sample
+and chord against the frozen scene center/radius. Registrations use format
+`render_only_xy_eval_r47_v1`, capture exact source-byte snapshots, directly hash
+the relevant actor/codec/normalizer/evaluator/scene/controller sources and
+training/demo/checkpoint/scene inputs, and validate those hashes after execution.
+Frozen final registrations are PickCube
+`pickcube_registration_attempt03.json` (identity
+`65552169de3881b85c7b535c97d4d2d81072552a1a71150db1180e3bf81609c5`; 17
+direct source entries and snapshots) and PlaceSphere
+`placesphere_registration_attempt02.json` (identity
+`7f87926b30c1476684b86d8a45c37e8187ca7020d4220ee1fe461e8eb11db7ff`; 13
+direct source entries and snapshots). Both include all 30 indices and Git HEAD
+`c48e82b32c9a8cc9b16f60211662d8b426fe2f0e`. PickCube registers its standalone
+position normalizer artifact. PlaceSphere uses identity/raw observation
+conditioning, pinned directly to `placesphere_constrain.py` as its normalizer
+definition. Registration validation passed for all input and source hashes.
+Execution is bounded to 300 s per episode and 3,600 s per task; timeout rows
+propagate a nonzero process exit, and `SystemExit`, `KeyboardInterrupt`, and
+other `BaseException` subclasses are not swallowed. The final full suite passed
+617 tests and 30 warnings in 87.29 s. Exact command:
+`OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line`
+Focused regression tests cover pre-first-step scene restoration, wrong cached
+center rejection, and chord scoring. Registrations are frozen, but no episodes
+or result directories were created because the precondition failed. Current
+source hashes: runner
+`4815e96c253763b8ef6690e20aa23abdd8125b83d59ef0484cd8f8c4baa24118`,
+preflight `cd8c1475fb69282ad96aee8228ce3f31c772df08089fcbcedf110748a7c309b8`,
+test `536c73fd2c7cb3726e6a01bd08eb63cc16109ddf6333feb10b4547f1bd03199f`.
+Base HEAD was `c48e82b32c9a8cc9b16f60211662d8b426fe2f0e`; all R47 work is
+uncommitted. No checkpoints, training, demos, or scene files were changed.
+
 ## Round 46 — selected-policy render-only XY-constrained development trial (2026-11-02)
 
 **Review correction — XY evidence invalid:** instrumentation captured the
@@ -32,7 +99,8 @@ trace score.
 each actually executed control action it reads the current native TCP world XY,
 filters only XY, steps the environment once, and records the measured next TCP,
 requested and filtered seven-channel actions, and native `info`. Z, rotation,
-and gripper pass through. The unchanged forbidden radii are
+and gripper pass through. The historical (invalid for R47 acceptance)
+object-footprint radii were
 `cylinder + sqrt(2)*cube_half_size + 0.005 m` (PickCube) and
 `cylinder + sphere_radius + 0.005 m` (PlaceSphere). Runtime registrations pin the
 source and selected checkpoint/normalizer/scene identities before episodes.
