@@ -49,6 +49,78 @@ def test_each_native_control_step_uses_measured_tcp_and_preserves_other_channels
     assert all(row["filtered_action"] != row["requested_action"] for row in trace)
 
 
+def test_failed_second_filter_retains_initial_point_and_first_executed_segment():
+    from examples.baselines.constrain.render_only_xy_eval import score_native_xy_trace
+
+    env = _Env()
+    def lagged_step(action):
+        env.calls.append(np.asarray(action).copy())
+        env.unwrapped.agent.tcp.pose.p[0, :2] = [0.02, 0.0]
+        return None, 0.0, False, False, {"native_success": False}
+    env.step = lagged_step
+    trace = instrument_env(env, "pickcube")
+    requested = np.array([[0.35, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0]])
+    env.step(requested)
+    with pytest.raises(ValueError, match="starts inside"):
+        env.step(requested)
+
+    assert len(trace) == 1
+    assert trace[0]["env_step_executed"] is True
+    assert trace[0]["requested_action"] == requested[0].tolist()
+    assert trace[0]["filtered_action"] is not None
+    assert trace[0]["tcp_xy_after"] == pytest.approx([0.02, 0.0])
+    assert env._render_only_xy_initial_tcp_xy == pytest.approx([0.055, 0.0])
+    score = score_native_xy_trace(trace, env._render_only_xy_initial_tcp_xy,
+                                  [0.0, 0.0], 0.035)
+    assert score["violating_samples"] == [1]
+    assert score["violating_segments"] == [0]
+
+
+def test_native_env_step_exception_retains_attempt_action_and_latest_pose():
+    env = _Env()
+    def fail_after_motion(action):
+        env.calls.append(np.asarray(action).copy())
+        env.unwrapped.agent.tcp.pose.p[0, :2] = [0.06, 0.01]
+        raise RuntimeError("native-step-fixture")
+
+    env.step = fail_after_motion
+    trace = instrument_env(env, "pickcube")
+    with pytest.raises(RuntimeError, match="native-step-fixture"):
+        env.step(np.array([[0.0, 0.0, 0, 0, 0, 0, -1.0]]))
+    assert len(trace) == 1
+    attempt = trace[0]
+    assert attempt["env_step_executed"] is True
+    assert attempt["requested_action"] is not None
+    assert attempt["filtered_action"] is not None
+    assert attempt["tcp_xy_after"] == pytest.approx([0.06, 0.01])
+
+
+def test_failure_row_keeps_partial_trace_without_fabricating_success():
+    from examples.baselines.constrain import render_only_xy_eval as evaluator
+
+    env = _Env()
+    trace = instrument_env(env, "pickcube")
+    env.step(np.array([[0.0, 0.0, 0, 0, 0, 0, -1.0]]))
+    row = evaluator._runtime_error_row(7, RuntimeError("fixture"))
+    assert row["status"] == "runtime_error"
+    assert row["native_success"] is False
+    assert row["scene_index"] == 7
+    assert row["initial_tcp_xy"] == pytest.approx([0.055, 0.0])
+    assert row["executed_trace"] == trace
+    assert row["failed_control_index"] is None
+
+
+def test_trace_validation_includes_native_first_success_endpoint_and_chord():
+    from examples.baselines.constrain.render_only_xy_eval import score_native_xy_trace
+
+    trace = [{"tcp_xy_after": [-0.03, 0.03], "native_success": True,
+              "obstacle_center_xy": [0.0, 0.0], "forbidden_radius_m": 0.02}]
+    result = score_native_xy_trace(trace, [-0.04, 0.0], [0.0, 0.0], 0.02)
+    assert result["first_success_step"] == 1
+    assert result["first_success_step_valid"] is True
+    assert result["zero_xy_violations"] is True
+
+
 def test_geometry_is_read_live_after_scene_restore_and_tcp_only_profile():
     env = _Env()
     trace = instrument_env(env, "pickcube")

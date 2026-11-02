@@ -1,5 +1,124 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 50 — bounded native runtime diagnosis (2026-11-02)
+
+This is a four-episode instrumentation diagnostic, **not** a 30-scene gate or
+selective performance headline. R48 cohorts, models, task behavior, XY filter,
+and training data were not changed. Selected indices were preregistered from
+ascending R49 rows before any R50 outcome: PickCube runtime failures `1` and `3`,
+PickCube's first completed native failure `0` (`no_grasp`, 500-step timeout),
+and PlaceSphere runtime failure `0`. R49 artifacts remain unchanged.
+
+The plan is `outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/diagnostic_plan.json`
+(SHA-256 `55dd29d30377deafb919139ff94bf6af9c9bdcc7e2b114a3e20173982b82471c`).
+Task registrations and source snapshots were made before episodes: PickCube
+registration identity `ea4fd85ce5bc1ec9b07ad90629226c5b3bdd96b66332d65353ee6a299c163a9d`,
+PlaceSphere `97373526318fc1d971bc77f1810ff5a82a3fbb2c95c70efd6267d7d32497930b`.
+Each pins exact R48 catalog, selected checkpoint, training inputs and runtime
+sources. PickCube and PlaceSphere checkpoints retain R44 EMA SHA-256
+`fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769` and R30 EMA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`.
+R48 manifest/HDF5 hashes remain the frozen identities recorded in R48 above.
+Registrations validated after the runs; their source/input hashes still match.
+
+The evaluator now snapshots the restored initial TCP, appends each attempted
+control before filtering, and retains executed requested/filtered actions and
+actual TCP before/after even when native `env.step` raises. Filter-rejected
+attempts identify the control index and explicitly say `env_step_executed: false`;
+an exception from an executed native step retains its latest measurable pose.
+Runtime-error rows retain native flags, inferred task phase, independent
+catalog-geometry sample/chord scoring, exception type/message, and do not
+fabricate success. The first-native-success sample and preceding chord remain
+in the independent score. The row denominator and nonzero CLI exit on runtime
+errors are preserved. Existing evaluator `finally` blocks close each native
+environment.
+
+### Registered episode commands and retained outcomes
+
+Exact registrations and runs (source the required conda environment before each
+command; each episode alarm is 300 s, and the combined native-run ceiling is
+1,200 s):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+timeout --signal=TERM --kill-after=20s 120s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/pickcube --indices 1 3 0 --output outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/pickcube_rows --registration outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/pickcube_registration.json --device cuda --register
+timeout --signal=TERM --kill-after=20s 120s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/placesphere --indices 0 --output outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/placesphere_rows --registration outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/placesphere_registration.json --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 900s python -m examples.baselines.constrain.render_only_xy_eval --task pickcube --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/pickcube --indices 1 3 0 --output outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/pickcube_rows --registration outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/pickcube_registration.json --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.render_only_xy_eval --task placesphere --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/placesphere --indices 0 --output outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/placesphere_rows --registration outputs/exp/20261102_130536_xy_runtime_diagnosis_r50/placesphere_registration.json --device cuda
+```
+
+Both run commands returned nonzero after retaining all attempted rows, as
+required: PickCube `1` and `3` failed at controls `92` and `9`; PickCube `0`
+completed all 500 controls and timed out with native phase `no_grasp`; PlaceSphere
+`0` failed at control `4`. No R50 native-success claim is made.
+
+### Trace evidence and controller diagnosis
+
+Independent scoring uses the frozen cylinder center/radius plus 5 mm and every
+actual TCP sample and chord. Initial TCP points were clear. The first post-step
+violations were:
+
+| Task/index | First violating executed control | Actual sample gap (m) | Actual chord gap (m) | Filtered linear-target gap (m) | Unfiltered requested linear-target gap (m) | Native/task phase |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| PickCube 1 | 91 | -0.000144245 | -0.000144245 | +0.000001000 | -0.013247121 | grasp_no_lift; native grasp false, crossing true |
+| PickCube 3 | 8 | -0.000142840 | -0.000157739 | +0.002471041 | +0.002471041 | no_grasp |
+| PlaceSphere 0 | 3 | -0.000024310 | -0.000024310 | +0.000001000 | -0.007238105 | no_grasp |
+
+At those controls PhysX actually executed the filtered actions; the next
+requested control then hit `TCP starts inside the forbidden disk`. These traces
+confirm the boundary/lag hypothesis for PickCube 1 and PlaceSphere 0: a predicted
+1 micrometre clearance did not absorb measured motion error. PickCube 3 is
+stronger evidence of coupled response error: the unmodified filtered target
+predicted 2.471 mm clearance while the measured endpoint was 0.143 mm inside,
+with a 0.158 mm chord violation. The registered Panda `pd_ee_delta_pose`
+controller uses normalized root-translation action with ±0.1 m physical bounds;
+its root-aligned XYZ rotation vector is norm-limited then scaled by -0.1 rad.
+The XY filter maps normalized XY by 0.1 m/action unit and additionally clips to
+±0.35. Z/rotation pass through, so their IK/controller response and actuator
+settling remain coupled to measured XY motion. The current evidence justifies a
+lag-aware positive clearance buffer; it does **not** calibrate a universally
+sufficient margin or justify changing it without a separately registered
+follow-up.
+
+PickCube scene `0` never approached the cylinder: minimum actual center distance
+was 0.080344 m (minimum forbidden-disk gap 0.045344 m), yet it remained `no_grasp`
+for 500 steps. The first negative requested gripper command was control 54;
+there was no grasp, lift, or transport. It is a grasp-stage stall, not a loop at
+the detour circle. R50's 500 requested native actions exactly match R49 scene 0
+in sequence and SHA-256
+`e5bfa49048e060bfce2ea066047e80bb1e15349378724c4ed1cc2553a4f8d126`; seed, scene
+state, restored observation and the registered actor/rollout sources also match.
+This rules out a selected-adapter/action mismatch relative to the R49 R44 actor
+path on this identical saved two-frame initial condition and RNG seed. PlaceSphere
+retained the registered R30 actor, codec, sampler and rollout source bytes; its
+requested pre-filter native actions are retained, but the failed R49 index 0 has
+no old action trace for an exact trace-to-trace comparison.
+
+Offline calculations, including every first-failure boundary record, are
+`offline_analysis.json` (SHA-256
+`18fd6c37b813db983c6adb529c60b79e2058ba7b1fc12bd776d6998075142b5d`); its
+reproducible analysis program is `analyze_diagnostic.py`. Row hashes are
+PickCube `16852d1d07c9ebc6f6bcb7f1cc2ede3ed325417484b0b875eef7f9af890d1c17`
+and PlaceSphere `eb9a668e3db266d130a05753413f3e9407ed1300151098656e132c4b7494d77d`.
+These four selected scenes are diagnostic only and do not replace, rerun, or
+qualify the R48 cohorts.
+
+TDD evidence: the new regression tests first failed against the old wrapper
+because no executed trace/failed control metadata survived the target failure.
+After instrumentation, the focused evaluator file passed **11 tests**, including
+the induced actuator-lag/filter-failure trace, native-step exception pose capture,
+failure-row truthfulness, and first-success sample/chord endpoint. The required
+full suite passed **624 tests, 30 warnings in 94.94 s** in `maniskill`:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line
+```
+
+No behavior source was edited after the R50 registrations or native runs. No
+cohort, checkpoint, demo, or training artifact changed; no commit, branch change,
+or push was made.
+
 ## Round 49 — selected-policy trials on frozen initial-clear cohorts (2026-11-02)
 
 Both selected policies were run sequentially against all scene indices `0..29`

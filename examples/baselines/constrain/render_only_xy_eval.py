@@ -14,6 +14,7 @@ import numpy as np
 from examples.baselines.constrain.inference_xy_constraint_r45 import XYConstraint, validate_tcp_trace
 
 _ACTIVE_TRACES = []
+_ACTIVE_SCENE_GEOMETRY = None
 EPISODE_WALL_SECONDS = 300
 TRIAL_WALL_SECONDS = 3600
 TCP_XY_MARGIN_M = 0.005
@@ -34,14 +35,57 @@ def _radius(base, task):
     return float(base.obstacle_collision_radius) + TCP_XY_MARGIN_M
 
 
+def _update_task_phase(env, task, info):
+    base = env.unwrapped
+    object_name = "cube" if task == "pickcube" else "obj"
+    target_name = "goal_site" if task == "pickcube" else "bin"
+    if not hasattr(base, object_name) or not hasattr(base, target_name):
+        env._render_only_xy_native_flags = _jsonable(info)
+        return
+    state = getattr(env, "_render_only_xy_phase_state", None)
+    if state is None:
+        state = {"grasped": False, "lifted": False, "transported": False,
+                 "released": False, "initial_object_z": None}
+        env._render_only_xy_phase_state = state
+    if task == "pickcube":
+        obj, goal = base.cube.pose.p[0], base.goal_site.pose.p[0, :2]
+        grasp_flag = info.get("is_grasped", False)
+    else:
+        obj, goal = base.obj.pose.p[0], base.bin.pose.p[0, :2]
+        grasp_flag = info.get("is_obj_grasped", False)
+    obj_xyz = _array(obj).reshape(-1)
+    goal_xy = _array(goal).reshape(-1)[:2]
+    if state["initial_object_z"] is None:
+        state["initial_object_z"] = float(obj_xyz[2])
+    grasped_now = bool(np.asarray(_array(grasp_flag)).reshape(-1)[0])
+    state["grasped"] |= grasped_now
+    state["lifted"] |= float(obj_xyz[2]) > state["initial_object_z"] + 0.04
+    state["transported"] |= np.linalg.norm(obj_xyz[:2] - goal_xy) < 0.10
+    if task == "placesphere":
+        state["released"] |= bool(state["grasped"] and not grasped_now)
+    success = bool(np.asarray(_array(info.get("native_success", False))).reshape(-1)[0])
+    if success:
+        phase = "task_success"
+    elif not state["grasped"]:
+        phase = "no_grasp"
+    elif not state["lifted"]:
+        phase = "grasp_no_lift"
+    elif not state["transported"]:
+        phase = "grasped_no_transport"
+    elif task == "placesphere" and state["released"]:
+        phase = "release_or_stability_failed"
+    else:
+        phase = "transport_or_place_failed"
+    env._render_only_xy_task_phase = phase
+    env._render_only_xy_native_flags = _jsonable(info)
+
+
 def score_native_xy_trace(trace, initial_tcp_xy, expected_center_xy, expected_radius):
     """Independently score the native TCP samples/chords against frozen scene geometry."""
     from examples.baselines.constrain.inference_xy_constraint_r45 import validate_tcp_trace
 
     center = np.asarray(expected_center_xy, dtype=np.float64).reshape(2)
     radius = float(expected_radius)
-    if not trace:
-        raise ValueError("native trace has no geometry or control samples")
     points = [np.asarray(initial_tcp_xy, dtype=np.float64).reshape(2)]
     for step in trace:
         live_center = np.asarray(step["obstacle_center_xy"], dtype=np.float64).reshape(2)
@@ -70,6 +114,7 @@ def instrument_env(env, task, *, control_enabled=True):
     if actor is None:
         actor = base.agent.robot.links_map["panda_hand_tcp"]
     trace = []
+    attempts = []
     original_step = env.step
     constraint = XYConstraint(translation_scale_m=0.1, action_limit=0.35)
 
@@ -80,28 +125,55 @@ def instrument_env(env, task, *, control_enabled=True):
         radius = _radius(base, task)
         env._render_only_xy_center = center.tolist()
         env._render_only_xy_radius = float(radius)
+        if env._render_only_xy_initial_tcp_xy is None:
+            env._render_only_xy_initial_tcp_xy = tcp.tolist()
         visual_actor = obstacle._objs[0]
         if hasattr(visual_actor, "pose"):
             visual_center = _array(visual_actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
             if not np.allclose(center, visual_center, atol=1e-6, rtol=0):
                 raise ValueError("live task-state center differs from visible cylinder pose")
+        attempt = {"control_index": len(trace) + 1, "tcp_xy_before": tcp.tolist(),
+                   "tcp_xy_after": tcp.tolist(), "requested_action": requested.tolist(),
+                   "filtered_action": None, "env_step_executed": False,
+                   "obstacle_center_xy": center.tolist(), "forbidden_radius_m": radius,
+                   "native_success": False,
+                   "task_phase": getattr(env, "_render_only_xy_task_phase", None),
+                   "last_native_flags": getattr(env, "_render_only_xy_native_flags", None)}
+        attempts.append(attempt)
+        env._render_only_xy_failed_control_index = attempt["control_index"]
         filtered = constraint.filter_action(requested, tcp, center, radius)
-        result = original_step(filtered.reshape(1, 7))
+        attempt["filtered_action"] = filtered.tolist()
+        attempt["env_step_executed"] = True
+        try:
+            result = original_step(filtered.reshape(1, 7))
+        except Exception:
+            attempt["tcp_xy_after"] = _array(actor.pose.p).reshape(-1, 3)[0, :2].astype(float).tolist()
+            attempt["env_step_error"] = True
+            attempt["step"] = len(trace) + 1
+            trace.append(attempt)
+            raise
         info = result[-1]
+        _update_task_phase(env, task, info)
         tcp_after = _array(actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
-        trace.append({"step": len(trace) + 1, "tcp_xy_before": tcp.tolist(),
-                      "tcp_xy_after": tcp_after.tolist(), "requested_action": requested.tolist(),
-                      "filtered_action": filtered.tolist(),
-                      "obstacle_center_xy": center.tolist(), "forbidden_radius_m": radius,
-                      "native_success": bool(np.asarray(info.get("native_success", False)).reshape(-1)[0]),
-                      "info": _jsonable(info)})
+        attempt.update(step=len(trace) + 1, tcp_xy_after=tcp_after.tolist(),
+                       native_success=bool(np.asarray(info.get("native_success", False)).reshape(-1)[0]),
+                       info=_jsonable(info))
+        trace.append(attempt)
+        env._render_only_xy_failed_control_index = None
         return result
 
     env.step = step
     env._render_only_xy_trace = trace
+    env._render_only_xy_attempts = attempts
+    env._render_only_xy_initial_tcp_xy = None
+    env._render_only_xy_failed_control_index = None
     env._render_only_xy_center = None
     env._render_only_xy_radius = None
-    _ACTIVE_TRACES.append((trace, None, None))
+    env._render_only_xy_task_phase = None
+    env._render_only_xy_native_flags = None
+    env._render_only_xy_phase_state = None
+    env._render_only_xy_expected_geometry = _ACTIVE_SCENE_GEOMETRY
+    _ACTIVE_TRACES.append((trace, attempts, env))
     return trace
 
 
@@ -186,6 +258,30 @@ def summarize_rows(rows, requested):
             "xy_zero_count": sum(bool(r.get("xy_zero")) for r in complete)}
 
 
+def _runtime_error_row(index, exc):
+    active = _ACTIVE_TRACES[-1] if _ACTIVE_TRACES else ([], [], None)
+    trace, attempts, env = active
+    initial = getattr(env, "_render_only_xy_initial_tcp_xy", None) if env is not None else None
+    expected = getattr(env, "_render_only_xy_expected_geometry", None) if env is not None else None
+    center = expected["center"] if expected is not None else None
+    radius = expected["radius"] if expected is not None else None
+    if initial is not None and center is not None and radius is not None:
+        validation = score_native_xy_trace(trace, initial, center, radius)
+    else:
+        validation = {"zero_xy_violations": False, "violating_samples": [],
+                      "violating_segments": [], "geometry_captured": False}
+    return {"scene_index": index, "status": "runtime_error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "failed_control_index": (getattr(env, "_render_only_xy_failed_control_index", None)
+                                      if env is not None else None),
+            "initial_tcp_xy": initial, "attempted_actions": attempts,
+            "executed_trace": trace, "first_native_success_control_index": next(
+                (step["step"] for step in trace if step.get("native_success")), None),
+            "native_task_phase": (attempts[-1].get("task_phase") if attempts else None),
+            "xy_validation": validation, "xy_zero": bool(validation.get("zero_xy_violations", False)),
+            "native_success": False}
+
+
 def validate_explicit_catalog(registration, task, indices, scenes_dir):
     """Require explicit execution catalogs to be the exact preregistered inputs."""
     if len(set(indices)) != len(indices) or any(index < 0 for index in indices):
@@ -222,6 +318,7 @@ def _install_render_only_step_wrapper(task):
 
 
 def _evaluate_one(task, index, device, scenes_dir=None):
+    global _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.clear()
     if task == "pickcube":
         from examples.baselines.constrain import pickcube_body_hint_round41 as r41
@@ -279,6 +376,8 @@ def _evaluate_one(task, index, device, scenes_dir=None):
             def map_action_ee_delta_pose(action): return torch.as_tensor(action)
         catalog = TransportDetourSceneSet(scenes_dir or DEV_SCENES)
         scene = catalog.load(index)
+        _ACTIVE_SCENE_GEOMETRY = {"center": scene["metadata"]["cylinder"]["center_xy"],
+                                  "radius": float(scene["metadata"]["cylinder"]["radius"]) + TCP_XY_MARGIN_M}
         runner = PickCubePairedEvaluator(Adapter(), catalog, "constrain_dp", ".", device, max_steps=500)
         row = runner.run_episode(index, scene)
     else:
@@ -303,6 +402,8 @@ def _evaluate_one(task, index, device, scenes_dir=None):
                              "bit_exact": result["bit_exact"], "norms": result["norms"]}
         catalog = Catalog()
         scene = catalog.load(index)
+        _ACTIVE_SCENE_GEOMETRY = {"center": scene["metadata"]["cylinder"]["center_xy"],
+                                  "radius": float(scene["metadata"]["cylinder"]["radius"]) + TCP_XY_MARGIN_M}
         runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
         row = runner.run_episode(index, scene)
     traces = [item for item in _ACTIVE_TRACES if item[0]]
@@ -337,6 +438,7 @@ def main(argv=None):
     if args.output.exists():
         raise FileExistsError(args.output)
     source_paths = {"runner": Path(__file__),
+                    "diagnostic_test": Path(__file__).parent / "tests" / "test_render_only_xy_eval.py",
                     "filter": Path(__file__).with_name("inference_xy_constraint_r45.py"),
                     "controller": Path("mani_skill/agents/robots/panda/panda.py")}
     if args.task == "pickcube":
@@ -424,8 +526,7 @@ def main(argv=None):
                 failures |= row.get("status") != "evaluated"
             except Exception as exc:
                 failures = True
-                rows.append({"scene_index": index, "status": "runtime_error",
-                             "error": f"{type(exc).__name__}: {exc}"})
+                rows.append(_runtime_error_row(index, exc))
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
