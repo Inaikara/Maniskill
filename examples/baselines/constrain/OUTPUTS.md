@@ -1,5 +1,108 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 51 — actor protocol and frozen-task distribution diagnosis (2026-11-02)
+
+R51 ran a zero-environment-step actor differential and read-only PickCube feature
+comparison before any shield tuning. No checkpoint, training/demo data, scene,
+sampler, or task source was changed. The selected R48 cohorts remain byte-frozen;
+there was no native diagnostic or full trial because the feature check exposed
+an unresolved task-definition mismatch.
+
+### Original-method protocol proof
+
+The proof program is
+`examples/baselines/constrain/actor_protocol_proof_r51.py` (SHA-256
+`7c112fa72b2551034da062d3b900aad94e0c76c82217a7bfcd0b88a4f3fcadb2`). It
+validated every PickCube R50 registered source, source snapshot, and input hash;
+the R44 EMA remains `fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769`
+and the R41 normalizer file remains `d14d56e3645504b81db4a41f32cf6869b805dbf003194b26433cfceb6023f543`.
+The immutable R50 actor snapshot and current R44 actor source both hash to
+`606298af35e6e0f58113d0b4e0ed1cd6a520d5f56615747eb9563011e4d93f2c`.
+
+The historical `Horizon8ClearanceActor` constructor was attempted but its
+`load_actor` metadata gate rejected the checkpoint. Instead, the proof explicitly
+validated registered bytes/inputs, typed format/model/horizon/update/EMA fields,
+normalizer content and identity, precheck/fit/Base hashes, strict model-state
+loading, EMA restoration, and native 100-step squared-cosine DDPM scheduler. It
+then called the unchanged original `Horizon8ClearanceActor.get_action` method
+directly on a `__new__` instance whose properties were those validated values.
+This proves method equivalence for the checked runtime objects; it does **not**
+claim constructor equivalence. Against R50's selected evaluator adapter protocol,
+the same saved two-frame R48 initial observation, checkpoint, device, and per-index
+RNG state were compared for indices 0, 1, and 3: all three eight-action tensors
+were exactly equal (maximum absolute error `0.0`) and post-call CPU/CUDA RNG states
+were exact. R41/R40 profile installation repeated twice in evaluator order and
+then reverse order left profile identities unchanged. No environment step ran.
+Proof JSON SHA-256:
+`55f1f2931eece3b254d2b6cfa15fb194ea9535d3d026b4447f427d9fe4530fea`.
+
+### Frozen PickCube feature/task-contract finding
+
+The read-only report and reproducible program are
+`outputs/exp/20261102_200000_xy_protocol_buffer_r51/pickcube_feature_distribution_diagnosis.json`
+(SHA-256 `be35f63b6b0cddab83be02766a2fecc9cb99be0efdd98f3fbf28a85c12f6ebd8`) and
+`examples/baselines/constrain/pickcube_feature_distribution_r51.py` (SHA-256
+`b79f8664207ee88ccde710cafd63211fcd343536b78b2343c767870a7981f8ce`).
+It compares all 30 frozen R48 raw observations with the initial observations of
+the unchanged 1,000-direct/500-obstacle demonstrations. R48 manifest/HDF5 hashes
+are `6ba3fac915f68464862ababbba602ecd0612023908efa8134eff1e1cafe31fa7` /
+`5dc7c8808787c7edaf9b64a3adc9b02a7afaf22aab8b75df09fe134f53449089`; frozen
+training manifest/HDF5 hashes are `6b9d2c75aaaef02753c002eef817e8325478d2160af34bdf800e604c76e5c486` /
+`0c74b88eebe165a03592f7c64d186d1cc550d9fa013f51a2b54d41c349349f4f`.
+
+The critical mismatch is not limited to height. Every frozen demonstration initial
+observation has goal Z `0.12 m`; R48 native-reset goal Z has min/median/max
+`0.026707/0.215295/0.314346 m`, with 5/30 at or below `0.08 m` and 19/30 above
+`0.16 m`. Frozen training goal XY spans X `0.0483–0.1800`, Y `-0.0600–0.1200`;
+R48 reset-goal XY spans X `-0.0987–0.0994`, Y `-0.0924–0.0944`. The R46 historical
+scene manifest has goal XY X `0.1068–0.1795`, Y `-0.0591–0.1197`; its height rule
+is per-scene obstacle geometry, not a new goal-height distribution. R48
+`sample_task` reads the goal actor from the first native reset and passes that
+XYZ back as `goal_pos` on its saved reset (`initial_clear_xy_scenes.py`, lines
+195–212). Thus the frozen native-reset cohort differs from the historical
+training/layout goal contract in both XY and Z. R48 cube quaternion components
+remain normalized; R48 qpos scene 0 differs from training-median qpos by a maximum
+`0.0360 rad` (the full per-feature distributions are in the report).
+
+This is a legitimate task-distribution conflict, not grounds to resample, filter,
+or discard catalog rows. Consequently R51 did not implement or register a new
+buffered profile and did not run selected-index smoke or 30-scene episodes. The
+R50 trace evidence still supports testing a working buffer separately after the
+task contract is resolved: PickCube 3's filtered target predicted `+2.471 mm`
+clearance while the actual endpoint was `0.143 mm` inside and chord `0.158 mm`
+inside (response error `2.614 mm`); PickCube 1 and PlaceSphere 0 also crossed
+after `1 µm` predicted clearance. A `3 mm` working buffer would cover the largest
+observed R50 endpoint error plus a declared `0.386 mm` allowance, but this is an
+evidence-derived candidate only, not a validated universal margin. The acceptance
+radius remains cylinder radius + `5 mm`; no radius relaxation or initial-state
+waiver is proposed. R50 PickCube 0 stayed at least `45.344 mm` outside the profile
+and stalled at `no_grasp`, so persistent tangent behavior is not evidenced.
+Controller evidence remains R50's native `pd_ee_delta_pose`: normalized root
+translation maps at `0.1 m/unit` with physical `±0.1 m` controller bounds, root-
+aligned XYZ rotation norm-limited then scaled by `-0.1 rad`, while the R50 XY
+filter action cap is `±0.35`; non-XY channels must remain passthrough.
+
+R51 verification command (under `maniskill`; both proof and feature diagnosis
+were bounded to 300 seconds):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.actor_protocol_proof_r51
+timeout --signal=TERM --kill-after=20s 300s python -m examples.baselines.constrain.pickcube_feature_distribution_r51
+```
+
+The required constrain suite passed **624 tests, 30 warnings in 93.45 s**:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line
+```
+
+No buffer regression test or native gate was appropriate before resolving the
+goal-layout contract. No source in ManiSkill was modified; no new training,
+checkpoint, demo, scene/layout or episode artifact was produced. No commit,
+branch change, or push was made.
+
 ## Round 50 — bounded native runtime diagnosis (2026-11-02)
 
 This is a four-episode instrumentation diagnostic, **not** a 30-scene gate or
