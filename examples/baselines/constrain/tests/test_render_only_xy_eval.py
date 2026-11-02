@@ -343,6 +343,66 @@ def test_event_replan_uses_new_observation_with_the_same_initial_latent():
     assert torch.allclose(second - first, torch.ones_like(first))
 
 
+def test_place_xy_feedback_keeps_scheduled_tail_and_uses_isolated_updated_observation():
+    import torch
+    from examples.baselines.constrain.render_only_xy_eval import (
+        PlaceXYFeedback, auxiliary_xy_plan,
+    )
+
+    class Adapter:
+        device = torch.device("cpu")
+
+        def __init__(self):
+            self.conditions = []
+            self.calls = 0
+
+        def get_action(self, condition):
+            self.conditions.append(condition.clone())
+            self.calls += 1
+            return torch.full((1, 8, 7), float(self.calls))
+
+        def map_action(self, actions):
+            return actions
+
+    adapter = Adapter()
+    torch.manual_seed(941)
+    feedback = PlaceXYFeedback(adapter, scene_seed=27, device="cpu")
+    scheduled = torch.arange(56, dtype=torch.float32).reshape(1, 8, 7)
+    feedback.start_chunk(scheduled)
+    main_rng = torch.get_rng_state().clone()
+    auxiliary = auxiliary_xy_plan(adapter, torch.tensor([[5.0]]), 27, 3, "cpu")
+    assert torch.equal(torch.get_rng_state(), main_rng)
+    assert adapter.conditions[-1].item() == 5.0
+
+    env = _Env()
+    trace = instrument_env(env, "placesphere", xy_feedback=True)
+    env.unwrapped.agent.tcp.pose.p[0, :2] = [0.055, 0.0]
+    merged = feedback.action_for_control(0, auxiliary)
+    env.step(merged.detach().numpy())
+
+    # The chunk is not abandoned: all seven later controls retain the exact
+    # scheduled Z/rotation/gripper channels despite deliberately different plans.
+    for offset in range(1, 8):
+        action = feedback.action_for_control(offset, auxiliary, offset - 1)
+        assert torch.equal(action[2:], scheduled[0, offset, 2:])
+        assert torch.equal(action[:2], auxiliary[0, offset - 1, :2])
+    assert feedback.scheduled_chunk_count == 1
+    assert trace[0]["requested_replan"] is False
+
+
+def test_xy_constraint_off_is_passthrough_but_geometry_score_reports_violation():
+    from examples.baselines.constrain.render_only_xy_eval import score_native_xy_trace
+
+    env = _Env()
+    env.unwrapped.agent.tcp.pose.p[0, :2] = [0.055, 0.0]
+    trace = instrument_env(env, "placesphere", control_enabled=False, xy_constraint=False)
+    requested = np.array([[-0.35, 0.0, 0, 0, 0, 0, -1.0]])
+    env.step(requested)
+    assert np.array_equal(env.calls[0][0], requested[0])
+    result = score_native_xy_trace(trace, [0.055, 0.0], [0.0, 0.0], 0.035)
+    assert result["zero_xy_violations"] is False
+
+
 def test_explicit_catalog_is_pinned_bounded_and_unique(tmp_path):
     import hashlib
     import json

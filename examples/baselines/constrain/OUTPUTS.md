@@ -1,5 +1,120 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 56 — PlaceSphere scheduled non-XY / auxiliary XY feedback (2026-11-02)
+
+R56 implements and evaluates the separately named combined method
+**ConstrainNet+bufferedXY+Place scheduled-nonXY XY-feedback**. It is not an
+isolated replanning effect. On a filter intervention, the currently scheduled
+8-action chunk continues: the original plan supplies Z, rotation, and gripper for
+all remaining controls; fresh-observation plans supply XY only. Auxiliary
+inference is enclosed in `torch.random.fork_rng` and seeded by
+`(scene_seed * 1000003 + control_index) % (2**63 - 1)`, so scheduled full plans
+retain their independent scene-seeded DDIM-100, eta=0 stream and exact 8-control
+stride. No expert gripper logic, teacher action, waypoint, or task-state
+teleport was introduced. The 3 mm working buffer, 35 mm acceptance radius for
+the frozen 30 mm cylinder, and native XY bounds `[-0.35, 0.35]` are unchanged.
+Each finished episode is atomically persisted with partial native trace on
+episode failures. Traces preserve the original scheduled action, selected
+auxiliary XY, executed action, control/chunk provenance, auxiliary condition
+history hash, RNG seed formula/seed, and measured TCP.
+
+The evaluator also adds explicit `--xy-constraint off` for the paired **unfiltered
+ConstrainNet render-only reference**. It leaves actor actions unchanged and still
+records/scorers visible render-only geometry and actual TCP samples/chords. It is
+a diagnostic control, not an XY-safe accepted method and not BaseDP. The prior
+`control_enabled=False` behavior that still applies the constraint is untouched.
+
+### Fixed-cohort diagnosis and preregistration
+
+Before any R56 rollout, the saved initial TCP and object-start metadata were
+checked against the frozen cylinder disk on the exact R52 PlaceSphere catalog.
+The straight initial TCP-to-object segment intersects the actual-radius + 5 mm
+disk in **14/30** scenes (indices 1, 2, 5, 6, 10, 12, 14, 15, 17, 21, 23, 25,
+28, 29). Five of R53's six native failures are among those 14; index 27 is the
+one R53 failure whose initial chord does not intersect it. This is diagnostic
+context only: no row was resampled, rejected, or excluded.
+
+All three registrations (six-row diagnostic smoke, candidate full 30, and
+unfiltered reference full 30) and their source/input snapshots were frozen and
+verified before rollout. Trial plan:
+`outputs/exp/20261102_152921_xy_feedback_r56/trial_plan.json` (SHA-256
+`22c30212f264d49caac3026dff1713dc3c3ea698b68dd416ee43ea835812e5a4`). Candidate
+full registration identity is
+`ea70d09dae05306607e729066274232db2fb286d64beaa08664faa1cd296007e`; reference
+identity is `f2d3312a2bd9eed2566895295f32181f3cd11a47b01c0487028b3f404120c232`.
+R52 scene manifest/HDF5 remain
+`8e24d2c53376496d64ab3e80e3dc7361b583b6cfad2380e11d44a0dcf008aa6e` /
+`c586bb02ae03bb35e937869180e1beb02153051b4bc076420454e9e3a83236b1`. The
+unchanged R30 EMA and matched Base hashes are
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f` /
+`491970382f3ed8dac7ed88ad1ab3f5cd23fb2d29065291a507ff766c75a6f071`; the
+fixed training cohort remains 1,000 direct + 500 obstacle examples, with HDF5 /
+manifest hashes `796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961`
+/ `aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9`.
+
+### Complete results
+
+| Evaluation | Native success | Runtime errors | XY-zero | Minimum actual TCP sample / chord gap | Controls |
+|---|---:|---:|---:|---:|---:|
+| XY-feedback smoke (indices 0,1,2,5,12,15; diagnostic only) | 2/6 | 0 | 6/6 | +1.161 / +1.161 mm | 1,156 |
+| XY-feedback full fixed cohort | 20/30 **fail ≥27 gate** | 0 | 30/30 | +0.554 / +0.554 mm | 4,568 |
+| Unfiltered ConstrainNet reference, same 30 scenes | 28/30 (diagnostic only) | 0 | 18/30; **12 rows violate XY** | -31.147 / -32.984 mm | 3,731 |
+
+Candidate phases were task success 20, release/stability failure 3, grasp/no lift
+4, and no grasp 3. The candidate made 258 XY filter interventions and 232
+auxiliary queries; the remaining 26 interventions were on the last control of a
+chunk or episode, with no subsequent in-chunk control to update. Independent
+actual geometry scoring found zero candidate sample or chord violations. The
+reference had 45 violating sample points and 57 violating chords across 12 rows;
+these violations are retained and are not masked by the native-success metric.
+The reference's 28/30 native result shows the frozen actor can reach the native
+gate when unfiltered, while its 12 XY-violating rows show that it is not a valid
+safe result. In the paired candidate/reference outcomes, 19 succeeded in both,
+one candidate-only (index 29), nine reference-only, and one failed in both.
+
+Against R54, candidate XY feedback had 19 paired successes, one new success,
+two regressions, and eight failures on both profiles (20/30 vs R54's 21/30).
+Against R53 it had 19 paired successes, one new success, five regressions, and
+five persistent failures (20/30 vs 24/30). R55 common-latent remains 14/30 and
+was not reused. The selected R54 Pick result remains 28/30 native and 30/30
+XY-zero; no Pick rerun or Pick policy path change was made.
+
+Post-run checks validated all three registrations and every source/input
+snapshot, exact 30-row ordered denominators, unchanged R52 scene hashes, and
+selected checkpoint/data identities. Across all candidate controls, executed
+Z/rotation/gripper exactly matched the original scheduled chunk (zero
+mismatches), scheduled chunk boundaries followed the fixed 8-control stride
+(zero mismatches), all XY requests remained within native bounds, and native
+success control accounting matched the trace. All 30 initial scene TCPs satisfy
+the frozen initial-clearance metadata. The reference passed exact requested to
+executed action passthrough on every control. Full details and paired transitions
+are in `full_analysis_r56.json` (SHA-256
+`e4f7ebbe7d7b403d2dfe2009048db12eb41f5fe15f04c677e7d7f743c3e878c9`). Candidate
+full rows hash to
+`82452d14811df2345f9b98db522b9f29ef9493706a1e6a044ab5014aefbe16a3`; reference
+full rows hash to
+`2c5a84efd3555cb1844339bbe1bb31c8ca0949a95c40de62876e97734ecc206b`.
+Registrations, source snapshots, smoke/full rows, and per-row atomic episode
+traces are retained in the same R56 directory.
+
+The final focused evaluator tests passed **25 tests**; the required complete
+suite passed **641 tests, 30 warnings in 86.67 s** under `maniskill` before any
+registration or trial. The three modified runtime/test sources have SHA-256
+`38abef79afe910ab05e1f8da8fa194c7633184320448ca7350df43d224baa098`
+(`render_only_xy_eval.py`),
+`c6104b0bbbfb1ec692e0d759e0da56eb781f8df0250b3664e14456792eb21b92`
+(`evaluate_placesphere_paired.py`), and
+`616515d0e14b3fe58e4482ad0c3eacf0cc08c782bb22874dc46fcd63d4217f80`
+(`test_render_only_xy_eval.py`). No ManiSkill source, training data, model, or
+scene was changed. R56 therefore **does not meet the PlaceSphere 27/30 native
+gate**, despite passing the XY gate. The smallest useful next step is a fixed-row
+control-trace differential on the nine reference-only successes, locating each
+first XY intervention and subsequent task-phase divergence; this should guide a
+single revised mechanism before any additional candidate trial, rather than a
+parameter/latent scan.
+
+No branch change, commit, or push was made.
+
 ## Round 55 — PlaceSphere common-latent event replanning (2026-11-02)
 
 R55 first performed a read-only control-trace comparison of all R53/R54

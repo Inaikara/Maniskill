@@ -133,6 +133,7 @@ class PlaceSpherePairedEvaluator:
     def __init__(self, adapter, catalog, output, device):
         self.adapter, self.catalog = adapter, catalog
         self.output, self.device = Path(output), device
+        self.xy_feedback = False
 
     def run_episode(self, index, scene, writer=None):
         env = _make_env(scene, render=writer is not None)
@@ -178,8 +179,24 @@ class PlaceSpherePairedEvaluator:
                 if mapper is None:
                     mapper = self.adapter.map_action_ee_delta_pose
                 action_batch = mapper(prediction)
-                for action in action_batch[0][:min(8, MAX_STEPS-elapsed)]:
+                chunk = action_batch[0][:min(8, MAX_STEPS-elapsed)]
+                feedback = None
+                if self.xy_feedback:
+                    from examples.baselines.constrain.render_only_xy_eval import PlaceXYFeedback
+                    feedback = PlaceXYFeedback(self.adapter, meta["seed"], self.device)
+                    feedback.start_chunk(action_batch)
+                auxiliary_plan = None
+                auxiliary_offset = 0
+                for offset, action in enumerate(chunk):
                     a = action.detach().cpu().numpy()
+                    scheduled_action = a.copy()
+                    auxiliary_xy = None
+                    if feedback is not None:
+                        selected = feedback.action_for_control(offset, auxiliary_plan, auxiliary_offset)
+                        a = selected.detach().cpu().numpy()
+                        if auxiliary_plan is not None:
+                            auxiliary_xy = a[:2].tolist()
+                            auxiliary_offset += 1
                     next_obs, _, terminated, truncated, info = env.step(a[None])
                     elapsed += 1
                     term, trunc = bool(terminated), bool(truncated)
@@ -187,6 +204,17 @@ class PlaceSpherePairedEvaluator:
                     next_obs = np.asarray(next_obs.detach().cpu() if torch.is_tensor(next_obs) else next_obs,
                                           dtype=np.float32).reshape(-1)
                     history = np.concatenate((history[1:], next_obs[None]), axis=0)
+                    if feedback is not None:
+                        attempt = env._render_only_xy_last_attempt
+                        attempt["scheduled_chunk_index"] = int((elapsed - 1) // 8)
+                        attempt["scheduled_chunk_offset"] = int(offset)
+                        attempt["original_scheduled_action"] = scheduled_action.tolist()
+                        attempt["auxiliary_xy_action"] = auxiliary_xy
+                        attempt["executed_action_provenance"] = (
+                            "scheduled_non_xy_plus_auxiliary_xy" if auxiliary_plan is not None
+                            else "scheduled_full_action")
+                        attempt["auxiliary_xy_control_index"] = (
+                            int(elapsed) if attempt.get("xy_feedback_requested") else None)
                     collision |= _bool(info, "obstacle_collision")
                     crossing |= _bool(info, "obstacle_crossing")
                     now_grasped = _bool(info, "is_obj_grasped")
@@ -204,6 +232,25 @@ class PlaceSpherePairedEvaluator:
                         writer.append_data(_frame(env))
                     if termination:
                         break
+                    if (feedback is not None and attempt.get("xy_feedback_requested")
+                            and offset + 1 < len(chunk)):
+                        from examples.baselines.constrain.render_only_xy_eval import auxiliary_xy_plan
+                        queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)
+                        updated_condition = policy_condition(self.adapter, queued)
+                        auxiliary_plan = auxiliary_xy_plan(
+                            self.adapter, updated_condition, meta["seed"], elapsed, self.device)
+                        auxiliary_offset = 0
+                        attempt["auxiliary_query"] = {
+                            "condition_history_sha256": hashlib.sha256(
+                                np.ascontiguousarray(history).tobytes()).hexdigest(),
+                            "seed_formula": "(scene_seed * 1000003 + control_index) % (2**63 - 1)",
+                            "seed": int((int(meta["seed"]) * 1_000_003 + elapsed) % (2**63 - 1)),
+                            "provided_channels": ["x", "y"],
+                            "scheduled_non_xy_preserved": True,
+                            "plan_sha256": hashlib.sha256(
+                                np.ascontiguousarray(auxiliary_plan.detach().cpu().numpy()).tobytes()
+                            ).hexdigest(),
+                        }
                     if should_replan_after_control(env, termination):
                         break
                 if termination:

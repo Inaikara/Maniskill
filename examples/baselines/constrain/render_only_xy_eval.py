@@ -22,6 +22,7 @@ XY_WORKING_CLEARANCE_M = 0.003
 XY_WORKING_PROFILE = "tcp_xy_working_clearance_3mm_v2"
 FILTER_INTERVENTION_EPSILON = 1e-6
 COMMON_LATENT_PROFILE = "common_latent_v1"
+XY_FEEDBACK_PROFILE = "scheduled_non_xy_tail_auxiliary_xy_v1"
 
 
 class EpisodeTimeout(TimeoutError):
@@ -78,6 +79,45 @@ def configure_place_common_noise(adapter, task, event_replan, device):
     policy = CommonInitialNoise(adapter, device)
     adapter.get_action = policy.get_action
     return policy
+
+
+class PlaceXYFeedback:
+    """Keep scheduled non-XY channels while accepting auxiliary-plan XY only."""
+
+    def __init__(self, adapter, scene_seed, device):
+        self.adapter = adapter
+        self.scene_seed = int(scene_seed)
+        self.device = device
+        self.scheduled_chunk_count = 0
+        self.auxiliary_queries = []
+
+    def start_chunk(self, scheduled_actions):
+        self.scheduled_chunk_count += 1
+        self.scheduled_actions = scheduled_actions
+
+    def action_for_control(self, offset, auxiliary_plan=None, auxiliary_offset=0):
+        import torch
+        scheduled = self.scheduled_actions[0, offset].clone()
+        if auxiliary_plan is not None:
+            scheduled[:2] = auxiliary_plan[0, auxiliary_offset, :2]
+        return scheduled
+
+
+def auxiliary_xy_plan(adapter, condition, scene_seed, control_index, device):
+    """Infer one updated-condition plan without advancing scheduled-plan RNG."""
+    import torch
+    device = torch.device(device)
+    seed = (int(scene_seed) * 1_000_003 + int(control_index)) % (2**63 - 1)
+    devices = []
+    if device.type == "cuda":
+        devices = [device.index if device.index is not None else torch.cuda.current_device()]
+    with torch.random.fork_rng(devices=devices):
+        torch.manual_seed(seed)
+        if devices:
+            torch.cuda.manual_seed(seed)
+        prediction = adapter.get_action(condition)
+        mapper = getattr(adapter, "map_action", None) or adapter.map_action_ee_delta_pose
+        return mapper(prediction)
 
 
 def _episode_timeout(_signum, _frame):
@@ -154,7 +194,8 @@ def score_native_xy_trace(trace, initial_tcp_xy, expected_center_xy, expected_ra
                                                       if step.get("native_success", False)), None))
 
 
-def instrument_env(env, task, *, control_enabled=True, event_replan=False):
+def instrument_env(env, task, *, control_enabled=True, event_replan=False,
+                   xy_feedback=False, xy_constraint=True):
     """Wrap the native step seam; filter each just-in-time action using live TCP."""
     base = env.unwrapped
     if getattr(base, "obstacle_mode", None) != "render_only":
@@ -199,12 +240,14 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False):
                    "last_native_flags": getattr(env, "_render_only_xy_native_flags", None)}
         attempts.append(attempt)
         env._render_only_xy_failed_control_index = attempt["control_index"]
-        filtered = constraint.filter_action(requested, tcp, center, radius)
+        filtered = (constraint.filter_action(requested, tcp, center, radius)
+                    if xy_constraint else requested.copy())
         bounds = np.asarray(constraint.xy_action_bounds, dtype=float)
         bounded_requested = np.clip(requested[:2], bounds[0], bounds[1])
         changed = bool(np.any(np.abs(filtered[:2] - bounded_requested) > FILTER_INTERVENTION_EPSILON))
         attempt["filtered_action"] = filtered.tolist()
         attempt["requested_replan"] = bool(event_replan and changed)
+        attempt["xy_feedback_requested"] = bool(xy_feedback and changed)
         attempt["replan_consumed_at_control_index"] = None
         env._render_only_xy_replan_requested = bool(event_replan and changed)
         attempt["env_step_executed"] = True
@@ -238,6 +281,8 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False):
     env._render_only_xy_native_flags = None
     env._render_only_xy_phase_state = None
     env._render_only_xy_event_replan = bool(event_replan)
+    env._render_only_xy_feedback = bool(xy_feedback)
+    env._render_only_xy_constraint = bool(xy_constraint)
     env._render_only_xy_replan_requested = False
     env._render_only_xy_last_attempt = None
     env._render_only_xy_expected_geometry = _ACTIVE_SCENE_GEOMETRY
@@ -275,8 +320,15 @@ def sha256(path):
     return h.hexdigest()
 
 
+def _atomic_json(path, value):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2, default=_jsonable) + "\n")
+    temporary.replace(path)
+
+
 def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False,
-                        common_latent_replan=False):
+                        common_latent_replan=False, xy_feedback=False, xy_constraint=True):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
@@ -296,8 +348,12 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
     dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
                                            text=True).splitlines()
     body = {"format": "render_only_xy_eval_r47_v1", "task": task,
-            "method": ("ConstrainNet+bufferedXY+event_replan+common_latent_v1"
-                       if common_latent_replan else
+             "method": ("ConstrainNet+unfiltered_render_only_reference"
+                        if not xy_constraint else
+                        "ConstrainNet+bufferedXY+scheduled_non_xy_xy_feedback_v1"
+                        if xy_feedback else
+                        "ConstrainNet+bufferedXY+event_replan+common_latent_v1"
+                        if common_latent_replan else
                        "ConstrainNet+bufferedXY+event_replan_v1" if event_replan
                        else "ConstrainNet+XY constraint"),
             "indices": [int(i) for i in indices],
@@ -305,8 +361,12 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
             "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
                  "working_clearance_profile": XY_WORKING_PROFILE,
                  "working_clearance_m": XY_WORKING_CLEARANCE_M,
-                  "event_replan": bool(event_replan),
-                  "common_latent_replan": bool(common_latent_replan),
+                   "event_replan": bool(event_replan),
+                   "common_latent_replan": bool(common_latent_replan),
+                   "xy_feedback": bool(xy_feedback),
+                   "xy_constraint": bool(xy_constraint),
+                   "xy_feedback_rng": ("forked_torch_cpu_cuda_rng_scene_seed_control_index_v1"
+                                      if xy_feedback else None),
                   "noise_strategy": ("restore_first_scheduled_inference_rng_state_per_replan"
                                      if common_latent_replan else "independent_per_inference"),
                  "filter_intervention_epsilon": FILTER_INTERVENTION_EPSILON,
@@ -400,20 +460,23 @@ def validate_explicit_catalog(registration, task, indices, scenes_dir):
     return catalog
 
 
-def _install_render_only_step_wrapper(task, *, event_replan=False):
+def _install_render_only_step_wrapper(task, *, event_replan=False, xy_feedback=False,
+                                      xy_constraint=True):
     import gymnasium as gym
     original_make = gym.make
 
     def make(*args, **kwargs):
         kwargs["obstacle_mode"] = "render_only"
         env = original_make(*args, **kwargs)
-        instrument_env(env, task, event_replan=event_replan)
+        instrument_env(env, task, event_replan=event_replan, xy_feedback=xy_feedback,
+                       xy_constraint=xy_constraint)
         return env
     gym.make = make
     return original_make
 
 
-def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=False):
+def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=False,
+                  xy_feedback=False, xy_constraint=True):
     global _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.clear()
     if task == "pickcube":
@@ -502,7 +565,11 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
         scene = catalog.load(index)
         _ACTIVE_SCENE_GEOMETRY = {"center": scene["metadata"]["cylinder"]["center_xy"],
                                   "radius": float(scene["metadata"]["cylinder"]["radius"]) + TCP_XY_MARGIN_M}
-        runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
+        if xy_feedback:
+            runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
+            runner.xy_feedback = True
+        else:
+            runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
         row = runner.run_episode(index, scene)
         if noise_policy is not None:
             row["policy_sampling"] = noise_policy.metadata(scene["metadata"]["seed"])
@@ -515,6 +582,17 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
         "zero_xy_violations": False, "violating_samples": [], "violating_segments": []}
     row["native_success"] = bool(row.get("result", {}).get("native_success", False))
     row["actual_tcp_trace"] = trace
+    if xy_feedback:
+        row["policy_sampling"] = {
+            "profile": XY_FEEDBACK_PROFILE,
+            "scene_seed": int(scene["metadata"]["seed"]),
+            "rng_strategy": "torch.random.fork_rng; auxiliary seed=(scene_seed*1000003+control_index)%(2**63-1)",
+            "scheduled_plan_stride_controls": 8,
+            "scheduled_full_plan_count": (len(row.get("actions_native_pd_ee_delta_pose", [])) + 7) // 8,
+            "auxiliary_xy_query_count": sum(bool(step.get("auxiliary_query")) for step in trace),
+            "auxiliary_channels": ["x", "y"],
+            "sampler": "DDIM eta=0; 100 steps; unchanged R30 EMA",
+        }
     row["xy_constraint"] = {"center_xy": center.tolist(), "forbidden_radius_m": radius,
                              "controller_translation_scale_m": 0.1,
             "controller_pose_action_limit": (1.0 if task == "pickcube" else 0.35),
@@ -523,6 +601,10 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
                              "visual_only_obstacle": True, "collision_shapes": 0}
     row["xy_validation"] = report
     row["xy_zero"] = bool(report["zero_xy_violations"])
+    row["method_label"] = ("ConstrainNet unfiltered render-only reference"
+                           if not xy_constraint else
+                           "ConstrainNet+bufferedXY+Place scheduled-nonXY XY-feedback"
+                           if xy_feedback else "ConstrainNet+XY constraint")
     return row
 
 
@@ -538,9 +620,17 @@ def main(argv=None):
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--event-replan", action="store_true")
     parser.add_argument("--common-latent-replan", action="store_true")
+    parser.add_argument("--xy-feedback", action="store_true")
+    parser.add_argument("--xy-constraint", choices=("on", "off"), default="on",
+                        help="off preserves every actor action and scores actual violations")
     args = parser.parse_args(argv)
     if args.common_latent_replan and (args.task != "placesphere" or not args.event_replan):
         raise ValueError("common latent replanning is PlaceSphere-only and requires --event-replan")
+    if args.xy_feedback and args.task != "placesphere":
+        raise ValueError("XY feedback is PlaceSphere-only")
+    xy_constraint = args.xy_constraint == "on"
+    if not xy_constraint and (args.event_replan or args.common_latent_replan or args.xy_feedback):
+        raise ValueError("unfiltered reference cannot enable filtering/replanning modes")
     if args.output.exists():
         raise FileExistsError(args.output)
     source_paths = {"runner": Path(__file__),
@@ -605,7 +695,8 @@ def main(argv=None):
                             {name: {"path": str(path), "sha256": sha256(path)}
                              for name, path in input_paths.items()},
                             event_replan=args.event_replan,
-                            common_latent_replan=args.common_latent_replan)
+                            common_latent_replan=args.common_latent_replan,
+                            xy_feedback=args.xy_feedback, xy_constraint=xy_constraint)
         return
     reg = validate_registration(args.registration)
     registered_replan = bool(reg.get("constraint_profile", {}).get("event_replan", False))
@@ -614,13 +705,22 @@ def main(argv=None):
     registered_common = bool(reg.get("constraint_profile", {}).get("common_latent_replan", False))
     if registered_common != bool(args.common_latent_replan):
         raise ValueError("common-latent runtime flag differs from frozen registration")
+    registered_feedback = bool(reg.get("constraint_profile", {}).get("xy_feedback", False))
+    if registered_feedback != bool(args.xy_feedback):
+        raise ValueError("XY-feedback runtime flag differs from frozen registration")
+    registered_constraint = bool(reg.get("constraint_profile", {}).get("xy_constraint", True))
+    if registered_constraint != xy_constraint:
+        raise ValueError("XY-constraint runtime flag differs from frozen registration")
     if args.scenes is not None:
         validate_explicit_catalog(reg, args.task, args.indices, scenes)
     if (reg.get("task") != args.task or reg.get("indices") != args.indices
             or any(sha256(path) != item["sha256"] for name, item in reg["inputs"].items()
                    for path in [item["path"]])):
         raise ValueError("registered task/indices/input identity mismatch")
-    original_make = _install_render_only_step_wrapper(args.task, event_replan=args.event_replan)
+    original_make = _install_render_only_step_wrapper(
+        args.task, event_replan=args.event_replan, xy_feedback=args.xy_feedback,
+        xy_constraint=xy_constraint)
+    args.output.mkdir(parents=True, exist_ok=False)
     rows = []
     failures = False
     started = time.monotonic()
@@ -630,13 +730,15 @@ def main(argv=None):
                 failures = True
                 rows.append({"scene_index": index, "status": "runtime_error",
                              "error": f"trial exceeded {TRIAL_WALL_SECONDS}s wall limit"})
+                _atomic_json(args.output / f"episode_{index:03d}.json", rows[-1])
                 continue
             previous_handler = signal.signal(signal.SIGALRM, _episode_timeout)
             remaining = TRIAL_WALL_SECONDS - (time.monotonic() - started)
             signal.setitimer(signal.ITIMER_REAL, min(EPISODE_WALL_SECONDS, remaining))
             try:
                 row = _evaluate_one(args.task, index, args.device, scenes,
-                                    common_latent_replan=args.common_latent_replan)
+                                    common_latent_replan=args.common_latent_replan,
+                                    xy_feedback=args.xy_feedback, xy_constraint=xy_constraint)
                 rows.append(row)
                 failures |= row.get("status") != "evaluated"
             except Exception as exc:
@@ -645,14 +747,14 @@ def main(argv=None):
             finally:
                 signal.setitimer(signal.ITIMER_REAL, 0)
                 signal.signal(signal.SIGALRM, previous_handler)
+            _atomic_json(args.output / f"episode_{index:03d}.json", rows[-1])
     finally:
         import gymnasium as gym
         gym.make = original_make
     # Integration recording is completed per scene in the evaluators' native traces.
-    args.output.mkdir(parents=True, exist_ok=False)
     summary = summarize_rows(rows, len(args.indices))
-    (args.output / "rows.json").write_text(json.dumps(rows, indent=2, default=_jsonable) + "\n")
-    (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+    _atomic_json(args.output / "rows.json", rows)
+    _atomic_json(args.output / "summary.json", summary)
     validate_registration(args.registration)
     print(json.dumps(summary), flush=True)
     if failures:
