@@ -242,6 +242,107 @@ def test_failure_denominator_counts_missing_rows():
     assert result["native_success_count"] == 1
 
 
+def test_common_initial_noise_reuses_latent_with_current_condition_and_isolates_rng():
+    import torch
+    from examples.baselines.constrain.render_only_xy_eval import CommonInitialNoise
+
+    class Adapter:
+        def __init__(self):
+            self.latents = []
+
+        def get_action(self, condition):
+            latent = torch.randn((1, 16, 7), device=condition.device)
+            self.latents.append(latent.clone())
+            return latent + condition
+
+    adapter = Adapter()
+    torch.manual_seed(7123)
+    expected_first = adapter.get_action(torch.zeros(1, 1, 1))
+    torch.manual_seed(7123)
+    adapter = Adapter()
+    policy = CommonInitialNoise(adapter, "cpu")
+    first = policy.get_action(torch.zeros(1, 1, 1))
+    assert torch.equal(first, expected_first)
+
+    global_state = torch.get_rng_state().clone()
+    second = policy.get_action(torch.ones(1, 1, 1))
+    assert torch.equal(adapter.latents[0], adapter.latents[1])
+    assert torch.allclose(second - first, torch.ones_like(first))
+    assert torch.equal(torch.get_rng_state(), global_state)
+    assert policy.plan_count == 2
+
+
+def test_common_initial_noise_is_episode_local_and_cuda_rng_isolated_when_available():
+    import torch
+    from examples.baselines.constrain.render_only_xy_eval import CommonInitialNoise
+
+    class Adapter:
+        def get_action(self, condition):
+            return torch.randn((1, 2), device=condition.device)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.manual_seed(41)
+    first_policy = CommonInitialNoise(Adapter(), device)
+    first = first_policy.get_action(torch.zeros(1, device=device))
+    before = torch.cuda.get_rng_state(torch.device(device)).clone() if device == "cuda" else torch.get_rng_state().clone()
+    first_policy.get_action(torch.ones(1, device=device))
+    after = torch.cuda.get_rng_state(torch.device(device)) if device == "cuda" else torch.get_rng_state()
+    assert torch.equal(before, after)
+
+    torch.manual_seed(41)
+    second_policy = CommonInitialNoise(Adapter(), device)
+    assert torch.equal(first, second_policy.get_action(torch.zeros(1, device=device)))
+
+
+def test_pick_profile_does_not_install_common_initial_noise():
+    import torch
+    from examples.baselines.constrain.render_only_xy_eval import configure_place_common_noise
+
+    class Adapter:
+        def get_action(self, condition):
+            return torch.randn(1)
+
+    adapter = Adapter()
+    original = adapter.get_action
+    assert configure_place_common_noise(adapter, "pickcube", True, "cpu") is None
+    assert adapter.get_action == original
+
+
+def test_event_replan_uses_new_observation_with_the_same_initial_latent():
+    import torch
+    from examples.baselines.constrain.render_only_xy_eval import (
+        configure_place_common_noise, consume_replan_request,
+    )
+
+    class Adapter:
+        def __init__(self):
+            self.conditions, self.latents = [], []
+
+        def get_action(self, condition):
+            latent = torch.randn((1, 1), device=condition.device)
+            self.conditions.append(condition.clone())
+            self.latents.append(latent)
+            return latent + condition
+
+    env = _Env()
+    trace = instrument_env(env, "placesphere", event_replan=True)
+    adapter = Adapter()
+    policy = configure_place_common_noise(adapter, "placesphere", True, "cpu")
+    observation = torch.tensor([[0.0]])
+    first = policy.get_action(observation)
+    env.step(np.array([[-0.35, 0.0, 0.1, 0.2, 0.0, 0.0, -1.0]]))
+    assert should_replan_after_control(env, None)
+    assert consume_replan_request(env, 2)
+    observation = torch.tensor([[1.0]])
+    second = policy.get_action(observation)
+
+    assert trace[0]["replan_consumed_at_control_index"] == 2
+    assert torch.equal(adapter.latents[0], adapter.latents[1])
+    assert torch.equal(adapter.conditions[0], torch.tensor([[0.0]]))
+    assert torch.equal(adapter.conditions[1], observation)
+    assert torch.allclose(second - first, torch.ones_like(first))
+
+
 def test_explicit_catalog_is_pinned_bounded_and_unique(tmp_path):
     import hashlib
     import json

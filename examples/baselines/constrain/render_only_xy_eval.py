@@ -21,10 +21,63 @@ TCP_XY_MARGIN_M = 0.005
 XY_WORKING_CLEARANCE_M = 0.003
 XY_WORKING_PROFILE = "tcp_xy_working_clearance_3mm_v2"
 FILTER_INTERVENTION_EPSILON = 1e-6
+COMMON_LATENT_PROFILE = "common_latent_v1"
 
 
 class EpisodeTimeout(TimeoutError):
     pass
+
+
+class CommonInitialNoise:
+    """Reuse each episode's first inference RNG state for PlaceSphere replans."""
+
+    def __init__(self, adapter, device):
+        import torch
+        self.adapter = adapter
+        self.original_get_action = adapter.get_action
+        self.device = torch.device(device)
+        self.plan_count = 0
+        self.cpu_state = None
+        self.cuda_device = None
+        self.cuda_state = None
+        self.initial_state_sha256 = None
+
+    def get_action(self, condition):
+        import torch
+        if self.cpu_state is None:
+            self.cpu_state = torch.get_rng_state().clone()
+            states = [self.cpu_state.numpy().tobytes()]
+            if self.device.type == "cuda":
+                self.cuda_device = (self.device.index if self.device.index is not None
+                                    else torch.cuda.current_device())
+                self.cuda_state = torch.cuda.get_rng_state(self.cuda_device).clone()
+                states.append(self.cuda_state.cpu().numpy().tobytes())
+            self.initial_state_sha256 = hashlib.sha256(b"".join(states)).hexdigest()
+            result = self.original_get_action(condition)
+        else:
+            devices = [] if self.cuda_device is None else [self.cuda_device]
+            with torch.random.fork_rng(devices=devices):
+                torch.set_rng_state(self.cpu_state)
+                if self.cuda_device is not None:
+                    torch.cuda.set_rng_state(self.cuda_state, self.cuda_device)
+                result = self.original_get_action(condition)
+        self.plan_count += 1
+        return result
+
+    def metadata(self, episode_seed):
+        return {"profile": COMMON_LATENT_PROFILE,
+                "strategy": "restore_first_scheduled_inference_rng_state_per_replan",
+                "episode_seed": int(episode_seed), "plan_count": self.plan_count,
+                "first_inference_rng_state_sha256": self.initial_state_sha256,
+                "actor_sampler": "DDIM eta=0; 100 diffusion steps; unchanged checkpoint"}
+
+
+def configure_place_common_noise(adapter, task, event_replan, device):
+    if task != "placesphere" or not event_replan:
+        return None
+    policy = CommonInitialNoise(adapter, device)
+    adapter.get_action = policy.get_action
+    return policy
 
 
 def _episode_timeout(_signum, _frame):
@@ -222,7 +275,8 @@ def sha256(path):
     return h.hexdigest()
 
 
-def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False):
+def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False,
+                        common_latent_replan=False):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
@@ -242,14 +296,19 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
     dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
                                            text=True).splitlines()
     body = {"format": "render_only_xy_eval_r47_v1", "task": task,
-            "method": "ConstrainNet+bufferedXY+event_replan_v1" if event_replan
-                      else "ConstrainNet+XY constraint",
+            "method": ("ConstrainNet+bufferedXY+event_replan+common_latent_v1"
+                       if common_latent_replan else
+                       "ConstrainNet+bufferedXY+event_replan_v1" if event_replan
+                       else "ConstrainNet+XY constraint"),
             "indices": [int(i) for i in indices],
             "git_head_context": git_head, "worktree_dirty_paths": dirty_paths,
             "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
                  "working_clearance_profile": XY_WORKING_PROFILE,
                  "working_clearance_m": XY_WORKING_CLEARANCE_M,
-                 "event_replan": bool(event_replan),
+                  "event_replan": bool(event_replan),
+                  "common_latent_replan": bool(common_latent_replan),
+                  "noise_strategy": ("restore_first_scheduled_inference_rng_state_per_replan"
+                                     if common_latent_replan else "independent_per_inference"),
                  "filter_intervention_epsilon": FILTER_INTERVENTION_EPSILON,
                 "controller": "pd_ee_delta_pose", "frame": "world XY",
                 "translation_scale_m_per_action_unit": 0.1,
@@ -354,7 +413,7 @@ def _install_render_only_step_wrapper(task, *, event_replan=False):
     return original_make
 
 
-def _evaluate_one(task, index, device, scenes_dir=None):
+def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=False):
     global _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.clear()
     if task == "pickcube":
@@ -425,6 +484,8 @@ def _evaluate_one(task, index, device, scenes_dir=None):
         base = Path("outputs/ckpt/20261027_224727_placesphere_action_codec_r30_base_verified/final.pt")
         adapter = PlaceSphereConstrainAdapter(ckpt, device=device, control_enabled=True,
                                               base_checkpoint=base, sampler="ddim", eta=0.0)
+        noise_policy = (configure_place_common_noise(adapter, task, True, device)
+                        if common_latent_replan else None)
         from examples.baselines.constrain.placesphere_action_codec import CONTROLLER_RANGE
         from examples.baselines.constrain.placesphere_transport_detour import TransportDetourSceneSet
         transport_catalog = TransportDetourSceneSet(
@@ -443,6 +504,8 @@ def _evaluate_one(task, index, device, scenes_dir=None):
                                   "radius": float(scene["metadata"]["cylinder"]["radius"]) + TCP_XY_MARGIN_M}
         runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
         row = runner.run_episode(index, scene)
+        if noise_policy is not None:
+            row["policy_sampling"] = noise_policy.metadata(scene["metadata"]["seed"])
     traces = [item for item in _ACTIVE_TRACES if item[0]]
     trace = traces[-1][0] if traces else []
     center = np.asarray(scene["metadata"]["cylinder"]["center_xy"], dtype=float)
@@ -474,7 +537,10 @@ def main(argv=None):
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--event-replan", action="store_true")
+    parser.add_argument("--common-latent-replan", action="store_true")
     args = parser.parse_args(argv)
+    if args.common_latent_replan and (args.task != "placesphere" or not args.event_replan):
+        raise ValueError("common latent replanning is PlaceSphere-only and requires --event-replan")
     if args.output.exists():
         raise FileExistsError(args.output)
     source_paths = {"runner": Path(__file__),
@@ -538,12 +604,16 @@ def main(argv=None):
         freeze_registration(args.registration, args.task, args.indices, source_paths,
                             {name: {"path": str(path), "sha256": sha256(path)}
                              for name, path in input_paths.items()},
-                            event_replan=args.event_replan)
+                            event_replan=args.event_replan,
+                            common_latent_replan=args.common_latent_replan)
         return
     reg = validate_registration(args.registration)
     registered_replan = bool(reg.get("constraint_profile", {}).get("event_replan", False))
     if registered_replan != bool(args.event_replan):
         raise ValueError("event-replan runtime flag differs from frozen registration")
+    registered_common = bool(reg.get("constraint_profile", {}).get("common_latent_replan", False))
+    if registered_common != bool(args.common_latent_replan):
+        raise ValueError("common-latent runtime flag differs from frozen registration")
     if args.scenes is not None:
         validate_explicit_catalog(reg, args.task, args.indices, scenes)
     if (reg.get("task") != args.task or reg.get("indices") != args.indices
@@ -565,7 +635,8 @@ def main(argv=None):
             remaining = TRIAL_WALL_SECONDS - (time.monotonic() - started)
             signal.setitimer(signal.ITIMER_REAL, min(EPISODE_WALL_SECONDS, remaining))
             try:
-                row = _evaluate_one(args.task, index, args.device, scenes)
+                row = _evaluate_one(args.task, index, args.device, scenes,
+                                    common_latent_replan=args.common_latent_replan)
                 rows.append(row)
                 failures |= row.get("status") != "evaluated"
             except Exception as exc:

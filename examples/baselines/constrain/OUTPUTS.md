@@ -1,5 +1,123 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 55 — PlaceSphere common-latent event replanning (2026-11-02)
+
+R55 first performed a read-only control-trace comparison of all R53/R54
+PlaceSphere outcomes (R53 failures, R54 regressions, and selected prior
+successes). The complete per-control table is
+`outputs/exp/20261102_150121_placesphere_coherence_r55/r53_r54_trace_comparison.json`
+(SHA-256 `e896fb646811ad10cc42b2330e26ffd7c46df7fe19f9b03317d2243266091490`).
+It includes each requested/filtered gripper channel (identical in every row),
+gripper sign flips, first negative request, first native `is_obj_grasped`,
+replans requested/consumed and while requesting negative grip, XY interventions
+before/after grasp, per-control task phase, and derived TCP-to-cylinder-center
+distance. The retained traces do not include per-control object height, so exact
+first-lift controls cannot be recovered; they retain only final `ever_lifted` and
+per-control grasp flags. Object-to-bin distance was not recorded, and no physical
+cause is inferred from that missing context.
+
+On R54 Place regressions 12/15/21/29, first negative requested grip moved from
+R53 controls 22/62/64/94 to R54 controls 33/39/27/36; these R54 rows had 14/29/30/44
+replans before first grasp, which was never observed. Grip sign flips were 15/10/3/3;
+replans during negative requested grip were 0/0/4/9. Thus the replan-triggered full
+model calls alter temporal gripper sequences as conditioning changes, in addition
+to consuming new Gaussian initial noise. This supports testing the noise/temporal
+interaction, but does not establish a physical causal mechanism. Index 27 remains
+an independent release/stability failure: zero replans in both R53 and R54.
+R54's full Pick+Place cohorts requested 963 replans total (704 PickCube + 259
+PlaceSphere); all 963 were consumed at a subsequent policy inference.
+Holding replans until grasp was not selected: it cannot react to the R53
+grasp-without-lift failures (indices 6/10/14) when those trajectories never
+achieve a grasp that would release the hold.
+
+The sole R55 candidate was preregistered as **ConstrainNet+bufferedXY+
+event_replan+common_latent_v1**. It is a combined method, not an isolated
+replanning ablation. PlaceSphere only: the first scheduled inference captures the
+scene-seeded RNG state; subsequent XY-event replans restore that state inside
+scoped `torch.random.fork_rng`, while every call uses its newly updated observation
+condition. There is one latent per plan, no candidate sampling or seed search;
+the seven learned action channels, DDIM 100-step sampler, eta=0, R30 checkpoint,
+XY buffer, controller budget, and non-scripted Z/rotation/gripper behavior remain
+unchanged. `first_plan_r30_equivalence.json` (SHA-256
+`fe45d32d20bdba40e9323f2d2bb9ae403dc4c0fe84eabd4c175fe7b03030bb93`) exercises the
+actual R30 PlaceSphere adapter on a fixed R52 observation/RNG: wrapped and
+unwrapped first-plan tensors are bitwise identical (max difference 0), and
+post-inference CPU/CUDA RNG states match. Each native episode records the exact
+scene seed, RNG-state digest, strategy, sampler profile, and plan count.
+`per_episode_profile_manifest.json` (SHA-256
+`cc5e670a686d15c56109d3b6442a368e8e9f39fc7455aca26fea54a616ceaf2b`) binds all
+36 full/smoke rows to their registration identities, source and snapshot hashes,
+input hashes, task options, scene seed, and per-episode noise metadata.
+
+### Preregistered outcomes
+
+The R52 PlaceSphere catalog and all 30 indices `0..29` were registered before
+evaluation. The separately registered diagnostic smoke order was `2,5,12,15,0,1`
+(prior failures, then prior successes); it is not pooled into the full denominator.
+Both registrations retain source snapshots and frozen inputs. Full registration
+identity is
+`49687ffbf30cde57039a606add174a369de264b1cc03b51f1c24d00ac04eafbd`, registration
+file SHA-256 `fe4db2e4af13a1ec91e32f239ca450d06be601839531ad4c9cfe28e62e06e8fd`;
+full rows SHA-256 is
+`df640c390489edcc54f877ef6b70f37234c6dd1e0313d8fc070e91ec6f9cea37`; the runner
+source SHA-256 is
+`cde0cbfbdc4a06954919df661b8aaddb5c0beedce8d85cd3aab8dca7041497b4`. The smoke
+registration identity is
+`dc83e1373e897736cdc4a842948e92445165c8c49a7c7f16b693ec440f1f0cd2`.
+
+| Evaluation | Native success | Runtime errors | XY-zero | Minimum actual TCP sample / chord gap | Replans requested / consumed |
+|---|---:|---:|---:|---:|---:|
+| Smoke (6 diagnostic rows) | 1/6 | 0 | 6/6 | +2.405 mm minimum sample gap | 126 / 126 |
+| Full fixed cohort (30 rows) | 14/30 **fail ≥27 gate** | 0 | 30/30 | +0.404 / +0.404 mm | 283 / 283 |
+
+Full analysis is `full_analysis.json` (SHA-256
+`b813a001ca0e4c7e72726e1fcdd3e13c9817a4db1f84e39cdc1bb8c88c13a079`). Every
+episode had the registered common-latent profile and an exact scene seed; all 283
+requested replans were consumed. The full 30-row denominator was retained, all
+300-second per-episode / 3,600-second trial guards were active, every environment
+closed in `finally`, and no native action was issued beyond PlaceSphere's original
+200-control task limit. Independent catalog scoring included the initial TCP and
+every measured sample/chord: zero sample/chord violations, with the smallest
+positive gap 0.404 mm. R55 therefore preserves the XY gate but **does not meet the
+native-success goal**, and common latent is not accepted as a successful fix.
+
+R55 native terminal phases: task success 14, no grasp 6, grasp/no lift 4,
+release/stability failure 4, transport/no release 1, and grasped/no transport 1.
+Compared with R54's 21/30, common-latent R55 has 14/30. This result does not prove
+the cause, but common noise alone did not stabilize the replanned action sequence.
+The next smallest evidence-based candidate is Place-only XY-event replanning that
+keeps the outstanding model-predicted non-XY actions from the current eight-action
+chunk and replaces only XY with the fresh-observation plan. This directly tests
+the observed repeated gripper phase changes (e.g. R55 index 12 has 30 sign flips
+and no grasp) without scripted expert gripper logic or geometric relaxation. It
+must be treated as a separately named method and preregistered before any further
+native result; no additional seed/noise scan is justified.
+
+Frozen direct inputs remain the R52 PlaceSphere catalog
+`8e24d2c53376496d64ab3e80e3dc7361b583b6cfad2380e11d44a0dcf008aa6e` /
+`c586bb02ae03bb35e937869180e1beb02153051b4bc076420454e9e3a83236b1`, R30 EMA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`, matched Base
+`491970382f3ed8dac7ed88ad1ab3f5cd23fb2d29065291a507ff766c75a6f071`, and unchanged
+training HDF5/manifest
+`796c7a65f4ac3d9b8f434f71764ab393eec4257c217a79d4351f338e78993961` /
+`aebbb0d79eed376b8c6a79e10b297751ee51077d168e03ceb12db643358f9fc9` (the existing
+1,000 direct + 500 obstacle training cohorts). R52 layout/preflight, visible
+render-only geometry, and strict initial-clearance contract were not changed.
+All R55 source snapshots and nine direct inputs validated after full execution.
+`post_execution_audit.json` (SHA-256
+`53730b697bb08b97cf9313e3a21e5f66922824c6f2248995a136f409540b8533`) records
+the post-run source/input validation, exact row sets, R52 strict-clear preflight,
+episode action limits, and recorded seeds/profiles.
+The R54 Pick result remains 28/30 and XY 30/30; Place-only installation has a
+regression test proving the Pick path does not install or consume common-latent
+noise, so the retained Pick cohort was not blindly rerun.
+
+Focused tests passed 22; the required suite passed **639 tests, 30 warnings in
+94.23 s** after the final code change. The geometry analyzer now requires finite
+two-element center vectors and rejects truncated, extended, and non-finite centers.
+No ManiSkill source, training data, model, or scene was changed. No branch change,
+commit, or push was made.
+
 ## Round 54 — event-triggered replanning on corrected-XY cohorts (2026-11-02)
 
 R54 applied one control-loop change to the fixed R52 PickCube and PlaceSphere

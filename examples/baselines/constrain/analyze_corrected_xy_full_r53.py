@@ -37,13 +37,25 @@ def chord_gap(start, end, center, radius):
 
 def validate_trace_geometry(trace, expected_center, expected_radius):
     """Reject trace geometry that disagrees with the catalog-derived contract."""
+    expected = _finite_xy(expected_center, "expected catalog center")
     for step in trace:
-        center = step["obstacle_center_xy"]
+        center = _finite_xy(step["obstacle_center_xy"], "trace center")
         radius = float(step["forbidden_radius_m"])
-        if (not all(abs(float(a) - float(b)) <= 1e-6
-                    for a, b in zip(center, expected_center))
+        if (not all(abs(a - b) <= 1e-6 for a, b in zip(center, expected))
                 or abs(radius - float(expected_radius)) > 1e-7):
             raise ValueError("trace geometry differs from frozen catalog geometry")
+
+
+def _finite_xy(value, name):
+    import math
+
+    try:
+        point = [float(item) for item in value]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite 2-vector") from exc
+    if len(point) != 2 or not all(math.isfinite(item) for item in point):
+        raise ValueError(f"{name} must be a finite 2-vector")
+    return point
 
 
 def analyze_task(task):
