@@ -186,6 +186,28 @@ def summarize_rows(rows, requested):
             "xy_zero_count": sum(bool(r.get("xy_zero")) for r in complete)}
 
 
+def validate_explicit_catalog(registration, task, indices, scenes_dir):
+    """Require explicit execution catalogs to be the exact preregistered inputs."""
+    if len(set(indices)) != len(indices) or any(index < 0 for index in indices):
+        raise ValueError("scene indices must be unique and non-negative")
+    scenes_dir = Path(scenes_dir)
+    inputs = registration.get("inputs", {})
+    for key, path in (("scene_manifest", scenes_dir / "manifest.json"),
+                      ("scene_h5", scenes_dir / "scenes.h5")):
+        item = inputs.get(key)
+        if item is None or Path(item["path"]).resolve() != path.resolve():
+            raise ValueError("explicit scenes differ from registered scene catalog")
+        if sha256(path) != item["sha256"]:
+            raise ValueError(f"registered input mismatch: {key}")
+    module_name = ("examples.baselines.constrain.pickcube_transport_detour" if task == "pickcube"
+                   else "examples.baselines.constrain.placesphere_transport_detour")
+    module = __import__(module_name, fromlist=["TransportDetourSceneSet"])
+    catalog = module.TransportDetourSceneSet(scenes_dir)
+    if any(index >= len(catalog) for index in indices):
+        raise ValueError("requested scene index is outside explicit catalog")
+    return catalog
+
+
 def _install_render_only_step_wrapper(task):
     import gymnasium as gym
     original_make = gym.make
@@ -199,7 +221,7 @@ def _install_render_only_step_wrapper(task):
     return original_make
 
 
-def _evaluate_one(task, index, device):
+def _evaluate_one(task, index, device, scenes_dir=None):
     _ACTIVE_TRACES.clear()
     if task == "pickcube":
         from examples.baselines.constrain import pickcube_body_hint_round41 as r41
@@ -255,7 +277,7 @@ def _evaluate_one(task, index, device):
                 return sample[:, 1:9]
             @staticmethod
             def map_action_ee_delta_pose(action): return torch.as_tensor(action)
-        catalog = TransportDetourSceneSet(DEV_SCENES)
+        catalog = TransportDetourSceneSet(scenes_dir or DEV_SCENES)
         scene = catalog.load(index)
         runner = PickCubePairedEvaluator(Adapter(), catalog, "constrain_dp", ".", device, max_steps=500)
         row = runner.run_episode(index, scene)
@@ -269,7 +291,8 @@ def _evaluate_one(task, index, device):
                                               base_checkpoint=base, sampler="ddim", eta=0.0)
         from examples.baselines.constrain.placesphere_action_codec import CONTROLLER_RANGE
         from examples.baselines.constrain.placesphere_transport_detour import TransportDetourSceneSet
-        transport_catalog = TransportDetourSceneSet("outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes")
+        transport_catalog = TransportDetourSceneSet(
+            scenes_dir or "outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes")
         class Catalog:
             def __len__(self): return len(transport_catalog)
             def load(self, i): return transport_catalog.load(i)
@@ -306,6 +329,8 @@ def main(argv=None):
     parser.add_argument("--indices", type=int, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--registration", type=Path, required=True)
+    parser.add_argument("--scenes", type=Path,
+                        help="explicit task-native scene catalog (defaults to the historical catalog)")
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--device", default="cuda")
     args = parser.parse_args(argv)
@@ -317,7 +342,7 @@ def main(argv=None):
     if args.task == "pickcube":
         from examples.baselines.constrain.pickcube_clearance_eval_r44 import CONTROL, DEV_SCENES, STATS_PATH
         checkpoint = CONTROL
-        scenes = Path(DEV_SCENES)
+        scenes = args.scenes or Path(DEV_SCENES)
         source_paths.update({"task": Path("examples/baselines/constrain/pickcube_obstacle.py"),
                              "actor": Path("examples/baselines/constrain/pickcube_clearance_train_r44.py"),
                              "rollout": Path("examples/baselines/constrain/evaluate_pickcube_paired.py"),
@@ -341,7 +366,7 @@ def main(argv=None):
                             "data_manifest": Path(engine.DATA_MANIFEST)})
     else:
         checkpoint = Path("outputs/ckpt/20261027_224727_placesphere_action_codec_r30_constrain_verified_150k/final.pt")
-        scenes = Path("outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes")
+        scenes = args.scenes or Path("outputs/exp/20261024_014459_placesphere_learning_pilot/dev_scenes")
         source_paths.update({"task": Path("examples/baselines/constrain/placesphere_obstacle.py"),
                              "actor": Path("examples/baselines/constrain/placesphere_constrain.py"),
                              "rollout": Path("examples/baselines/constrain/evaluate_placesphere_paired.py"),
@@ -360,7 +385,12 @@ def main(argv=None):
                             "data_h5": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.h5"),
                              "data_manifest": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.json"),
                             "checkpoint_correction": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/checkpoint_metadata_correction.json")})
+    if len(set(args.indices)) != len(args.indices) or any(i < 0 for i in args.indices):
+        raise ValueError("scene indices must be unique and non-negative")
     if args.register:
+        if args.scenes is not None:
+            input_paths["scene_manifest"] = scenes / "manifest.json"
+            input_paths["scene_h5"] = scenes / "scenes.h5"
         if args.output.exists():
             raise FileExistsError(args.output)
         freeze_registration(args.registration, args.task, args.indices, source_paths,
@@ -368,6 +398,8 @@ def main(argv=None):
                              for name, path in input_paths.items()})
         return
     reg = validate_registration(args.registration)
+    if args.scenes is not None:
+        validate_explicit_catalog(reg, args.task, args.indices, scenes)
     if (reg.get("task") != args.task or reg.get("indices") != args.indices
             or any(sha256(path) != item["sha256"] for name, item in reg["inputs"].items()
                    for path in [item["path"]])):
@@ -387,7 +419,7 @@ def main(argv=None):
             remaining = TRIAL_WALL_SECONDS - (time.monotonic() - started)
             signal.setitimer(signal.ITIMER_REAL, min(EPISODE_WALL_SECONDS, remaining))
             try:
-                row = _evaluate_one(args.task, index, args.device)
+                row = _evaluate_one(args.task, index, args.device, scenes)
                 rows.append(row)
                 failures |= row.get("status") != "evaluated"
             except Exception as exc:

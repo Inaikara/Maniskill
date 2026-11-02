@@ -1,5 +1,88 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 48 — initial-clear render-only XY cohorts (2026-11-02)
+
+Two independent 30-scene native reset catalogs are frozen at
+`outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/{pickcube,placesphere}/`.
+They are evaluation snapshots, not expert demonstrations: sampling used native
+task reset/layout generation, captured the complete native state, controller,
+and task observations, and made **zero task steps, policy calls, or demo writes**.
+The cylinder center is on the direct object-to-goal XY segment at a seeded
+fraction in `[0.4, 0.6]`; radius is fixed at 0.03 m. Cylinder visual heights are
+frozen per task (PickCube 0.14 m; PlaceSphere 0.08 m). Direct-path endpoints are
+outside the cylinder disk. Both catalogs use the explicit existing R47
+TCP-only profile `tcp_xy_cylinder_radius_plus_5mm_v1`; admission uses the
+measured native TCP after reset and requires a strictly positive signed gap to
+radius + 0.005 m. No legacy egress waiver is used.
+
+| Task | Seed | Accepted / attempts | Rejections | Minimum restored signed TCP gap | Manifest SHA-256 | HDF5 SHA-256 |
+|---|---:|---:|---|---:|---|---|
+| PickCube | 481100 | 30 / 149 | 92 too-short transport; 25 inside; 2 duplicate layout | 0.000822878 m | `6ba3fac915f68464862ababbba602ecd0612023908efa8134eff1e1cafe31fa7` | `5dc7c8808787c7edaf9b64a3adc9b02a7afaf22aab8b75df09fe134f53449089` |
+| PlaceSphere | 482100 | 30 / 89 | 24 too-short transport; 25 inside; 10 duplicate layout | 0.000642924 m | `5e677558d10bfb2d993090d8acc217c70ada24962a6f0cacc9f1586572d94081` | `864a7a7de25ee19c0a905200abadde5a6e439b62cf99248e12e4b23ef53cd66e` |
+
+Each generation was bounded by 1,000 attempts, 600 s wall time and a 300 s
+per-reset alarm. One deterministic seed stream per task was used. Attempt journals
+include the native reset attempt, seed, rejection/admission reason, and elapsed
+time. Duplicate filtering checked the frozen task training manifest (direct and
+obstacle records), the previous task-specific evaluation catalog, and prior
+accepted samples: same seed, or both start and goal coordinates componentwise
+within 0.02 m. This is the exact identity scope checked; it makes no broader
+claim about other task datasets. Training HDF5 and manifests remained unchanged.
+
+The true zero-step native restoration audit passed **30/30 per task** from the
+saved catalog, with exact native state and controller hashes, post-restore task
+and visible-cylinder center agreement, zero cylinder collision shapes, and
+catalog-matched observations (PickCube exact; PlaceSphere within the catalog's
+native observation tolerance). Audits:
+`pickcube/preflight.json` (SHA-256
+`8f7863b080e20e132b81d7a751bbf5850ea4390065873c5683a8d3a006e8f8dd`) and
+`placesphere/preflight.json` (SHA-256
+`3c496265d382f4c37d8428f9ad70ff8c9d5e3efb7e6249e20eb541a4c52c2870`). Minimum
+post-restore profile gaps are 0.822878 mm and 0.642924 mm respectively. Source
+snapshots, sampling registrations, input identities, preflight registrations,
+and all attempt journals are retained beside each catalog. Sampling registration
+identities are PickCube `312f911603512e14c4af3ffd9a16e929b0641866f81e2d0c1fb4e5023c69a629`
+and PlaceSphere `3abc7508072258005bbcf23fb774c63a27b4f7e3e38a4465ce128a1d7bec7946`;
+all registered data inputs and source snapshots revalidated byte-identically.
+No policy episodes were run; native success rates remain unevaluated.
+
+Earlier R48 attempts remain unmodified under `20261102_140000_initial_clear_xy_r48/`,
+`20261102_143000_initial_clear_xy_r48_final/`, and
+`20261102_150000_initial_clear_xy_r48_registered/`; they are not the selected
+cohort. The first PickCube sampler process exited before writing its sampling
+registration due to a local argument-shadowing error. A first no-step preflight
+also exited while formatting PickCube's native reset return; both were corrected
+in a fresh attempt with new source/input registrations. The first PlaceSphere
+catalog used 0.12 m visual height; it was retained, then superseded by the
+registered 0.08 m task-matched cohort in the selected output. None of these
+attempts ran policy actions or changed old scenes/training data.
+
+R48 intentionally leaves the frozen R44 PickCube EMA
+`fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769` and R30
+PlaceSphere EMA `6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`
+unchanged. For the next round, first preregister each full index list with
+`render_only_xy_eval --register --scenes <catalog>`, then validate the
+registration and run the evaluator with the same `--scenes` path, all indices
+`0..29`, an exclusive new output directory, 300 s per episode and 3,600 s per
+task. Do not start policy evaluation until both registrations and their source/
+input hashes are frozen. The required command shape is:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s \
+  python -m examples.baselines.constrain.render_only_xy_eval --task <pickcube|placesphere> \
+  --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/<task> \
+  --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output outputs/exp/YYYYMMDD_HHMMSS_render_only_xy_r48/<task>_rows \
+  --registration outputs/exp/YYYYMMDD_HHMMSS_render_only_xy_r48/<task>_registration.json \
+  --device cuda
+```
+
+Registration command uses the same arguments plus `--register`; run it once per
+task before the evaluator command. The R48 acceptance gate is still a future
+result: at least 27 native successes per 30 and zero measured TCP XY sample or
+chord violations from each initial state through first native success.
+
 ## Round 47 — restored-geometry TCP-only XY preflight (2026-11-02)
 
 **Decision gate: native trials stopped.** The required no-step preflight restored

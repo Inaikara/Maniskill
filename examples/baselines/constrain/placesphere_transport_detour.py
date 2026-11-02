@@ -1491,21 +1491,22 @@ class TransportDetourSceneSet:
 
         row = self.manifest["scenes"][index]
         expert = row["expert"]
-        if not all(expert.get(key) is True for key in (
+        initial_clear = row.get("sampling_profile") == "initial_clear_xy_v1"
+        if not initial_clear and not all(expert.get(key) is True for key in (
                 "native_success", "on_bin", "static", "ungrasped", "safe_success",
                 "release_phase_reached", "retreat_phase_reached", "settle_phase_reached",
                 "direct_transport_blocked")):
             raise ValueError("scene expert acceptance evidence is incomplete")
-        if expert.get("obstacle_collision") is not False or expert.get("obstacle_crossing") is not False:
+        if not initial_clear and (expert.get("obstacle_collision") is not False or expert.get("obstacle_crossing") is not False):
             raise ValueError("scene expert acceptance evidence is unsafe")
         clearance = expert.get("endpoint_clearance") or {}
-        if clearance.get("method") != "full_robot_phase_vertices" or clearance.get("bin_distance_window_m") is not None:
+        if not initial_clear and (clearance.get("method") != "full_robot_phase_vertices" or clearance.get("bin_distance_window_m") is not None):
             raise ValueError("scene endpoint sweep is not a phase-based full-robot sweep")
-        if clearance.get("paths") != ["direct", "side"]:
+        if not initial_clear and clearance.get("paths") != ["direct", "side"]:
             raise ValueError("scene endpoint sweep did not cover both paths")
-        if (expert.get("direct_block_contact") or {}).get("phase") != "transport":
+        if not initial_clear and (expert.get("direct_block_contact") or {}).get("phase") != "transport":
             raise ValueError("scene direct block is not a transport contact")
-        if row["cylinder"]["height_source"] not in {
+        if not initial_clear and row["cylinder"]["height_source"] not in {
                 "measured_direct_sphere_and_gripper_occupancy_plus_geometric_top_cover",
                 "measured_direct_sphere_occupancy_plus_geometric_top_cover_gripper_top_infeasible"}:
             raise ValueError("scene height was not measured from sphere and gripper occupancy")

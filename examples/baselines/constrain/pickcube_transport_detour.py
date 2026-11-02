@@ -1209,26 +1209,27 @@ class TransportDetourSceneSet:
 
         row = self.manifest["scenes"][index]
         expert = row["expert"]
-        if not expert.get("direct_transport_blocked") or not expert.get("held_at_success"):
+        initial_clear = row.get("sampling_profile") == "initial_clear_xy_v1"
+        if not initial_clear and (not expert.get("direct_transport_blocked") or not expert.get("held_at_success")):
             raise ValueError("scene expert acceptance evidence is unsafe or incomplete")
-        if expert.get("obstacle_collision") is not False or expert.get("obstacle_crossing") is not False:
+        if not initial_clear and (expert.get("obstacle_collision") is not False or expert.get("obstacle_crossing") is not False):
             raise ValueError("scene expert acceptance evidence is unsafe or incomplete")
         clearance = expert.get("endpoint_clearance") or {}
         join = expert.get("join") or {}
-        if clearance.get("method") != "full_robot_phase_vertices" or clearance.get("cube_distance_window_m") is not None:
+        if not initial_clear and (clearance.get("method") != "full_robot_phase_vertices" or clearance.get("cube_distance_window_m") is not None):
             raise ValueError("scene endpoint sweep is not a phase-based full-robot sweep")
-        if clearance.get("paths") != ["direct", "side"] or clearance.get("retreat_required") is not False:
+        if not initial_clear and (clearance.get("paths") != ["direct", "side"] or clearance.get("retreat_required") is not False):
             raise ValueError("scene endpoint sweep did not cover both shared paths")
-        if clearance.get("physical_direct_goal_entry_contact") is not False or clearance.get("physical_side_contact") is not False:
+        if not initial_clear and (clearance.get("physical_direct_goal_entry_contact") is not False or clearance.get("physical_side_contact") is not False):
             raise ValueError("scene endpoint physical clearance is incomplete")
-        if not join.get("continuous") or join.get("polyline_corner_is_acceptance_criterion") is not False:
+        if not initial_clear and (not join.get("continuous") or join.get("polyline_corner_is_acceptance_criterion") is not False):
             raise ValueError("scene transport join was not measured from execution")
-        if (float(join.get("max_commanded_heading_step_deg", 180)) > MAX_JOIN_HEADING_STEP_DEG
+        if not initial_clear and (float(join.get("max_commanded_heading_step_deg", 180)) > MAX_JOIN_HEADING_STEP_DEG
                 or float(join.get("max_tcp_heading_step_deg", 180)) > MAX_JOIN_HEADING_STEP_DEG):
             raise ValueError("scene heading step exceeds the join cap")
-        if (expert.get("direct_block_contact") or {}).get("phase") != "transport":
+        if not initial_clear and (expert.get("direct_block_contact") or {}).get("phase") != "transport":
             raise ValueError("scene direct block is not a transport contact")
-        if row["cylinder"]["height_source"] != "measured_direct_cube_occupancy_plus_geometric_top_cover":
+        if not initial_clear and row["cylinder"]["height_source"] != "measured_direct_cube_occupancy_plus_geometric_top_cover":
             raise ValueError("scene height was not measured from direct transport")
         if abs(float(row["cylinder"]["radius"]) - RADIUS_M) > 1e-12:
             raise ValueError("scene radius is not the fixed 0.03 m")

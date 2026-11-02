@@ -106,3 +106,30 @@ def test_failure_denominator_counts_missing_rows():
     assert result["denominator"] == 3
     assert result["runtime_errors"] == 2
     assert result["native_success_count"] == 1
+
+
+def test_explicit_catalog_is_pinned_bounded_and_unique(tmp_path):
+    import hashlib
+    import json
+    from examples.baselines.constrain.render_only_xy_eval import validate_explicit_catalog
+
+    scene_dir = tmp_path / "scenes"
+    scene_dir.mkdir()
+    h5 = scene_dir / "scenes.h5"
+    h5.write_bytes(b"catalog")
+    body = {"format": "pickcube-transport-detour-scenes-v2", "scene_count": 1,
+            "scenes_file": "scenes.h5", "scenes": [{}]}
+    body["manifest_sha256"] = hashlib.sha256(json.dumps(body, sort_keys=True, indent=2).encode()).hexdigest()
+    manifest = scene_dir / "manifest.json"
+    manifest.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n")
+    registration = {"inputs": {
+        "scene_manifest": {"path": str(manifest), "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest()},
+        "scene_h5": {"path": str(h5), "sha256": hashlib.sha256(h5.read_bytes()).hexdigest()}}}
+    validate_explicit_catalog(registration, "pickcube", [0], scene_dir)
+    with pytest.raises(ValueError, match="unique"):
+        validate_explicit_catalog(registration, "pickcube", [0, 0], scene_dir)
+    with pytest.raises(ValueError, match="outside"):
+        validate_explicit_catalog(registration, "pickcube", [1], scene_dir)
+    h5.write_bytes(b"mutated")
+    with pytest.raises(ValueError, match="input mismatch"):
+        validate_explicit_catalog(registration, "pickcube", [0], scene_dir)
