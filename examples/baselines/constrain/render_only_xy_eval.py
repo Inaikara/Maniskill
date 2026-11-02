@@ -23,6 +23,103 @@ XY_WORKING_PROFILE = "tcp_xy_working_clearance_3mm_v2"
 FILTER_INTERVENTION_EPSILON = 1e-6
 COMMON_LATENT_PROFILE = "common_latent_v1"
 XY_FEEDBACK_PROFILE = "scheduled_non_xy_tail_auxiliary_xy_v1"
+PROGRESS_GUARD_PROFILE = "bounded_task_progress_tangent_v1"
+PROGRESS_GUARD_PER_PAUSE_LIMIT = 30
+PROGRESS_GUARD_TOTAL_LIMIT = 60
+PROGRESS_GUARD_ARC_STEP_M = 0.005
+PROGRESS_GUARD_MIN_ARC_PROGRESS_M = 0.001
+PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M = 0.0005
+
+
+class BoundedProgressGuard:
+    """Geometrically detour around the working disk without consuming task actions."""
+
+    def __init__(self, working_radius, pending_xy, center_xy=(0.0, 0.0),
+                 xy_bounds=(-0.35, 0.35), translation_scale_m=0.1):
+        self.working_radius = float(working_radius)
+        self.path_radius = self.working_radius + 0.003
+        self.pending_xy = np.asarray(pending_xy, dtype=np.float64).reshape(2).copy()
+        self.center_xy = np.asarray(center_xy, dtype=np.float64).reshape(2).copy()
+        self.xy_bounds = tuple(float(x) for x in xy_bounds)
+        self.translation_scale_m = float(translation_scale_m)
+        self.total_controls = 0
+        self.pause_controls = 0
+        self.start_xy = None
+        self.winding = None
+        self.last_angle = None
+        self.last_actual_angle = None
+        self.arc_progress_m = 0.0
+
+    def start(self, tcp_xy):
+        tcp = np.asarray(tcp_xy, dtype=np.float64).reshape(2)
+        radial_vector = tcp - self.center_xy
+        radial = radial_vector / np.linalg.norm(radial_vector)
+        cross = radial[0] * self.pending_xy[1] - radial[1] * self.pending_xy[0]
+        self.winding = 1.0 if cross >= 0 else -1.0
+        self.start_xy = tcp.copy()
+        self.last_angle = float(np.arctan2(radial_vector[1], radial_vector[0]))
+        self.last_actual_angle = self.last_angle
+        self.pause_controls = 0
+
+    def original_chord_clear(self, tcp_xy):
+        from examples.baselines.constrain.inference_xy_constraint_r45 import XYConstraint
+        tcp = np.asarray(tcp_xy, dtype=np.float64).reshape(2)
+        requested = np.clip(self.pending_xy, *self.xy_bounds)
+        endpoint = tcp + requested * self.translation_scale_m
+        return not XYConstraint.segment_violates(
+            tcp, endpoint, self.center_xy, self.working_radius)
+
+    def next_xy_action(self, tcp_xy):
+        tcp = np.asarray(tcp_xy, dtype=np.float64).reshape(2)
+        if self.total_controls >= PROGRESS_GUARD_TOTAL_LIMIT:
+            return None
+        if self.pause_controls >= PROGRESS_GUARD_PER_PAUSE_LIMIT:
+            return None
+        radial = tcp - self.center_xy
+        radius = float(np.linalg.norm(radial))
+        angle = float(np.arctan2(radial[1], radial[0]))
+        if radius > self.path_radius + PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M:
+            target = self.center_xy + radial * (self.path_radius / radius)
+        elif radius < self.path_radius - PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M:
+            target = self.center_xy + radial * (self.path_radius / radius)
+        else:
+            arc = min(PROGRESS_GUARD_ARC_STEP_M / self.path_radius,
+                      2 * np.arccos(self.working_radius / self.path_radius))
+            target_angle = angle + self.winding * arc
+            target = self.center_xy + self.path_radius * np.array(
+                [np.cos(target_angle), np.sin(target_angle)])
+            self.last_angle = target_angle
+        action = (target - tcp) / self.translation_scale_m
+        action = np.clip(action, self.xy_bounds[0], self.xy_bounds[1])
+        self.total_controls += 1
+        self.pause_controls += 1
+        return action
+
+    def observe(self, tcp_xy, previous_radius):
+        radial = np.asarray(tcp_xy, dtype=np.float64).reshape(2) - self.center_xy
+        radius = float(np.linalg.norm(radial))
+        angle = float(np.arctan2(radial[1], radial[0]))
+        progress = 0.0
+        if abs(float(previous_radius) - self.path_radius) <= PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M:
+            delta = (angle - self.last_actual_angle + np.pi) % (2 * np.pi) - np.pi
+            progress = delta * self.winding * self.path_radius
+            if progress < PROGRESS_GUARD_MIN_ARC_PROGRESS_M:
+                return False, progress, radius
+            self.arc_progress_m += progress
+        self.last_actual_angle = angle
+        return True, progress, radius
+
+
+class TaskProgressStall(RuntimeError):
+    """A bounded XY pause could not clear the pending learned direction."""
+
+
+def native_gripper_hold_from_qpos(qpos, lower=-0.01, upper=0.04):
+    """Encode the current Panda finger position in its normalized native action."""
+    values = np.asarray(qpos, dtype=np.float64).reshape(-1)
+    if values.size < 1 or not np.isfinite(values).all() or upper <= lower:
+        raise ValueError("finite native gripper joint position is required")
+    return float(np.clip(2.0 * (values[0] - lower) / (upper - lower) - 1.0, -1.0, 1.0))
 
 
 class EpisodeTimeout(TimeoutError):
@@ -195,7 +292,7 @@ def score_native_xy_trace(trace, initial_tcp_xy, expected_center_xy, expected_ra
 
 
 def instrument_env(env, task, *, control_enabled=True, event_replan=False,
-                   xy_feedback=False, xy_constraint=True):
+                   xy_feedback=False, xy_constraint=True, progress_guard=False):
     """Wrap the native step seam; filter each just-in-time action using live TCP."""
     base = env.unwrapped
     if getattr(base, "obstacle_mode", None) != "render_only":
@@ -216,8 +313,20 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False,
     constraint = XYConstraint(translation_scale_m=0.1, action_limit=0.35,
                               working_clearance_m=XY_WORKING_CLEARANCE_M,
                               xy_action_bounds=(-1.0, 1.0) if task == "pickcube" else (-0.35, 0.35))
+    guard = None
+    if progress_guard:
+        if task != "placesphere":
+            raise ValueError("bounded progress guard is PlaceSphere-only")
+        finger_qpos = _array(base.agent.robot.get_qpos()).reshape(-1, 9)[0, -2:]
+        initial_gripper_hold = native_gripper_hold_from_qpos(finger_qpos)
+    else:
+        initial_gripper_hold = None
+    last_task_gripper = initial_gripper_hold
+    physical_control_index = 0
+    guard_total_controls = 0
 
     def step(action):
+        nonlocal guard, last_task_gripper, physical_control_index, guard_total_controls
         requested = _array(action).reshape(1, -1)[0].astype(float)
         tcp = _array(actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
         center = _array(base._obstacle_center).reshape(-1, 2)[0].astype(float)
@@ -245,7 +354,58 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False,
         bounds = np.asarray(constraint.xy_action_bounds, dtype=float)
         bounded_requested = np.clip(requested[:2], bounds[0], bounds[1])
         changed = bool(np.any(np.abs(filtered[:2] - bounded_requested) > FILTER_INTERVENTION_EPSILON))
+        task_action_executed = True
+        pause_action = None
+        if progress_guard and xy_constraint:
+            if guard is None and changed:
+                guard = BoundedProgressGuard(
+                    radius + XY_WORKING_CLEARANCE_M, requested[:2], center,
+                    xy_bounds=constraint.xy_action_bounds,
+                    translation_scale_m=constraint.translation_scale_m)
+                guard.total_controls = guard_total_controls
+                guard.start(tcp)
+            if guard is not None:
+                if guard.original_chord_clear(tcp):
+                    attempt["progress_guard_event"] = "resume_pending_task_action"
+                    attempt["progress_guard_arc_progress_m"] = guard.arc_progress_m
+                    guard = None
+                else:
+                    detour_xy = guard.next_xy_action(tcp)
+                    if detour_xy is None:
+                        attempt.update(progress_guard_event="bounded_progress_stall",
+                                       task_action_executed=False, env_step_executed=False,
+                                       progress_guard_total_controls=guard.total_controls,
+                                       progress_guard_pause_controls=guard.pause_controls)
+                        env._render_only_xy_progress_stall = {
+                            "type": "bounded_progress_stall",
+                            "physical_control_index": physical_control_index,
+                            "scheduled_task_action_index": attempt["control_index"],
+                            "pending_xy": guard.pending_xy.tolist(),
+                            "tcp_xy": tcp.tolist(), "arc_progress_m": guard.arc_progress_m,
+                            "pause_controls": guard.pause_controls,
+                            "total_pause_controls": guard.total_controls,
+                        }
+                        raise TaskProgressStall("bounded XY progress guard exhausted")
+                    pause_action = np.zeros(7, dtype=float)
+                    pause_action[:2] = detour_xy
+                    pause_action[6] = last_task_gripper
+                    pause_action = constraint.filter_action(pause_action, tcp, center, radius)
+                    guard_total_controls = guard.total_controls
+                    task_action_executed = False
+                    attempt["progress_guard_event"] = "tangent_detour_pause"
+                    attempt["progress_guard_pending_xy"] = guard.pending_xy.tolist()
+                    attempt["progress_guard_winding"] = guard.winding
+                    attempt["progress_guard_arc_progress_m"] = guard.arc_progress_m
+                    attempt["progress_guard_pause_control"] = guard.pause_controls
+                    attempt["progress_guard_total_control"] = guard.total_controls
+                    attempt["progress_guard_tcp_radius_before_m"] = float(
+                        np.linalg.norm(tcp - center))
+                    attempt["pending_task_action_index"] = attempt["control_index"]
+                    attempt["gripper_hold_native"] = float(last_task_gripper)
+                    filtered = pause_action
         attempt["filtered_action"] = filtered.tolist()
+        attempt["task_action_executed"] = task_action_executed
+        attempt["physical_control_index"] = physical_control_index + 1
         attempt["requested_replan"] = bool(event_replan and changed)
         attempt["xy_feedback_requested"] = bool(xy_feedback and changed)
         attempt["replan_consumed_at_control_index"] = None
@@ -260,8 +420,28 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False,
             trace.append(attempt)
             raise
         info = result[-1]
+        physical_control_index += 1
+        if task_action_executed:
+            last_task_gripper = float(np.clip(requested[6], -1.0, 1.0))
         _update_task_phase(env, task, info)
         tcp_after = _array(actor.pose.p).reshape(-1, 3)[0, :2].astype(float)
+        if guard is not None and not task_action_executed:
+            ok, arc_progress, tcp_radius = guard.observe(
+                tcp_after, attempt["progress_guard_tcp_radius_before_m"])
+            attempt["progress_guard_actual_arc_progress_m"] = float(arc_progress)
+            attempt["progress_guard_tcp_radius_after_m"] = float(tcp_radius)
+            if not ok or tcp_radius < guard.working_radius - 1e-9:
+                env._render_only_xy_progress_stall = {
+                    "type": "bounded_progress_stall",
+                    "reason": "minimum_tangent_progress_or_acceptance_radius_failed",
+                    "physical_control_index": physical_control_index,
+                    "scheduled_task_action_index": attempt["control_index"],
+                    "pending_xy": guard.pending_xy.tolist(), "tcp_xy": tcp_after.tolist(),
+                    "arc_progress_m": guard.arc_progress_m,
+                    "actual_arc_progress_m": float(arc_progress),
+                    "pause_controls": guard.pause_controls,
+                    "total_pause_controls": guard.total_controls,
+                }
         attempt.update(step=len(trace) + 1, tcp_xy_after=tcp_after.tolist(),
                        native_success=bool(np.asarray(info.get("native_success", False)).reshape(-1)[0]),
                        info=_jsonable(info))
@@ -285,6 +465,8 @@ def instrument_env(env, task, *, control_enabled=True, event_replan=False,
     env._render_only_xy_constraint = bool(xy_constraint)
     env._render_only_xy_replan_requested = False
     env._render_only_xy_last_attempt = None
+    env._render_only_xy_progress_stall = None
+    env._render_only_xy_progress_guard = bool(progress_guard)
     env._render_only_xy_expected_geometry = _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.append((trace, attempts, env))
     return trace
@@ -328,7 +510,8 @@ def _atomic_json(path, value):
 
 
 def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False,
-                        common_latent_replan=False, xy_feedback=False, xy_constraint=True):
+                        common_latent_replan=False, xy_feedback=False, xy_constraint=True,
+                        progress_guard=False):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
@@ -348,7 +531,9 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
     dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
                                            text=True).splitlines()
     body = {"format": "render_only_xy_eval_r47_v1", "task": task,
-             "method": ("ConstrainNet+unfiltered_render_only_reference"
+             "method": ("ConstrainNet+bufferedXY+bounded_progress_guard_v1"
+                        if progress_guard else
+                        "ConstrainNet+unfiltered_render_only_reference"
                         if not xy_constraint else
                         "ConstrainNet+bufferedXY+scheduled_non_xy_xy_feedback_v1"
                         if xy_feedback else
@@ -363,7 +548,19 @@ def freeze_registration(path, task, indices, sources, inputs=None, *, event_repl
                  "working_clearance_m": XY_WORKING_CLEARANCE_M,
                    "event_replan": bool(event_replan),
                    "common_latent_replan": bool(common_latent_replan),
-                   "xy_feedback": bool(xy_feedback),
+                    "xy_feedback": bool(xy_feedback),
+                    "bounded_progress_guard": bool(progress_guard),
+                    "progress_guard_profile": (PROGRESS_GUARD_PROFILE if progress_guard else None),
+                    "progress_guard_per_pause_controls": (PROGRESS_GUARD_PER_PAUSE_LIMIT
+                                                          if progress_guard else None),
+                    "progress_guard_total_controls": (PROGRESS_GUARD_TOTAL_LIMIT
+                                                       if progress_guard else None),
+                    "progress_guard_arc_step_m": (PROGRESS_GUARD_ARC_STEP_M
+                                                   if progress_guard else None),
+                    "progress_guard_path_radial_tolerance_m": (
+                        PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M if progress_guard else None),
+                    "progress_guard_path_radius_extra_m": (XY_WORKING_CLEARANCE_M
+                                                           if progress_guard else None),
                    "xy_constraint": bool(xy_constraint),
                    "xy_feedback_rng": ("forked_torch_cpu_cuda_rng_scene_seed_control_index_v1"
                                       if xy_feedback else None),
@@ -433,8 +630,10 @@ def _runtime_error_row(index, exc):
             "initial_tcp_xy": initial, "attempted_actions": attempts,
             "executed_trace": trace, "first_native_success_control_index": next(
                 (step["step"] for step in trace if step.get("native_success")), None),
-            "native_task_phase": (attempts[-1].get("task_phase") if attempts else None),
-            "xy_validation": validation, "xy_zero": bool(validation.get("zero_xy_violations", False)),
+             "native_task_phase": (attempts[-1].get("task_phase") if attempts else None),
+             "task_progress_stall": (getattr(env, "_render_only_xy_progress_stall", None)
+                                     if env is not None else None),
+             "xy_validation": validation, "xy_zero": bool(validation.get("zero_xy_violations", False)),
             "native_success": False}
 
 
@@ -461,7 +660,7 @@ def validate_explicit_catalog(registration, task, indices, scenes_dir):
 
 
 def _install_render_only_step_wrapper(task, *, event_replan=False, xy_feedback=False,
-                                      xy_constraint=True):
+                                      xy_constraint=True, progress_guard=False):
     import gymnasium as gym
     original_make = gym.make
 
@@ -469,14 +668,14 @@ def _install_render_only_step_wrapper(task, *, event_replan=False, xy_feedback=F
         kwargs["obstacle_mode"] = "render_only"
         env = original_make(*args, **kwargs)
         instrument_env(env, task, event_replan=event_replan, xy_feedback=xy_feedback,
-                       xy_constraint=xy_constraint)
+                       xy_constraint=xy_constraint, progress_guard=progress_guard)
         return env
     gym.make = make
     return original_make
 
 
 def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=False,
-                  xy_feedback=False, xy_constraint=True):
+                  xy_feedback=False, xy_constraint=True, progress_guard=False):
     global _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.clear()
     if task == "pickcube":
@@ -570,6 +769,7 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
             runner.xy_feedback = True
         else:
             runner = PlaceSpherePairedEvaluator(adapter, catalog, ".", device)
+        runner.progress_guard = progress_guard
         row = runner.run_episode(index, scene)
         if noise_policy is not None:
             row["policy_sampling"] = noise_policy.metadata(scene["metadata"]["seed"])
@@ -593,6 +793,20 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
             "auxiliary_channels": ["x", "y"],
             "sampler": "DDIM eta=0; 100 steps; unchanged R30 EMA",
         }
+    if progress_guard:
+        row["progress_guard_profile"] = {
+            "name": PROGRESS_GUARD_PROFILE,
+            "winding": "sign(cross(initial_radial, pending_learned_xy)); positive on tie",
+            "path_radius_m": "live_forbidden_radius + 0.005 + 0.003 + 0.003",
+            "arc_step_m": PROGRESS_GUARD_ARC_STEP_M,
+            "minimum_actual_arc_progress_m": PROGRESS_GUARD_MIN_ARC_PROGRESS_M,
+            "path_radial_tolerance_m": PROGRESS_GUARD_PATH_RADIAL_TOLERANCE_M,
+            "minimum_actual_working_radius_m": "live_forbidden_radius + 0.003",
+            "per_pause_controls": PROGRESS_GUARD_PER_PAUSE_LIMIT,
+            "total_controls": PROGRESS_GUARD_TOTAL_LIMIT,
+            "resume_condition": "original pending learned XY chord clears working radius",
+            "task_action_clock": "advances only when original scheduled action executes",
+        }
     row["xy_constraint"] = {"center_xy": center.tolist(), "forbidden_radius_m": radius,
                              "controller_translation_scale_m": 0.1,
             "controller_pose_action_limit": (1.0 if task == "pickcube" else 0.35),
@@ -601,7 +815,9 @@ def _evaluate_one(task, index, device, scenes_dir=None, *, common_latent_replan=
                              "visual_only_obstacle": True, "collision_shapes": 0}
     row["xy_validation"] = report
     row["xy_zero"] = bool(report["zero_xy_violations"])
-    row["method_label"] = ("ConstrainNet unfiltered render-only reference"
+    row["method_label"] = ("ConstrainNet+bufferedXY+bounded_progress_guard_v1"
+                           if progress_guard else
+                           "ConstrainNet unfiltered render-only reference"
                            if not xy_constraint else
                            "ConstrainNet+bufferedXY+Place scheduled-nonXY XY-feedback"
                            if xy_feedback else "ConstrainNet+XY constraint")
@@ -621,6 +837,7 @@ def main(argv=None):
     parser.add_argument("--event-replan", action="store_true")
     parser.add_argument("--common-latent-replan", action="store_true")
     parser.add_argument("--xy-feedback", action="store_true")
+    parser.add_argument("--bounded-progress-guard", action="store_true")
     parser.add_argument("--xy-constraint", choices=("on", "off"), default="on",
                         help="off preserves every actor action and scores actual violations")
     args = parser.parse_args(argv)
@@ -628,6 +845,9 @@ def main(argv=None):
         raise ValueError("common latent replanning is PlaceSphere-only and requires --event-replan")
     if args.xy_feedback and args.task != "placesphere":
         raise ValueError("XY feedback is PlaceSphere-only")
+    if args.bounded_progress_guard and (args.task != "placesphere" or args.xy_feedback
+                                        or args.common_latent_replan or args.event_replan):
+        raise ValueError("bounded progress guard is a separate PlaceSphere-only profile")
     xy_constraint = args.xy_constraint == "on"
     if not xy_constraint and (args.event_replan or args.common_latent_replan or args.xy_feedback):
         raise ValueError("unfiltered reference cannot enable filtering/replanning modes")
@@ -696,7 +916,8 @@ def main(argv=None):
                              for name, path in input_paths.items()},
                             event_replan=args.event_replan,
                             common_latent_replan=args.common_latent_replan,
-                            xy_feedback=args.xy_feedback, xy_constraint=xy_constraint)
+                            xy_feedback=args.xy_feedback, xy_constraint=xy_constraint,
+                            progress_guard=args.bounded_progress_guard)
         return
     reg = validate_registration(args.registration)
     registered_replan = bool(reg.get("constraint_profile", {}).get("event_replan", False))
@@ -711,6 +932,8 @@ def main(argv=None):
     registered_constraint = bool(reg.get("constraint_profile", {}).get("xy_constraint", True))
     if registered_constraint != xy_constraint:
         raise ValueError("XY-constraint runtime flag differs from frozen registration")
+    if bool(reg.get("constraint_profile", {}).get("bounded_progress_guard", False)) != args.bounded_progress_guard:
+        raise ValueError("bounded progress guard differs from frozen registration")
     if args.scenes is not None:
         validate_explicit_catalog(reg, args.task, args.indices, scenes)
     if (reg.get("task") != args.task or reg.get("indices") != args.indices
@@ -719,7 +942,7 @@ def main(argv=None):
         raise ValueError("registered task/indices/input identity mismatch")
     original_make = _install_render_only_step_wrapper(
         args.task, event_replan=args.event_replan, xy_feedback=args.xy_feedback,
-        xy_constraint=xy_constraint)
+        xy_constraint=xy_constraint, progress_guard=args.bounded_progress_guard)
     args.output.mkdir(parents=True, exist_ok=False)
     rows = []
     failures = False
@@ -737,8 +960,9 @@ def main(argv=None):
             signal.setitimer(signal.ITIMER_REAL, min(EPISODE_WALL_SECONDS, remaining))
             try:
                 row = _evaluate_one(args.task, index, args.device, scenes,
-                                    common_latent_replan=args.common_latent_replan,
-                                    xy_feedback=args.xy_feedback, xy_constraint=xy_constraint)
+                                     common_latent_replan=args.common_latent_replan,
+                                     xy_feedback=args.xy_feedback, xy_constraint=xy_constraint,
+                                     progress_guard=args.bounded_progress_guard)
                 rows.append(row)
                 failures |= row.get("status") != "evaluated"
             except Exception as exc:

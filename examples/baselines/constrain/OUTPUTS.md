@@ -1,5 +1,42 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 57 — PlaceSphere bounded task-progress tangent guard (2026-11-02)
+
+R57 evaluates the separately named **ConstrainNet+bufferedXY+bounded_progress_guard_v1** on the unchanged fixed R52 PlaceSphere cohort, with the R30 EMA and matched Base checkpoint. No task demonstrations, model weights, scenes, goal/task-state logic, or ManiSkill source changed. Pick remains the selected R54 result at 28/30 native and 30/30 XY-zero; it was not rerun. The selected Place reference remains R54's 21/30, not the Pick 28/30 result.
+
+When the existing XY filter changes a learned XY request beyond epsilon, the pending learned action stays at the same task-action/chunk index. A deterministic circle detour is chosen from the pending learned XY direction and live circle geometry, and its winding is held through that pause. The detour path radius is 41 mm for the R52 Place obstacle (actual obstacle radius 30 mm, acceptance radius 35 mm, working radius 38 mm); it advances in 5 mm arc targets, transitions to tangent motion within 0.5 mm radial tolerance, and requires at least 1 mm measured angular/tangential progress per arc control. It resumes only when the **original pending learned XY chord** clears the 38 mm working disk. Every pause sets Z and rotation deltas to zero and holds the last executed native gripper command; before the first learned command, the hold is derived from actual Panda finger qpos using the native `[-0.01, 0.04] m` to `[-1,1]` mapping. Pauses consume physical controls against the original 200-control Place limit. The limits are 30 controls per pause and 60 total per episode; exhausted or insufficient progress is recorded as a structured task failure. The R52 actual-radius + 5 mm acceptance disk, 3 mm working buffer, native XY bounds, learned policy, and first-success scoring remain unchanged.
+
+### Registration, attempts, and measured outcomes
+
+The final preregistered attempt is `outputs/exp/20261102_162253_progress_guard_xy_r57_stall_capture_fix/`. Both the diagnostic smoke `[0,1,2,5,12,15]` and full indices `0..29` were registered before rollout. Full registration identity is `a6928d72addf35068798983d31d9147646c7d12b26fc94b355db24820d4afea7`; smoke identity is `9bfb0bcfe3ea8a1f02b0851ceacfe34bed1e9dd8a787805d1d0ebed3e634aed3`. Post-run registration/source-snapshot/input checks passed; runtime sources were not edited after registration. Source and input hashes are retained in `post_execution_audit.json`.
+
+| Evaluation | Native success | Runtime errors | XY-zero | Minimum actual TCP sample / chord gap | Physical controls | Tangent-pause controls |
+|---|---:|---:|---:|---:|---:|---:|
+| Final smoke (six fixed diagnostic rows) | 1/6 | 0 | 6/6 | +2.829 / +2.829 mm | see per-row files | bounded by 30 |
+| Full fixed Place cohort | 19/30 **fail ≥27 gate** | 0 | 30/30 | +2.700 / +2.700 mm | 4,002 total; max 200/row | 386 total; max single pause 30, max episode total 31 |
+
+Smoke phases were task success 1, no grasp 3, and grasp/no lift 2; index 1 recorded a bounded stall. Smoke is diagnostic only and is not pooled into the full denominator.
+
+Four full-cohort rows (indices 1, 3, 10, 29) reached the declared 30-control pause limit with the original learned chord still blocked. Each is retained as a structured `bounded_progress_stall` task failure with actual TCP, pending XY, arc progress, physical index, and pause budget; none violates the XY acceptance disk or extends the controller budget. Full terminal phases were task success 19, no grasp 7, grasp/no lift 3, and release/stability failure 1. Independent scoring found zero actual sample/chord violations. The smallest measured clearance was +2.700 mm against the unchanged actual-radius + 5 mm disk.
+
+Against the retained Place results, R57's 19/30 is two fewer native successes than R54 event replanning (21/30), five fewer than R53 (24/30), one fewer than R56 XY auxiliary feedback (20/30), and five more than R55 common latent (14/30). It does not meet the 27/30 native goal. The unfiltered reference ceiling remains 28/30 but only 18/30 XY-zero, so it does not satisfy the safety gate. Pick remains R54's 28/30 and 30/30 XY-zero.
+
+Two earlier R57 smoke attempts are retained separately and excluded from the final denominator: `outputs/exp/20261102_160501_progress_guard_xy_r57/` exposed filter-only asymptotic stalling and a stall-classification defect; `outputs/exp/20261102_161424_progress_guard_xy_r57_radial_tolerance_fix/` fixed radial/tangent transition but still surfaced the stall as a runtime error. Each attempt has its own frozen registrations and source snapshots. Their outcomes were not pooled or relabeled.
+
+The final full analysis is `full_analysis_r57.json` (SHA-256 `43c40dd2348fbed46a757cef08ef214f31833b744aba458fef4ed62658fe3a34`; rows SHA-256 `ea6a88030f08510c9ea9fbb66408ef7ce8218918f9f3786759508b173f08c199`); smoke rows SHA-256 is `3c7c881ccdefbdd10e93918c2ad69a8b5f15f04fd6de2f6aba701d461da8cb73`. The per-control task indices and execution flags are consistent, but the row-level `task_action_count` summary omits the terminal executed action on 26 rows because its increment follows terminal handling; the per-step trace is authoritative and the mismatch list is retained in `full_analysis_r57.json`. This does not alter the native success denominator or physical-control accounting.
+
+Focused evaluator tests passed 28; the final required suite passed **649 tests, 30 warnings in 94.61 s** under `maniskill`. The final source hashes are recorded in the R57 full registration. No branch change, commit, push, or Pick rerun was made.
+
+Parent round closure: independent spec review confirms this is a retained
+negative experiment, not PlaceSphere goal completion. The terminal task-action
+summary defect remains an open follow-up; no runtime-source change or further
+trial followed the user's request to finish this round and report progress.
+The local tracker is present at `.scratch/transport-detour-optimization/` and
+was checked by direct directory/file reads. Its README and Tickets 05/06 now
+record the current user-authorized render-only / initial-clear evaluation scope,
+task-specific results, and the unstarted formal chain. Historical pilot-report
+completion markers do not mean the current goal or formal gates passed.
+
 ## Round 56 — PlaceSphere scheduled non-XY / auxiliary XY feedback (2026-11-02)
 
 R56 implements and evaluates the separately named combined method

@@ -139,7 +139,7 @@ class PlaceSpherePairedEvaluator:
         env = _make_env(scene, render=writer is not None)
         try:
             from examples.baselines.constrain.render_only_xy_eval import (
-                consume_replan_request, should_replan_after_control,
+                TaskProgressStall, consume_replan_request, should_replan_after_control,
             )
             env, restored = self.catalog.restore(index, env)
             base = env.unwrapped
@@ -170,6 +170,7 @@ class PlaceSpherePairedEvaluator:
             term = trunc = False
             termination = None
             actions = []
+            task_action_count = 0
             while elapsed < MAX_STEPS:
                 consume_replan_request(env, elapsed + 1)
                 queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)
@@ -187,7 +188,9 @@ class PlaceSpherePairedEvaluator:
                     feedback.start_chunk(action_batch)
                 auxiliary_plan = None
                 auxiliary_offset = 0
-                for offset, action in enumerate(chunk):
+                offset = 0
+                while offset < len(chunk) and elapsed < MAX_STEPS:
+                    action = chunk[offset]
                     a = action.detach().cpu().numpy()
                     scheduled_action = a.copy()
                     auxiliary_xy = None
@@ -197,21 +200,37 @@ class PlaceSpherePairedEvaluator:
                         if auxiliary_plan is not None:
                             auxiliary_xy = a[:2].tolist()
                             auxiliary_offset += 1
-                    next_obs, _, terminated, truncated, info = env.step(a[None])
+                    try:
+                        next_obs, _, terminated, truncated, info = env.step(a[None])
+                    except Exception as exc:
+                        if (isinstance(exc, TaskProgressStall)
+                                or getattr(env, "_render_only_xy_progress_stall", None) is not None):
+                            termination = "task_progress_stall"
+                            break
+                        raise
                     elapsed += 1
                     term, trunc = bool(terminated), bool(truncated)
-                    actions.append(a.tolist())
+                    attempt = env._render_only_xy_last_attempt
+                    actions.append((attempt["filtered_action"] if getattr(
+                        self, "progress_guard", False) else a.tolist()))
                     next_obs = np.asarray(next_obs.detach().cpu() if torch.is_tensor(next_obs) else next_obs,
                                           dtype=np.float32).reshape(-1)
                     history = np.concatenate((history[1:], next_obs[None]), axis=0)
                     if feedback is not None:
-                        attempt = env._render_only_xy_last_attempt
                         attempt["scheduled_chunk_index"] = int((elapsed - 1) // 8)
                         attempt["scheduled_chunk_offset"] = int(offset)
                         attempt["original_scheduled_action"] = scheduled_action.tolist()
                         attempt["auxiliary_xy_action"] = auxiliary_xy
                         attempt["executed_action_provenance"] = (
                             "scheduled_non_xy_plus_auxiliary_xy" if auxiliary_plan is not None
+                            else "scheduled_full_action")
+                    if getattr(self, "progress_guard", False):
+                        attempt["task_action_index"] = int(task_action_count + 1)
+                        attempt["scheduled_chunk_index"] = int(task_action_count // 8)
+                        attempt["scheduled_chunk_offset"] = int(task_action_count % 8)
+                        attempt["original_scheduled_action"] = scheduled_action.tolist()
+                        attempt["executed_action_provenance"] = (
+                            "geometric_tangent_pause" if not attempt.get("task_action_executed", True)
                             else "scheduled_full_action")
                         attempt["auxiliary_xy_control_index"] = (
                             int(elapsed) if attempt.get("xy_feedback_requested") else None)
@@ -227,11 +246,16 @@ class PlaceSpherePairedEvaluator:
                     if success and first_success is None:
                         first_success = elapsed
                     termination = classify_termination(success, term, trunc, elapsed, MAX_STEPS)
+                    if getattr(env, "_render_only_xy_progress_stall", None) is not None:
+                        termination = "task_progress_stall"
                     # Include/render the whole successful control step, including safety updates.
                     if writer:
                         writer.append_data(_frame(env))
                     if termination:
                         break
+                    if attempt.get("task_action_executed", True):
+                        task_action_count += 1
+                        offset += 1
                     if (feedback is not None and attempt.get("xy_feedback_requested")
                             and offset + 1 < len(chunk)):
                         from examples.baselines.constrain.render_only_xy_eval import auxiliary_xy_plan
@@ -266,6 +290,13 @@ class PlaceSpherePairedEvaluator:
                 "restored_state_sha256": state_hash, "restored_controller_sha256": controller_hash,
                 "restored_raw_observation_sha256": obs_hash, "restored_policy_observation_sha256": policy_hash,
                 "restoration_matches_catalog": True, "native_success_step": first_success,
+                "task_progress_stall": getattr(env, "_render_only_xy_progress_stall", None),
+                "task_action_count": int(task_action_count),
+                "progress_guard_controls": sum(
+                    step.get("progress_guard_event") == "tangent_detour_pause" for step in
+                    getattr(env, "_render_only_xy_trace", [])),
+                "progress_guard_max_pause": max((step.get("progress_guard_pause_control", 0)
+                    for step in getattr(env, "_render_only_xy_trace", [])), default=0),
                 "actions_native_pd_ee_delta_pose": actions,
                 "result": {"termination_reason": termination, "elapsed_steps": elapsed,
                     "terminated": term, "truncated": trunc, "native_success": native_success,

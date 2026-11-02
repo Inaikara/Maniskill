@@ -138,6 +138,127 @@ def test_failed_second_filter_retains_initial_point_and_first_executed_segment()
     assert score["violating_segments"] == [0]
 
 
+def test_bounded_progress_guard_clears_counterexample_without_consuming_pending_direction():
+    from examples.baselines.constrain.render_only_xy_eval import BoundedProgressGuard
+    from examples.baselines.constrain.inference_xy_constraint_r45 import XYConstraint
+
+    # Actual PlaceSphere geometry: forbidden R=.035 m, working R=.038 m,
+    # and a .041 m path circle gives chords positive clearance from .038 m.
+    guard = BoundedProgressGuard(.038, [-.35, 0.0])
+    tcp = np.array([.055, 0.0])
+    guard.start(tcp)
+    assert not guard.original_chord_clear(tcp)
+    legacy = XYConstraint(translation_scale_m=.1, xy_action_bounds=(-.35, .35),
+                          working_clearance_m=.003)
+    legacy_tcp = tcp.copy()
+    for _ in range(30):
+        legacy_action = legacy.filter_action([-.35, 0, 0, 0, 0, 0, 0], legacy_tcp,
+                                             [0, 0], .035)
+        legacy_tcp += legacy_action[:2] * .1
+    assert not guard.original_chord_clear(legacy_tcp)
+    assert np.linalg.norm(legacy.filter_action([-.35, 0, 0, 0, 0, 0, 0], legacy_tcp,
+                                               [0, 0], .035)[:2]) * .1 < .00001
+    points = [tcp.copy()]
+    while not guard.original_chord_clear(tcp):
+        action = guard.next_xy_action(tcp)
+        assert action is not None
+        next_tcp = tcp + action * .1
+        assert np.linalg.norm(next_tcp) >= .038 - 1e-10
+        assert not guard.original_chord_clear(tcp) or np.allclose(action, [-.35, 0.0])
+        ok, _, _ = guard.observe(next_tcp, np.linalg.norm(tcp))
+        assert ok
+        points.append(next_tcp.copy())
+        tcp = next_tcp
+    assert guard.total_controls <= 30
+    assert guard.arc_progress_m > 0
+    assert np.linalg.norm(tcp) >= .038
+    assert all(not XYConstraint.segment_violates(a, b, [0, 0], .038)
+               for a, b in zip(points, points[1:]))
+
+
+def test_bounded_progress_guard_has_hard_per_pause_and_total_limits():
+    from examples.baselines.constrain.render_only_xy_eval import BoundedProgressGuard
+
+    guard = BoundedProgressGuard(.038, [-.35, 0.0])
+    guard.start([.055, 0.0])
+    for _ in range(30):
+        assert guard.next_xy_action([.055, 0.0]) is not None
+    assert guard.next_xy_action([.055, 0.0]) is None
+
+
+def test_bounded_progress_guard_uses_live_nonzero_obstacle_center():
+    from examples.baselines.constrain.render_only_xy_eval import BoundedProgressGuard
+
+    center = np.array([.2, -.1])
+    guard = BoundedProgressGuard(.053, [-.35, 0.0], center_xy=center)
+    tcp = center + [.07, 0.0]
+    guard.start(tcp)
+    assert not guard.original_chord_clear(tcp)
+    action = guard.next_xy_action(tcp)
+    next_tcp = tcp + action * .1
+    assert np.linalg.norm(next_tcp - center) == pytest.approx(.056)
+
+
+def test_bounded_progress_guard_transitions_to_tangent_when_plant_lags_radial_target():
+    from examples.baselines.constrain.render_only_xy_eval import BoundedProgressGuard
+
+    guard = BoundedProgressGuard(.038, [-.35, 0.0])
+    guard.start([.055, 0.0])
+    tcp = np.array([.041004, 0.0])
+    action = guard.next_xy_action(tcp)
+    assert abs(action[1]) > .01
+    moved = tcp + action * .1
+    ok, progress, radius = guard.observe(moved, np.linalg.norm(tcp))
+    assert ok
+    assert progress >= .001
+    assert radius >= .038
+    guard.total_controls = 60
+    guard.pause_controls = 0
+    assert guard.next_xy_action([.055, 0.0]) is None
+
+
+@pytest.mark.parametrize("qpos,expected", [(-.01, -1.0), (.015, 0.0), (.04, 1.0)])
+def test_initial_native_gripper_hold_uses_actual_open_closed_or_partial_finger_pose(qpos, expected):
+    from examples.baselines.constrain.render_only_xy_eval import native_gripper_hold_from_qpos
+
+    assert native_gripper_hold_from_qpos([qpos, qpos]) == pytest.approx(expected)
+
+
+def test_guard_pause_executes_only_safe_xy_and_holds_current_gripper_until_original_direction_clears():
+    from examples.baselines.constrain.render_only_xy_eval import instrument_env
+
+    env = _Env()
+    task = env.unwrapped
+    task.agent = type("Agent", (), {
+        "tcp": task.agent.tcp,
+        "controller": type("Controller", (), {"controllers": {"gripper": object()}})(),
+        "robot": type("Robot", (), {"get_qpos": lambda _self: np.array([[0, 0, 0, 0, 0, 0, 0, .015, .015]])})(),
+    })()
+    trace = instrument_env(env, "placesphere", progress_guard=True)
+    pending = np.array([[-.35, 0.0, .2, .1, -.1, .05, 1.0]])
+    env.step(pending)
+    first = trace[-1]
+    assert first["task_action_executed"] is False
+    assert first["progress_guard_event"] == "tangent_detour_pause"
+    assert first["filtered_action"][2:6] == [0.0] * 4
+    assert first["filtered_action"][6] == pytest.approx(0.0)
+    assert env.calls[0][0, 2:6].tolist() == [0.0] * 4
+    assert env.calls[0][0, 6] == pytest.approx(0.0)
+
+    task_index = 0
+    while not trace[-1].get("task_action_executed") and task_index < 31:
+        env.step(pending)
+        task_index += 1
+    assert trace[-1]["progress_guard_event"] == "resume_pending_task_action"
+    assert trace[-1]["task_action_executed"] is True
+    assert np.array_equal(env.calls[-1][0, 2:], pending[0, 2:])
+    assert len(env.calls) <= 31
+    assert len(trace) == len(env.calls)
+    assert all(step.get("progress_guard_actual_arc_progress_m", 0) >= .001
+               for step in trace if step.get("progress_guard_tcp_radius_before_m", 0)
+               == pytest.approx(.041))
+
+
 def test_native_env_step_exception_retains_attempt_action_and_latest_pose():
     env = _Env()
     def fail_after_motion(action):
