@@ -1,5 +1,123 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 54 — event-triggered replanning on corrected-XY cohorts (2026-11-02)
+
+R54 applied one control-loop change to the fixed R52 PickCube and PlaceSphere
+cohorts: after each executed action, the buffered XY filter compares its output
+with the native-bounds-clipped request using epsilon `1e-6` action units. If XY
+changed beyond epsilon, the current eight-action chunk ends after that control;
+the next plan is inferred from the updated two-frame observation history. No
+control step is skipped, and the original eight-control stride remains when no
+filter intervention occurs. The first native-success control still terminates
+immediately. Replan requests and their next-plan consumption control indices are
+recorded per trace step. The physical/default paired evaluators do not enable the
+hook; R54 explicitly enables it via `--event-replan`.
+
+R53 traces provided sufficient evidence without a selected unfiltered reference:
+reconstructing the registered stride-8 boundaries and counting changes against
+the native-bounds-clipped request at epsilon `1e-6` found the first intervention
+at controls 1–3 in nine of ten failures, leaving 5–7 actions in each first
+affected chunk. In total, the nine affected failures contain 76 action chunks
+with interventions and 523 nominal actions remaining after each chunk's first
+intervention. Interventions recurred during later chunks. PickCube failure phases
+were `grasp_no_lift` (index 10), `lift_no_transport` (14), and `no_grasp` (15,16);
+PlaceSphere failures were `release_or_stability_failed` (2,27), `no_grasp` (5),
+and `grasp_no_lift` (6,10,14). PlaceSphere index 27 had zero XY interventions,
+so that release/stability failure is a policy failure control, not a stale-filter
+case. The first intervention in these failures occurs early in policy execution;
+the eventual task phase distinguishes grasp/lift/transport/release outcomes, but
+the trace does not support assigning a fabricated object-to-target distance.
+This diagnoses a plausible mechanism, not proof that every failure was caused by
+it. R54 changed only the rollout replanning behavior and trace metadata; task targets, controller budget
+(PickCube 500 / PlaceSphere 200), models, data, scenes, filter geometry, 3 mm
+working buffer, and actual-radius + 5 mm acceptance disk remain fixed.
+
+### Preregistered outcomes
+
+Full fixed cohorts were registered before either task run and evaluated
+sequentially at indices `0..29`. The separately retained smoke was predeclared as
+PickCube `10,14,0,1` and PlaceSphere `2,5,0,1` (two prior failures then two prior
+successes); it is diagnostic only and is not pooled into the full denominator.
+
+| Task | Native success (gate ≥27) | Runtime errors | XY-zero (gate 30) | Minimum actual TCP sample / chord gap | Filter replans requested / consumed | Failure phases |
+|---|---:|---:|---:|---:|---:|---|
+| PickCube | 28/30 **pass** | 0 | 30/30 **pass** | +0.854 / +0.854 mm | 704 / 704 | grasp_no_lift 2 |
+| PlaceSphere | 21/30 **fail** | 0 | 30/30 **pass** | +0.097 / +0.097 mm | 259 / 259 | no_grasp 5; grasp_no_lift 3; release_or_stability_failed 1 |
+
+The PickCube minimum is scene 27, control 80, measured TCP XY
+`[0.060052, 0.031994] m`; the PlaceSphere minimum is scene 7, control 5,
+`[-0.063067, 0.038683] m`. All 60 trace geometries were independently compared
+against their explicit R52 catalog center and radius; all actual samples and
+chords remained outside the unchanged acceptance disk. Every requested replan
+was consumed once at the next policy plan boundary. No selected-episode result
+is included in these 30-scene metrics.
+
+Against R53, PickCube indices `10,14,15` changed from failure to success, while
+index `11` regressed from success to `grasp_no_lift`; total success rose from
+26/30 to 28/30. PlaceSphere index `14` changed from failure to success, while
+previous successes `12,15,21,29` regressed to `no_grasp`; total success fell from
+24/30 to 21/30. Its R53 failures `2,5,6,10,27` persisted as failures (index 2
+phase changed to `grasp_no_lift`). The native gate therefore remains unmet for
+PlaceSphere; the R54 result does not establish the round goal.
+
+The PlaceSphere regression traces show why the next step should diagnose policy
+phase timing before another intervention rule is considered: indices `12,15,21,29`
+all regressed from success to `no_grasp`, with their first replan at controls
+1–2, first negative gripper request at controls `33,39,27,36`, and no observed
+grasp by timeout. PlaceSphere failures `2` and `6` reached a grasp at controls
+22 and 35 but did not lift; failure `10` first requested closure at control 19
+and first grasped at 82. Index `27` had no replan and still failed release or
+stability. The smallest next diagnostic is a per-control comparison of the
+retained R53/R54 gripper requests and native grasp/lift transitions on these
+fixed rows, to determine whether replanning delayed closure or whether the
+PlaceSphere policy independently fails its grasp phase. Do not pool these
+selected rows into a headline metric or change gripper/task targets.
+
+Smoke rows retain PickCube `4/4` native successes and PlaceSphere `2/4`; both
+tasks have `4/4` XY-zero rows. All smoke replan requests were consumed. No smoke
+outcome is pooled with the full trial.
+
+### Registrations, immutable inputs, and analysis
+
+The artifact directory is
+`outputs/exp/20261102_142741_event_replan_xy_r54/`. Full registration identities
+are PickCube `70db753a9ba461d359ab9b3f7a22c86964b99dca569f530ab4f689cc640d3136`
+and PlaceSphere
+`871d1ce60279c8f17c1c824bfcfda6927c59ab6069eac4cf9fac98d681d4466f`. The
+registration file SHA-256 values are respectively
+`8b7e417e97ac41482689e1a4a90f78cd902d4ad29460ccce8d50720f5f9d2df4` and
+`757bd48f698e619d5c3c06aa5bd84fcdbdf21ae158aab8d099b41f9dbd6e9286`. Full row
+files hash to PickCube
+`2ebe54c359ea0afadaa98d7a5896ac1be58124cb1da4ff3ab79b9ca09c64e37b` and
+PlaceSphere `5b8e7952027243dc88e5847b8ecd08955783e3572bffa8f14a1524c147b7a0ea`.
+The separate smoke registrations are in the same directory; their identities
+are PickCube `e293a37a53db8fc9a3bf9a21cff4998299bce8f64d6478922a5dfade8b505cf0`
+and PlaceSphere `fc685ec1b1d0fd28324ff9c341a2e7654ffefc8cfd6fe90d7642c091f1965b3c`.
+
+All source snapshots and direct inputs revalidated after execution. The changed
+runtime identities are `render_only_xy_eval.py`
+`66b2cb124be221b0a4c30bfd5b8bca6c884bbee65467627c4fff1d6ac250ced9`,
+PickCube paired rollout `d2f0def062ba64c28360f3478f676ba9cf2fef776f778d2b2d97caaeb21ece04`,
+and PlaceSphere paired rollout
+`025eb8e19414c0b84f2658863188484eebd3427bfd829fa88ad944c26288edec`. The
+filter remains `cb227bf472fae871db1befecdbd34cc0ae99ad8fad461a879a522b68115c4840`.
+Complete per-registration source and input hashes are preserved in each
+registration and `offline_analysis_r54.json`; analysis SHA-256 is
+`cb1a5313130accda09186401e5bdcfeb4511410765c17e5b95f379ce792299df`. R52
+catalog and training-data identities remain those recorded above; no data,
+scene, model, or training artifact was modified.
+
+The focused tests passed (15), and the required final suite passed **632 tests,
+30 warnings in 87.54 s** under `maniskill`:
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 700s python -m pytest examples/baselines/constrain/tests -q --tb=line
+```
+
+The suite ran before registrations and episodes; no runtime or test source was
+edited afterward. No commit, branch change, push, or merge was made.
+
 ## Round 53 — preregistered corrected-XY full cohorts (2026-11-02)
 
 Both fixed R52 task cohorts were run sequentially, all indices `0..29`, at the

@@ -118,6 +118,9 @@ class PickCubePairedEvaluator:
     def run_episode(self, index, scene, writer=None):
         env = _native_env(scene, render=writer is not None)
         try:
+            from examples.baselines.constrain.render_only_xy_eval import (
+                consume_replan_request, should_replan_after_control,
+            )
             # Catalog restore resets native/task/controller state then restores
             # the complete frozen simulation and controller snapshots.
             _, obs = self.scene_set.restore(index, env)
@@ -150,6 +153,7 @@ class PickCubePairedEvaluator:
             native_success = False
             terminated = truncated = False
             while elapsed < self.max_steps:
+                consume_replan_request(env, elapsed + 1)
                 queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)
                 condition = self.adapter.base_cond(queued)
                 if hasattr(self.adapter, "agent"):
@@ -189,6 +193,8 @@ class PickCubePairedEvaluator:
                     if writer is not None and not (terminated or truncated):
                         writer.append_data(_frame(env))
                     if reason is not None:
+                        break
+                    if should_replan_after_control(env, reason):
                         break
                 if termination is not None:
                     break

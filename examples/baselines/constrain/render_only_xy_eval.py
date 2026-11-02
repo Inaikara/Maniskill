@@ -20,6 +20,7 @@ TRIAL_WALL_SECONDS = 3600
 TCP_XY_MARGIN_M = 0.005
 XY_WORKING_CLEARANCE_M = 0.003
 XY_WORKING_PROFILE = "tcp_xy_working_clearance_3mm_v2"
+FILTER_INTERVENTION_EPSILON = 1e-6
 
 
 class EpisodeTimeout(TimeoutError):
@@ -100,7 +101,7 @@ def score_native_xy_trace(trace, initial_tcp_xy, expected_center_xy, expected_ra
                                                       if step.get("native_success", False)), None))
 
 
-def instrument_env(env, task, *, control_enabled=True):
+def instrument_env(env, task, *, control_enabled=True, event_replan=False):
     """Wrap the native step seam; filter each just-in-time action using live TCP."""
     base = env.unwrapped
     if getattr(base, "obstacle_mode", None) != "render_only":
@@ -146,7 +147,13 @@ def instrument_env(env, task, *, control_enabled=True):
         attempts.append(attempt)
         env._render_only_xy_failed_control_index = attempt["control_index"]
         filtered = constraint.filter_action(requested, tcp, center, radius)
+        bounds = np.asarray(constraint.xy_action_bounds, dtype=float)
+        bounded_requested = np.clip(requested[:2], bounds[0], bounds[1])
+        changed = bool(np.any(np.abs(filtered[:2] - bounded_requested) > FILTER_INTERVENTION_EPSILON))
         attempt["filtered_action"] = filtered.tolist()
+        attempt["requested_replan"] = bool(event_replan and changed)
+        attempt["replan_consumed_at_control_index"] = None
+        env._render_only_xy_replan_requested = bool(event_replan and changed)
         attempt["env_step_executed"] = True
         try:
             result = original_step(filtered.reshape(1, 7))
@@ -163,6 +170,7 @@ def instrument_env(env, task, *, control_enabled=True):
                        native_success=bool(np.asarray(info.get("native_success", False)).reshape(-1)[0]),
                        info=_jsonable(info))
         trace.append(attempt)
+        env._render_only_xy_last_attempt = attempt
         env._render_only_xy_failed_control_index = None
         return result
 
@@ -176,9 +184,27 @@ def instrument_env(env, task, *, control_enabled=True):
     env._render_only_xy_task_phase = None
     env._render_only_xy_native_flags = None
     env._render_only_xy_phase_state = None
+    env._render_only_xy_event_replan = bool(event_replan)
+    env._render_only_xy_replan_requested = False
+    env._render_only_xy_last_attempt = None
     env._render_only_xy_expected_geometry = _ACTIVE_SCENE_GEOMETRY
     _ACTIVE_TRACES.append((trace, attempts, env))
     return trace
+
+
+def consume_replan_request(env, control_index):
+    """Consume a filter-triggered replan before the next policy inference."""
+    if not getattr(env, "_render_only_xy_replan_requested", False):
+        return False
+    env._render_only_xy_replan_requested = False
+    attempt = getattr(env, "_render_only_xy_last_attempt", None)
+    if attempt is not None:
+        attempt["replan_consumed_at_control_index"] = int(control_index)
+    return True
+
+
+def should_replan_after_control(env, termination):
+    return termination is None and bool(getattr(env, "_render_only_xy_replan_requested", False))
 
 
 def _jsonable(value):
@@ -196,7 +222,7 @@ def sha256(path):
     return h.hexdigest()
 
 
-def freeze_registration(path, task, indices, sources, inputs=None):
+def freeze_registration(path, task, indices, sources, inputs=None, *, event_replan=False):
     path = Path(path)
     if path.exists():
         raise FileExistsError(path)
@@ -216,11 +242,15 @@ def freeze_registration(path, task, indices, sources, inputs=None):
     dirty_paths = subprocess.check_output(["git", "status", "--short"], cwd=repo_root,
                                            text=True).splitlines()
     body = {"format": "render_only_xy_eval_r47_v1", "task": task,
-            "method": "ConstrainNet+XY constraint", "indices": [int(i) for i in indices],
+            "method": "ConstrainNet+bufferedXY+event_replan_v1" if event_replan
+                      else "ConstrainNet+XY constraint",
+            "indices": [int(i) for i in indices],
             "git_head_context": git_head, "worktree_dirty_paths": dirty_paths,
             "constraint_profile": {"name": "tcp_xy_cylinder_radius_plus_5mm_v1",
-                "working_clearance_profile": XY_WORKING_PROFILE,
-                "working_clearance_m": XY_WORKING_CLEARANCE_M,
+                 "working_clearance_profile": XY_WORKING_PROFILE,
+                 "working_clearance_m": XY_WORKING_CLEARANCE_M,
+                 "event_replan": bool(event_replan),
+                 "filter_intervention_epsilon": FILTER_INTERVENTION_EPSILON,
                 "controller": "pd_ee_delta_pose", "frame": "world XY",
                 "translation_scale_m_per_action_unit": 0.1,
                 "xy_action_bounds": [-1.0, 1.0] if task == "pickcube" else [-0.35, 0.35],
@@ -311,14 +341,14 @@ def validate_explicit_catalog(registration, task, indices, scenes_dir):
     return catalog
 
 
-def _install_render_only_step_wrapper(task):
+def _install_render_only_step_wrapper(task, *, event_replan=False):
     import gymnasium as gym
     original_make = gym.make
 
     def make(*args, **kwargs):
         kwargs["obstacle_mode"] = "render_only"
         env = original_make(*args, **kwargs)
-        instrument_env(env, task)
+        instrument_env(env, task, event_replan=event_replan)
         return env
     gym.make = make
     return original_make
@@ -443,6 +473,7 @@ def main(argv=None):
                         help="explicit task-native scene catalog (defaults to the historical catalog)")
     parser.add_argument("--register", action="store_true")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--event-replan", action="store_true")
     args = parser.parse_args(argv)
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -506,16 +537,20 @@ def main(argv=None):
             raise FileExistsError(args.output)
         freeze_registration(args.registration, args.task, args.indices, source_paths,
                             {name: {"path": str(path), "sha256": sha256(path)}
-                             for name, path in input_paths.items()})
+                             for name, path in input_paths.items()},
+                            event_replan=args.event_replan)
         return
     reg = validate_registration(args.registration)
+    registered_replan = bool(reg.get("constraint_profile", {}).get("event_replan", False))
+    if registered_replan != bool(args.event_replan):
+        raise ValueError("event-replan runtime flag differs from frozen registration")
     if args.scenes is not None:
         validate_explicit_catalog(reg, args.task, args.indices, scenes)
     if (reg.get("task") != args.task or reg.get("indices") != args.indices
             or any(sha256(path) != item["sha256"] for name, item in reg["inputs"].items()
                    for path in [item["path"]])):
         raise ValueError("registered task/indices/input identity mismatch")
-    original_make = _install_render_only_step_wrapper(args.task)
+    original_make = _install_render_only_step_wrapper(args.task, event_replan=args.event_replan)
     rows = []
     failures = False
     started = time.monotonic()

@@ -137,6 +137,9 @@ class PlaceSpherePairedEvaluator:
     def run_episode(self, index, scene, writer=None):
         env = _make_env(scene, render=writer is not None)
         try:
+            from examples.baselines.constrain.render_only_xy_eval import (
+                consume_replan_request, should_replan_after_control,
+            )
             env, restored = self.catalog.restore(index, env)
             base = env.unwrapped
             state = base.get_state_dict()
@@ -167,6 +170,7 @@ class PlaceSpherePairedEvaluator:
             termination = None
             actions = []
             while elapsed < MAX_STEPS:
+                consume_replan_request(env, elapsed + 1)
                 queued = torch.as_tensor(history[None], dtype=torch.float32, device=self.device)
                 condition = policy_condition(self.adapter, queued)
                 prediction = self.adapter.get_action(condition)
@@ -199,6 +203,8 @@ class PlaceSpherePairedEvaluator:
                     if writer:
                         writer.append_data(_frame(env))
                     if termination:
+                        break
+                    if should_replan_after_control(env, termination):
                         break
                 if termination:
                     break

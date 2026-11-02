@@ -35,6 +35,17 @@ def chord_gap(start, end, center, radius):
     return point_gap([start[0] + t * dx, start[1] + t * dy], center, radius)
 
 
+def validate_trace_geometry(trace, expected_center, expected_radius):
+    """Reject trace geometry that disagrees with the catalog-derived contract."""
+    for step in trace:
+        center = step["obstacle_center_xy"]
+        radius = float(step["forbidden_radius_m"])
+        if (not all(abs(float(a) - float(b)) <= 1e-6
+                    for a, b in zip(center, expected_center))
+                or abs(radius - float(expected_radius)) > 1e-7):
+            raise ValueError("trace geometry differs from frozen catalog geometry")
+
+
 def analyze_task(task):
     registration_path = ROOT / f"{task}_registration.json"
     registration = validate_registration(registration_path)
@@ -128,6 +139,7 @@ def analyze_task(task):
         scene = scene_catalog.load(row["scene_index"])
         expected_center = scene["metadata"]["cylinder"]["center_xy"]
         expected_radius = float(scene["metadata"]["cylinder"]["radius"]) + RADIUS_MARGIN_M
+        validate_trace_geometry(row["actual_tcp_trace"], expected_center, expected_radius)
         actual_center = row["xy_constraint"]["center_xy"]
         assert all(abs(float(a) - float(b)) <= 1e-6 for a, b in zip(actual_center, expected_center))
         assert abs(float(row["xy_constraint"]["forbidden_radius_m"]) - expected_radius) <= 1e-7

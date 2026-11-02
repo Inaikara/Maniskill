@@ -1,7 +1,9 @@
 import numpy as np
 import pytest
 
-from examples.baselines.constrain.render_only_xy_eval import instrument_env
+from examples.baselines.constrain.render_only_xy_eval import (
+    consume_replan_request, instrument_env, should_replan_after_control,
+)
 
 
 class _Actor:
@@ -47,6 +49,66 @@ def test_each_native_control_step_uses_measured_tcp_and_preserves_other_channels
     assert np.array_equal(env.calls[0][0, 2:], requested[0, 2:])
     assert np.array_equal(env.calls[1][0, 2:], requested[0, 2:])
     assert all(row["filtered_action"] != row["requested_action"] for row in trace)
+
+
+def test_filter_intervention_requests_replan_and_next_plan_consumes_it():
+    env = _Env()
+    trace = instrument_env(env, "pickcube", event_replan=True)
+    class FakeAdapter:
+        def __init__(self):
+            self.observations = []
+
+        def get_action(self, observation):
+            self.observations.append(observation)
+            return list(range(8))
+
+    adapter = FakeAdapter()
+    observation = "before"
+    plans = 0
+    while plans < 2:
+        consume_replan_request(env, len(env.calls) + 1)
+        actions = adapter.get_action(observation)
+        plans += 1
+        for action in actions:
+            if action == 0:
+                env.step(np.array([[-0.35, 0.0, 0.1, 0.2, 0.0, 0.0, -1.0]]))
+                observation = "after-control-1"
+            else:
+                break
+            if should_replan_after_control(env, None):
+                break
+        else:
+            continue
+        if plans == 2:
+            break
+    assert adapter.observations == ["before", "after-control-1"]
+    assert trace[0]["requested_replan"] is True
+    assert trace[0]["replan_consumed_at_control_index"] == 2
+
+
+def test_unmodified_action_does_not_request_event_replan():
+    env = _Env()
+    env.unwrapped.agent.tcp.pose.p[0, :2] = [0.2, 0.2]
+    trace = instrument_env(env, "pickcube", event_replan=True)
+    env.step(np.array([[0.0, 0.0, 0.1, 0.2, 0.0, 0.0, -1.0]]))
+    assert trace[0]["requested_replan"] is False
+    assert env._render_only_xy_replan_requested is False
+    assert should_replan_after_control(env, None) is False
+
+
+def test_without_intervention_the_original_eight_action_chunk_runs_to_completion():
+    env = _Env()
+    env.unwrapped.agent.tcp.pose.p[0, :2] = [0.2, 0.2]
+    trace = instrument_env(env, "pickcube", event_replan=True)
+    fake_plan = [np.array([[0.0, 0.0, 0, 0, 0, 0, -1.0]]) for _ in range(8)]
+    plans = 1
+    for action in fake_plan:
+        env.step(action)
+        if should_replan_after_control(env, None):
+            break
+    assert plans == 1
+    assert len(trace) == 8
+    assert all(step["replan_consumed_at_control_index"] is None for step in trace)
 
 
 def test_failed_second_filter_retains_initial_point_and_first_executed_segment():
