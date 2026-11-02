@@ -213,6 +213,7 @@ class PlaceSpherePairedEvaluator:
                     attempt = getattr(env, "_render_only_xy_last_attempt", None)
                     task_action_executed = (attempt.get("task_action_executed", True)
                                              if attempt is not None else True)
+                    task_action_count_before_step = task_action_count
                     if task_action_executed:
                         task_action_count += 1
                     actions.append((attempt["filtered_action"] if attempt is not None and getattr(
@@ -229,9 +230,9 @@ class PlaceSpherePairedEvaluator:
                             "scheduled_non_xy_plus_auxiliary_xy" if auxiliary_plan is not None
                             else "scheduled_full_action")
                     if getattr(self, "progress_guard", False) and attempt is not None:
-                        attempt["task_action_index"] = int(task_action_count + 1)
-                        attempt["scheduled_chunk_index"] = int(task_action_count // 8)
-                        attempt["scheduled_chunk_offset"] = int(task_action_count % 8)
+                        attempt["task_action_index"] = int(task_action_count_before_step + 1)
+                        attempt["scheduled_chunk_index"] = int(task_action_count_before_step // 8)
+                        attempt["scheduled_chunk_offset"] = int(task_action_count_before_step % 8)
                         attempt["original_scheduled_action"] = scheduled_action.tolist()
                         attempt["executed_action_provenance"] = (
                             "geometric_tangent_pause" if not attempt.get("task_action_executed", True)

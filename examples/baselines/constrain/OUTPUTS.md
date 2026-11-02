@@ -1,5 +1,61 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 59 — passive progress-guard trace index correction and selected-profile regression verification (2026-11-02)
+
+R59 fixes a trace-annotation off-by-one in the optional PlaceSphere progress-guard
+path. The evaluator increments the actual executed task-action counter before
+terminal handling (preserving R58's terminal-action accounting), so annotations
+must use the count captured before that step. They now use that pre-step count for
+the one-based `task_action_index` and zero-based stride-eight chunk/offset. A
+paused detour therefore points to the still-pending task action without consuming
+it; the first action is `(1, chunk 0, offset 0)`, action eight is `(8, 0, 7)`, and
+action nine is `(9, 1, 0)`. This is a passive metadata correction only. The
+progress-guard-selected negative R57 cohort remains failed and unchanged; no
+method result was relabeled.
+
+The rollout-seam regression in
+`tests/test_evaluate_placesphere_paired.py` observes final per-step trace rows for
+the first/last stride actions, a paused pending action, its resumption, and a
+terminal executed action. It failed before the fix because action one was recorded
+as index two, then passed after the fix. Focused evaluator tests: **8 passed**;
+required full suite: **654 passed, 30 warnings in 99.74 s** under `maniskill`.
+
+Because the runtime source tree changed, R59 preregistered both full 30-scene
+selected-profile regression cohorts before either rollout in
+`outputs/exp/20261102_172918_selected_xy_80_tracefix_r59/`. Both registrations
+freeze `selected_xy_80_v1`, indices `0..29`, exact R52 scene catalogs, R58-selected
+models and task-specific flags, current runtime source snapshots, transitive
+sources, and inputs. This is a **regression verification of the already-selected
+method**, not a new candidate or optimization trial. The PickCube selected R54
+event-replan and PlaceSphere selected R53 stride-eight methods were unchanged.
+
+| Task | Registration identity / file SHA-256 | Rows SHA-256 | Native success | Runtime errors | XY-zero | Controls | Minimum actual sample / chord clearance |
+|---|---|---|---:|---:|---:|---:|---:|
+| PickCube | `5733ffe8e64ab11d33c065c4eed6cae9527f919dac171058679dbcea31d2d818` / `e3b4742240590423a7c11c7939f24a0ada829dae7eadfa15526f306e40bd9b05` | `bbd1c6b91031f65b5733aaea94027fc91ade4dc7901548a60b03d47aa7f7624a` | **28/30** | 0 | **30/30** | 4,078 | +0.854 / +0.854 mm |
+| PlaceSphere | `e3a9aa750e4acad40e2915e64d4e49c61d117d04aa90f8157e6993ae4d1df55b` / `e78614af2f26f8f0489e07334a2b82c7c1017ba8924dd37f8c0963e2ebcf94f7` | `32f2a990661179597aa12e706c9295e5dc2be06b9e9f94e5742b2d2d6b7840f8` | **24/30** | 0 | **30/30** | 4,297 | +0.554 / +0.554 mm |
+
+Post-run registration validation rechecked every source, snapshot, and direct
+input hash. Independent geometry/trace auditing checked every actual TCP sample
+and chord against each scene's restored cylinder radius + 5 mm, fixed center,
+executed control ordering, and restoration identity: zero geometry violations
+and zero counter mismatches. Every one of the 60 R59 episodes exactly matches its
+R58 action array and native outcome (60/60); denominators and success counts are
+unchanged. The two R59 row summaries hash to PickCube
+`8301215b8bbd1bcc654b376c43852471af7f8bf782cc816eb790a6b0c207dbd5` and
+PlaceSphere `b1744bdf0c878e1c7f2a34e06f44a1007db8603ed45f90015bdc7ea649c856b9`.
+The corrected PlaceSphere evaluator source SHA-256 is
+`3bec959ef5e50f1b2bd632228bc8311c55b1f115cb833cbe3c0d4a5df2737083`; the
+regression test SHA-256 is
+`89b9b06619ed5949b34fc50214c9ebca55e9fc770cbef76354d2d677814ec43a`. R58's
+registration and evidence remain immutable. No scene, model, data, ManiSkill
+source, XY geometry, task clock, physical budget, or sampling behavior changed.
+
+Independent R59 spec review found no blockers: the passive annotation fix and
+pause/resume/terminal regression test are consistent, both current-source
+selected cohorts satisfy the predeclared 24/30 native plus all-30 XY-zero gate,
+and the retained source/input identities validate. The current ≥80% development
+goal is closed; no further optimization or formal 100-scene run was started.
+
 ## Round 58 — selected XY profile, 80% development gate (2026-11-02)
 
 The user-authorized development gate is **at least 24/30 native successes per
