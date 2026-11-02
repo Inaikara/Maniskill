@@ -1,5 +1,114 @@
 # Final retained artifacts — three obstacle tasks
 
+## Round 49 — selected-policy trials on frozen initial-clear cohorts (2026-11-02)
+
+Both selected policies were run sequentially against all scene indices `0..29`
+from the unchanged R48 catalogs in `outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/`.
+The sole trial directory is
+`outputs/exp/20261102_170000_initial_clear_xy_eval_r49/`; no scenes, training,
+demos, checkpoints, policies, or evaluator code were changed for these runs.
+The frozen checkpoints are PickCube R44 EMA
+`fae59fa81362caa64b16ef0e882c63250a5f28a8894280dcd77610691c54a769` and
+PlaceSphere R30 EMA
+`6d66a875fd56bff8f9ec646ee5d89a8ebffe5c2d4401b5a541e67e49093a3e6f`.
+
+Each complete index list was preregistered before either task's first episode.
+PickCube registration identity is
+`19e4d6d1549d07012f3932f577aec4c8a6a7ba14eafaca6941e5b63a7c242ef4`
+(17 source snapshots); PlaceSphere is
+`0284bfe190ef53c379e89edf8cc20e004a2e15c1235db6f75c802a740aab41e3`
+(13 source snapshots). They pin the checkpoint(s), cached normalizer, R48
+manifest/HDF5, training registration, training/demo manifest and HDF5, and the
+evaluator's actor, codec, scene loader, rollout and native controller source
+entries. Registration and all directly registered source/input/snapshot hashes
+validated again after both runs. Checkpoints and training/demo/catalog hashes
+remain equal to their R48 identities. Registrations use the fixed
+`tcp_xy_cylinder_radius_plus_5mm_v1` profile, native `pd_ee_delta_pose`,
+render-only visible cylinder with zero collision shapes, and do not gate body
+contact. Each evaluated row retains native action requests, filtered actions,
+per-control live obstacle center/radius, measured before/after TCP XY, native
+flags, restoration identity, and independent catalog-geometry sample/chord
+scoring.
+
+Exact preregistration and trial commands (run one task at a time):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh && conda activate maniskill
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s \
+  python -m examples.baselines.constrain.render_only_xy_eval --task pickcube \
+  --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/pickcube \
+  --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output outputs/exp/20261102_170000_initial_clear_xy_eval_r49/pickcube_rows \
+  --registration outputs/exp/20261102_170000_initial_clear_xy_eval_r49/pickcube_registration.json \
+  --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s \
+  python -m examples.baselines.constrain.render_only_xy_eval --task pickcube \
+  --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/pickcube \
+  --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output outputs/exp/20261102_170000_initial_clear_xy_eval_r49/pickcube_rows \
+  --registration outputs/exp/20261102_170000_initial_clear_xy_eval_r49/pickcube_registration.json \
+  --device cuda
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 300s \
+  python -m examples.baselines.constrain.render_only_xy_eval --task placesphere \
+  --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/placesphere \
+  --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output outputs/exp/20261102_170000_initial_clear_xy_eval_r49/placesphere_rows \
+  --registration outputs/exp/20261102_170000_initial_clear_xy_eval_r49/placesphere_registration.json \
+  --device cuda --register
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 timeout --signal=TERM --kill-after=20s 3600s \
+  python -m examples.baselines.constrain.render_only_xy_eval --task placesphere \
+  --scenes outputs/exp/20261102_160000_initial_clear_xy_r48_frozen/placesphere \
+  --indices 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output outputs/exp/20261102_170000_initial_clear_xy_eval_r49/placesphere_rows \
+  --registration outputs/exp/20261102_170000_initial_clear_xy_eval_r49/placesphere_registration.json \
+  --device cuda
+```
+
+### Native outcomes and XY evidence
+
+| Task | Evaluated / fixed denominator | Native successes | Runtime errors | Zero-XY among evaluated | Min sample gap / min chord gap (m) | Filtered XY steps / controls | Evaluated terminal phases |
+|---|---:|---:|---:|---:|---:|---:|---|
+| PickCube | 13 / 30 | 0 / 30 | 17 / 30 | 13 / 13 | 0.00123237 / 0.00123161 | 47 / 6,500 (0.7231%) | no_grasp 13; timeout 13 |
+| PlaceSphere | 20 / 30 | 16 / 30 | 10 / 30 | 20 / 20 | 0.00067899 / 0.00067899 | 2 / 2,673 (0.0748%) | task_success 16; release_or_stability_failed 4; timeout 4 |
+
+All 27 runtime-error rows (PickCube indices `1,3,5,6,7,9,11,12,13,17,19,20,22,24,25,27,28`; PlaceSphere indices `0,8,10,12,13,14,17,21,26,28`) report
+`ValueError: TCP starts inside the forbidden disk; XY constraint cannot recover`.
+These errors retain their full denominator and are not counted as successes.
+R48 admission and preflight gaps were positive for all initial scenes; the
+runtime error therefore arose after restoration during policy execution, rather
+than from an initially inadmissible catalog entry. However, the evaluator only
+attaches `_render_only_xy_trace` after `run_episode` returns. Its caught
+exceptions consequently saved no partial trace for those 27 failures. Their
+first problematic control step, actual prior sample/chord gaps, intervention
+history, task phase and any failed-row native flags are **unavailable** in this
+immutable run. The failures are consistent with native post-step TCP movement
+entering the disk after an admissible filtered action, but the missing partial
+trace prevents confirming that transition or identifying its control index.
+The recorded minima and zero-XY counts above apply only to completed rows and
+must not be generalized to the full 30-scene cohorts. Body contact was 0 in
+completed rows and remains non-gating.
+
+Both task processes returned nonzero after writing all 30 rows because runtime
+errors are propagated. The native-success targets (at least 27/30) were missed:
+PickCube 0/30 and PlaceSphere 16/30. The all-30 zero-XY criterion is not
+established due to the 27 failed rows without traces; it does not pass. No
+reruns, selective rows, scene changes, margin tuning, or policy selection were
+made. The next smallest evidence-producing change is to retain the live partial
+TCP/action trace, current control index and phase in the evaluator's exception
+row (while preserving nonzero failure propagation), then register that source
+change and run a new complete 30-attempt cohort per task. Any further margin or
+policy adjustment should follow that trace evidence, not precede it.
+
+Immutable artifacts: PickCube `pickcube_rows/rows.json` SHA-256
+`5a7989aea5e4b3da932a23881b1fb51b5cbcd12b45b75321dd06b41675eb2e00`, summary
+`5866dc87043c0b121324561f0e808ebf29f5e77c797b300bb412e4c917f26496`; PlaceSphere
+`placesphere_rows/rows.json` SHA-256
+`73cbda8f80dee9d432190bf65354f65ebc1e254062636b13f94c3f40a722bed2`, summary
+`dfb72423acef60c2b8eda556a3802d672c002db3c57abad68b1a284d6747e739`. Offline
+aggregate calculations are in `offline_analysis.json`. No evaluator runtime code
+was edited after preregistration. No implementation or test suite was run; the
+work was native evidence collection and offline aggregation only.
+
 ## Round 48 — initial-clear render-only XY cohorts (2026-11-02)
 
 Two independent 30-scene native reset catalogs are frozen at
