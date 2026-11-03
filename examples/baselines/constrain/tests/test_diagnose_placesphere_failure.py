@@ -27,8 +27,8 @@ from examples.baselines.constrain.diagnose_placesphere_failure import (
     summarize_failure_evidence,
 )
 
-EVAL_DIR = Path("outputs/exp/20261022_213500_placesphere_paired_eval")
-SCENE_DIR = Path("outputs/exp/20261022_205500_placesphere_scenes")
+EVAL_DIR = Path("outputs/exp/PlaceSphere/BaseDP/evaluation")
+SCENE_DIR = Path("outputs/exp/PlaceSphere/BaseDP/scenes")
 BASE_CHECKPOINT = "07f93942cfcfd7d28120b0b210fd7c323098140f670bbfce4c9a83ff76b9fb30"
 CONSTRAIN_CHECKPOINT = "0d20daee00ed90863ca4e68d1a7c1093774e4b7c04d20c4d470c3470dd715284"
 SCENE_MANIFEST_SHA = "1606a307fb117f82ecf3e798d170b394a099b8c4c653eee96c9ee2d6b2649be3"

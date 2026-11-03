@@ -900,7 +900,7 @@ def main(argv=None):
         args.common_latent_replan = selected["common_latent_replan"]
         args.xy_feedback = selected["xy_feedback"]
         args.bounded_progress_guard = selected["progress_guard"]
-        args.scenes = Path("outputs/exp/20261102_133924_initial_clear_contract_r52") / args.task
+        args.scenes = Path("outputs/exp") / ("PickCube" if args.task == "pickcube" else "PlaceSphere") / "ConstrainNet" / "scenes"
     else:
         args.event_replan = bool(args.event_replan)
         args.common_latent_replan = bool(args.common_latent_replan)
@@ -964,10 +964,10 @@ def main(argv=None):
                        "base_checkpoint": Path("outputs/ckpt/20261027_224727_placesphere_action_codec_r30_base_verified/final.pt"),
                        "normalizer": Path("examples/baselines/constrain/placesphere_constrain.py"),
                        "scene_manifest": scenes / "manifest.json", "scene_h5": scenes / "scenes.h5"}
-        input_paths.update({"training_registration": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/training_preregistration.json"),
+        input_paths.update({"training_registration": Path("outputs/exp/PlaceSphere/ConstrainNet/inputs/training_preregistration.json"),
                             "data_h5": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.h5"),
                              "data_manifest": Path("demos/PlaceSphere-transport-detour/20261027_140000_hold8_500_r26/training_package_r3/trajectory.json"),
-                             "checkpoint_correction": Path("outputs/exp/20261027_224727_placesphere_action_codec_r30/checkpoint_metadata_correction.json")})
+                             "checkpoint_correction": Path("outputs/exp/PlaceSphere/ConstrainNet/inputs/checkpoint_metadata_correction.json")})
     if selected:
         validate_selected_catalog_hashes(args.task, {
             "scene_manifest": sha256(input_paths["scene_manifest"]),

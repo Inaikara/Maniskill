@@ -26,8 +26,8 @@ from examples.baselines.constrain.diagnose_pickcube_contact import (
     summarize_contact_evidence,
 )
 
-EVAL_DIR = Path("outputs/exp/20261022_162002_pickcube_paired_eval")
-SCENE_DIR = Path("outputs/exp/20261022_152157_pickcube_scenes")
+EVAL_DIR = Path("outputs/exp/PickCube/BaseDP/evaluation")
+SCENE_DIR = Path("outputs/exp/PickCube/BaseDP/scenes")
 BASE_CHECKPOINT = "b379573970712bcc17279ed237602a7be823acce9f7134ba125041ba5478389c"
 CONSTRAIN_CHECKPOINT = "da94d795f9cc5622b9ad87c7c19178e3e05ec1e93837bfe673400a71208d0ef4"
 SCENE_MANIFEST_SHA = "ea1ae25961ad4af673be865399d000717032452a5fb24fc7c77443f42558c346"

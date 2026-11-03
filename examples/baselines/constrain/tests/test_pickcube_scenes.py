@@ -103,7 +103,7 @@ def test_scene_controller_snapshot_hash_is_checked_after_container_checksums_pas
 
 
 def test_completed_scene_report_denominator_matches_journal(tmp_path):
-    output = Path("outputs/exp/20261022_152157_pickcube_scenes")
+    output = Path("outputs/exp/PickCube/BaseDP/scenes")
     report = json.loads((output / "report.json").read_text())
     journal = [json.loads(line) for line in (output / "attempts.jsonl").read_text().splitlines()]
     assert len(journal) == 349

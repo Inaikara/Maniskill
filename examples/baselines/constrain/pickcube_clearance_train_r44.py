@@ -29,10 +29,10 @@ from examples.baselines.constrain.pickcube_clearance_round44 import (
 TRAIN_SCHEMA = "pickcube_se3_horizon8_training_admission_v1"
 TRAIN_FORMAT = "pickcube_se3_horizon8_clearance_constrain_v1"
 BASE = Path("outputs/ckpt/20261029_004500_pickcube_xy_gauge_r40_base/final.pt")
-STATS_PATH = Path("outputs/exp/20261029_031500_pickcube_bodyhint_r41/position_encoding.json")
+STATS_PATH = Path("outputs/exp/PickCube/ConstrainNet/inputs/position_encoding.json")
 R40_EXP = Path("outputs/exp/20261029_004500_pickcube_xy_gauge_r40")
 BENCHMARK = EXP / "train_benchmark_10_batches.json"
-TRAIN_REG = EXP / "train_preregistration.json"
+TRAIN_REG = Path("outputs/exp/PickCube/ConstrainNet/inputs/train_preregistration.json")
 PRECHECK = EXP / "precheck/sourceclosed_08/response_precheck.json"
 TOTAL = 150000
 BATCH = 1024

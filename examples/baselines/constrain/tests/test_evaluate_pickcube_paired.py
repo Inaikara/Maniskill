@@ -32,7 +32,7 @@ def test_live_time_limit_flags_follow_the_same_classifier():
     from examples.baselines.constrain.evaluate_pickcube_paired import _native_env
     from examples.baselines.constrain.pickcube_scenes import PickCubeSceneSet
 
-    catalog = PickCubeSceneSet("outputs/exp/20261022_152157_pickcube_scenes")
+    catalog = PickCubeSceneSet("outputs/exp/PickCube/BaseDP/scenes")
     env = gym.wrappers.TimeLimit(_native_env(catalog.load(0)), max_episode_steps=1)
     try:
         env.reset(seed=0)

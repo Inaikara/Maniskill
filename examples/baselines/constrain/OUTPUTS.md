@@ -1,5 +1,47 @@
 # Final retained artifacts — three obstacle tasks
 
+## One best result per experiment and method (2026-11-03)
+
+Each task and method now has one retained result. Non-best ConstrainNet
+evaluations, videos, and checkpoints were removed. StackCube has no rendered
+experiment video.
+
+| Experiment / method | Result | Video |
+|---|---|---|
+| PickCube BaseDP | `outputs/exp/PickCube/BaseDP/` | `outputs/video/PickCube_BaseDP/` |
+| PickCube ConstrainNet | `outputs/exp/PickCube/ConstrainNet/` (28/30, XY 30/30) | `outputs/video/PickCube_ConstrainNet/` |
+| PlaceSphere BaseDP | `outputs/exp/PlaceSphere/BaseDP/` | `outputs/video/PlaceSphere_BaseDP/` |
+| PlaceSphere ConstrainNet | `outputs/exp/PlaceSphere/ConstrainNet/` (24/30, XY 30/30) | `outputs/video/PlaceSphere_ConstrainNet/` |
+| StackCube BaseDP | `outputs/exp/StackCube/paired_eval/base_dp/` (12/100 stack, 0/100 safe) | `outputs/video/StackCube_BaseDP/` |
+| StackCube ConstrainNet | `outputs/exp/StackCube/paired_eval/constrain_dp/` (100/100 stack, 88/100 safe) | `outputs/video/StackCube_ConstrainNet/` |
+| Wristcam BaseDP | `outputs/exp/Wristcam/BaseDP/` | `outputs/video/Wristcam_BaseDP/` |
+| Wristcam ConstrainNet | `outputs/exp/Wristcam/ConstrainNet/` | `outputs/video/Wristcam_ConstrainNet/` |
+
+`outputs/exp` now contains only these four experiment directories. Old timestamp paths are historical sources; the move map is `outputs/exp/migration.json`.
+
+## Retained results and inspection videos (2026-11-03)
+
+Experiment results remain under `outputs/exp`. Only rendered videos are under
+`outputs/video`, named `<method>_<experiment>`. Existing videos were moved, not
+regenerated. The selected 80% results were replayed from retained filtered
+actions; all 60 replays matched recorded native success.
+
+| Kept result | Location |
+|---|---|
+| PickCube selected XY, 28/30 and 30/30 XY-zero | `outputs/exp/20261102_172918_selected_xy_80_tracefix_r59/pickcube_rows/` |
+| PlaceSphere selected XY, 24/30 and 30/30 XY-zero | `outputs/exp/20261102_172918_selected_xy_80_tracefix_r59/placesphere_rows/` |
+| Fixed evaluation scenes | `outputs/exp/20261102_133924_initial_clear_contract_r52/` |
+| PickCube videos | `outputs/video/ConstrainNet-bufferedXY-event-replan_pickcube-selected-xy-80/` |
+| PlaceSphere videos | `outputs/video/ConstrainNet-bufferedXY_placesphere-selected-xy-80/` |
+
+Selected checkpoints and the frozen 1,000/500 training packages remain. Older
+completed StackCube, wristcam, and 2026-10-22 paired-evaluation results were
+not intermediate trials and were kept; their representative videos moved to
+`outputs/video/`. Optimization probes, failed rounds, unused checkpoints, and
+superseded demo packages were removed. Historical sections below retain their
+original paths as provenance; those paths are not all still on disk. Video move
+hashes are in `outputs/video/migration.json`.
+
 ## Round 59 — passive progress-guard trace index correction and selected-profile regression verification (2026-11-02)
 
 R59 fixes a trace-annotation off-by-one in the optional PlaceSphere progress-guard
