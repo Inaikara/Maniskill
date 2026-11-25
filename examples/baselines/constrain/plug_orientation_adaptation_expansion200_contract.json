@@ -1,0 +1,52 @@
+{
+  "format": "plug_orientation_random200_expansion_contract_v1",
+  "status": "prospective_offline_implementation_only",
+  "scope": "first 100 eligible new episodes appended after the immutable original random-100 pool; no collection/training execution authorized by this artifact",
+  "parent": {
+    "dataset": "demos/PlugCharger-orientation-random-100_20261120_041640",
+    "manifest_sha256": "5e0841998157fd383699fb87905c4d4869ac41ab9a00f222f6536afa2bf11198",
+    "collection_preregistration_sha256": "4ad2bb78a3bb2966e90c47c2d17cbde2b6c213e4b5b47f8504fad2ce9777819b",
+    "hdf5_sha256": "2df8ffa9b95c27e2ef9f7a471edefb68f73c8f6123769e9858eb9fa53f2fe26c",
+    "json_sha256": "77e9fed3070ad326b0323ace70b6b7015ad4394bf374a71193487685db4f6c0f",
+    "accepted_episodes": 100,
+    "immutable": true
+  },
+  "pool": {
+    "effective_episode_count": 200,
+    "parent_episodes_first": 100,
+    "new_episodes": 100,
+    "new_candidate_seeds_inclusive": [2026123150, 2026123299],
+    "candidate_cap": 150,
+    "accepted_new_cap": 100,
+    "candidate_plan": "one np.random.default_rng(1704) stream; draw 300 uniform yaws from [-pi/8,+pi/8], skip draws 0..149, apply draws 150..299 in order to seeds 2026123150..2026123299",
+    "actual_random100_rng_deviation": "original 100-run used sequential default_rng(1704) draws; its yaws were not regenerated or replaced; the 32 unused seeds 2026123118..2026123149 are not reused",
+    "teacher_and_replay_control_cap_each": 600,
+    "aggregate_new_source_control_cap": 90000,
+    "aggregate_new_replay_control_cap": 90000,
+    "collection_wall_seconds": 5400,
+    "whole_stage_wall_seconds": 6000,
+    "minimum_effective_occupied_yaw_bins": 5,
+    "official_success": {"position_m_max": 0.005, "full_quaternion_angle_rad_max": 0.2}
+  },
+  "training": {
+    "frozen_base_checkpoint_sha256": "ceeb68b4838ced6e6ffa43646bcc3cfc47538469e02264c4bc80a2542a33d130",
+    "frozen_base_ema_sha256": "ab97b69e3bf62d77de030dd745ed2f416691589a22b67c20efdefac791b2c083",
+    "initialization": "fresh zero-control Constrain branch over exact frozen Base v1 EMA; never resume random-100 update 25000",
+    "seed": 1,
+    "updates": 30000,
+    "batch_size": 1024,
+    "random_windows_per_batch": 512,
+    "fixed_windows_per_batch": 512,
+    "checkpoint_steps": [5000, 10000, 15000, 20000, 25000, 30000],
+    "sampler": {"observation_history": [1, 2, 46], "action_chunk": [1, 8, 7], "global_condition_dim": 92, "horizon": 16, "diffusion_steps": 100, "native_action_mode": "pd_ee_delta_pose"},
+    "method_gates": {"random_validation_gain_successes_min_of_50": 10, "fixed_validation_loss_successes_max_of_50": 2},
+    "selection": "max random-validation successes among candidates retaining at least 27/50 fixed; latest update breaks ties",
+    "validation": "fresh Base once per split plus all six candidates on the same frozen 50-scene random/fixed catalogs; no final/test catalog access"
+  },
+  "future_evaluation": {
+    "per_episode_control_cap": 600,
+    "time_limit": 1000,
+    "candidate_selection": "latest of six checkpoints satisfying fixed retention and maximizing random validation",
+    "heldout_runner": "not implemented or authorized until the full 200-demo validation roster is audited and the method gate passes"
+  }
+}

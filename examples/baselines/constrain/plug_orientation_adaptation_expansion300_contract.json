@@ -1,0 +1,62 @@
+{
+  "format": "plug_orientation_random300_expansion_contract_v1",
+  "status": "prospective_offline_implementation_only",
+  "scope": "first 100 eligible fresh episodes appended to the immutable random-200 pool; no physical collection, training, or validation execution is authorized by this artifact",
+  "parent": {
+    "dataset": "demos/PlugCharger-orientation-random-200_20261120_121208",
+    "manifest_sha256": "3f96a3ff54072d64023dc057271614cd09225deb5356dafb8d51785562ac304b",
+    "collection_preregistration_sha256": "0ebde081173b847df5c67656cec22efb0577fe1893279ab31648240f61290200",
+    "hdf5_sha256": "eeed1e0170702b89de1a5505f2ae863fccaf9c6c467eeec9a549ed14c510c210",
+    "json_sha256": "a5245c8de32d103cffe7c60a1f9a409badfa42c87c0d6488931c6c951f1ff269",
+    "accepted_episodes": 200,
+    "immutable": true
+  },
+  "pool": {
+    "effective_episode_count": 300,
+    "parent_episodes_first": 200,
+    "new_episodes": 100,
+    "new_candidate_seeds_inclusive": [2026123300, 2026123449],
+    "candidate_cap": 150,
+    "accepted_new_cap": 100,
+    "candidate_plan": "one np.random.default_rng(1704) stream; draw 450 uniform yaws from [-pi/8,+pi/8], skip draws 0..299, apply draws 300..449 in order to seeds 2026123300..2026123449",
+    "previous_candidate_ranges_not_reused": true,
+    "teacher_and_replay_control_cap_each": 600,
+    "aggregate_new_source_control_cap": 90000,
+    "aggregate_new_replay_control_cap": 90000,
+    "collection_wall_seconds": 5400,
+    "whole_stage_wall_seconds": 6000,
+    "official_success": {"position_m_max": 0.005, "full_quaternion_angle_rad_max": 0.2}
+  },
+  "training": {
+    "frozen_base_checkpoint_sha256": "ceeb68b4838ced6e6ffa43646bcc3cfc47538469e02264c4bc80a2542a33d130",
+    "frozen_base_ema_sha256": "ab97b69e3bf62d77de030dd745ed2f416691589a22b67c20efdefac791b2c083",
+    "initialization": "fresh zero-control Constrain branch over exact frozen Base v1 EMA; never resume a prior Constrain update",
+    "seed": 1,
+    "updates": 30000,
+    "batch_size": 1024,
+    "random_windows_per_batch": 512,
+    "fixed_windows_per_batch": 512,
+    "checkpoint_steps": [5000, 10000, 15000, 20000, 25000, 30000],
+    "sampler": {"observation_history": [1, 2, 46], "action_chunk": [1, 8, 7], "global_condition_dim": 92, "horizon": 16, "diffusion_steps": 100, "native_action_mode": "pd_ee_delta_pose"},
+    "method_gates": {"random_validation_gain_successes_min_of_50": 10, "fixed_validation_loss_successes_max_of_50": 2},
+    "selection": "max random-validation successes among candidates retaining at least ceil(fresh_base_fixed_successes - 0.05*50) fixed; latest update breaks ties"
+  },
+  "validation": {
+    "roster": "fresh Base once per split plus each of six checkpoints on the same 50-scene random/fixed validation catalogs",
+    "episode_count": 700,
+    "per_episode_control_cap": 600,
+    "time_limit": 1000,
+    "final_and_heldout_access": "not implemented or authorized; remain closed regardless of this validation outcome"
+  },
+  "stop_rule": {
+    "decision": "if the 300-pool candidate set fails either unchanged method gate, stop this expansion study and report the negative result",
+    "further_data_or_code_variants": "not authorized by this contract"
+  },
+  "bounded_execution": {
+    "collection_outer_timeout_seconds": 6000,
+    "training_internal_timeout_seconds": 7200,
+    "training_outer_timeout_seconds": 9000,
+    "validation_outer_timeout_seconds": 21600,
+    "whole_stage_grace_seconds": 20
+  }
+}

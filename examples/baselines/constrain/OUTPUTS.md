@@ -1,5 +1,2530 @@
 # Final retained artifacts — three obstacle tasks
 
+## Orientation best results and videos (2026-11-23)
+
+Following the obstacle-task pattern, one best result per task and method is
+retained by hardlink. Historical checkpoints and evaluations were not deleted.
+Peg uses the random-500 comparison that met both numeric gates; it is nonblind.
+Plug uses the validation-selected random-500 30k candidate. Plug videos replay
+the recorded actions of the lowest successful scene and match native success.
+Peg videos are the original scene-0 recordings, not new policy samples.
+
+| Method | Result | Weight | Video directory |
+|---|---|---|---|
+| Peg Base | random 3/100, fixed 52/100 | `outputs/ckpt/retained_orientation/PegInsertionSide/BaseDP/update_100000.pt` | `outputs/video/PegInsertionSide_BaseDP/` |
+| Peg ConstrainNet | random 23/100, fixed 54/100 | `outputs/ckpt/retained_orientation/PegInsertionSide/ConstrainNet/update_25000.pt` | `outputs/video/PegInsertionSide_ConstrainNet/` |
+| Plug Base | random 22/100, fixed 53/100 | `outputs/ckpt/retained_orientation/PlugCharger/BaseDP/checkpoint_080000.pt` | `outputs/video/PlugCharger_BaseDP/` |
+| Plug ConstrainNet | random correct 41/100, fixed 54/100 | `outputs/ckpt/retained_orientation/PlugCharger/ConstrainNet/checkpoint_030000.pt` | `outputs/video/PlugCharger_ConstrainNet/` |
+
+Selection, hashes, and replay identity: `outputs/exp/20261123_103016_retained_orientation_results/selection.json`.
+
+Additional videos use the lowest recorded indices, not visual selection. BaseDP
+failures: Peg random scenes 0–2 and fixed scenes 2/6/9; Plug random scenes
+1/2/4/5 and fixed scenes 1/8/9. ConstrainNet successes: Peg random scenes
+0/2/9 and fixed scenes 0/1/3; Plug random scenes 0/1/3 and fixed scenes 0/2/3.
+Plug clips replay the saved actions and matched native success. Peg clips are
+same-seed CUDA rerenders because per-control actions were not retained; each
+rerender kept the original success or failure. One Plug fixed Base replay
+disagreed with its recorded failure and was discarded.
+
+## PlugCharger Goal-loop Round 128 — independent heldout complete
+
+The authorized 600-episode CPU roster completed once in the frozen order
+random-final Base/correct/fixed-standard/shuffled, then fixed-base-test
+Base/correct. Counts were **22/100, 41/100, 28/100, 20/100, 53/100, and
+54/100** respectively; native controls were **291,334**. Random correct vs Base
+is **+19 pp** (paired 26 wins / 7 losses); fixed-standard vs Base +6 pp,
+shuffled vs Base −2 pp, correct vs fixed-standard +13 pp, correct vs shuffled
++21 pp, and fixed retention correct vs Base +1 pp (13 wins / 12 losses).
+The historical validation remains **+10 pp**, below the unchanged **+20 pp**
+gate. Heldout +19 pp is below +20 pp as well; no gate pass, checkpoint
+reselection, retraining, significance, routine-finetune comparison, or Peg/Plug
+pooling is claimed.
+
+All 600 journals reconcile to summaries, scene IDs, seeds, ≤600 controls,
+finite 46-D observations/7-D actions and native `info.success`. Terminal
+simulator states are absent, so independent full-pose recomputation is
+unavailable. Runtime was **10,709.807 s stage / 10,713.55349533 s outer**; the exact
+canonical 25-file suite passed **285 before and after**. A pre-test import-path
+setup error and a post-completion wrapper exit-quoting error are fully recorded;
+the evaluator itself wrote the complete result and was not rerun. All 15 direct
+input hashes, 261 source-archive hashes, and 4,010 imported runtime-source hashes
+match pre/post. The shuffled assignment was sealed before first policy action.
+
+- Six cohorts and episode journals: `outputs/exp/20261123_070724_plug_random500_heldout/`.
+- Preregistration, complete episode CSV/JSONL, paired audit, raw command logs,
+  wrapper incident, source/runtime archives, tests, timings and pre/post hashes:
+  `outputs/exp/20261123_070724_plug_random500_heldout_envelope/`.
+- Frozen selected checkpoint SHA-256:
+  `911bd5d7be828ae06ff87ab66e6fbb67cb1a5d77a173668f9dda581acf4746a1`;
+  frozen Base SHA-256:
+  `ceeb68b4838ced6e6ffa43646bcc3cfc47538469e02264c4bc80a2542a33d130` (EMA
+  tensor SHA-256 `ab97b69e3bf62d77de030dd745ed2f416691589a22b67c20efdefac791b2c083`).
+
+## PlugCharger Round 126 — heldout runner implementation only
+
+Implemented `evaluate-heldout` with production identity checks against the
+registered random-500 validation selection, selected 30,000-update checkpoint,
+frozen Base v1, and the two heldout catalog manifests. Contract:
+`plug_orientation_heldout_contract.json`. The explicit forward authorization
+does not rewrite the historical result: selected random validation is 23/50
+versus Base 18/50 (+10 pp), and the unchanged +20 pp method gate is unmet.
+This run is not a passing-gate confirmatory test.
+
+The implementation includes a fixed 600-arm roster, one Base and one Constrain
+adapter, seed-1703 shuffled targets, per-control/per-episode journals, alignment
+diagnostics and native official position/rotation errors when supplied by info,
+and exception-safe partial progress. Terminal simulator states are
+not journaled, so independent full-pose recomputation is unavailable. Videos
+remain an explicit gap because no compatible existing per-arm recording path
+was established. The runner was tested with fake env/policy boundaries and real
+selection/checkpoint/catalog identity preflight. RED/GREEN raw outputs and UTC/
+monotonic markers are retained in `outputs/exp/20261123_064041_plug_heldout_runner_development/`;
+the genuine missing-command RED is in `outputs/exp/20261123_063021_plug_heldout_runner_development/`.
+Focused tests passed **44** and the exact canonical 25-file roster passed **284**.
+No heldout scene was run: **0 heldout episodes / 0 native controls / 0 policy
+actions**. Ticket 09 remains incomplete; actual paired heldout results and the
+cross-task/final conclusion are future work.
+
+Runnable command (execution requires the separately planned stage operation;
+this implementation round did not execute it):
+
+```bash
+source /home/xuwj/.miniconda3/etc/profile.d/conda.sh
+conda activate maniskill
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=..:.
+timeout --signal=TERM --kill-after=20s 25200s \
+  python -m examples.baselines.constrain.plug_orientation_adaptation evaluate-heldout \
+  --output-root outputs/exp/YYYYMMDD_HHMMSS_plug_heldout_600
+```
+
+## PlugCharger Round 125 — random-500 validation complete; method gate failed
+
+The complete validation roster ran once: fresh Base on both profiles plus six
+500-random checkpoints on both frozen 50-scene validation catalogs (**700/700**).
+CPU PhysX, seed `1 + scene index`, stride 8/native 7-D actions, 600-control cap;
+**316,520 controls**, **12,816.473 s**, exit 0 under the 18,000 s TERM / 20 s KILL
+cap. The exact canonical 25-file suite passed **276 pre/post**.
+
+Fresh Base scored **30/50 fixed, 18/50 random**. Candidate fixed/random:
+5k **21/12**, 10k **25/12**, 15k **28/17**, 20k **33/17**, 25k **31/21**,
+30k **37/23**. The selector chooses 30k, SHA-256
+`911bd5d7be828ae06ff87ab66e6fbb67cb1a5d77a173668f9dda581acf4746a1`. Fixed
+retention loss is −14 pp and passes; random gain is **+10 pp**, below the
+unchanged **+20 pp** method gate. This positive point estimate does not pass the
+gate. The one-seed, validation-selected result is descriptive only.
+
+All 700 event journals reconcile with the 14 summaries for scene/seed, controls,
+finite observations/actions and native `info.success`; simulator terminal states
+are not stored, so independent full-pose predicate recomputation is not claimed.
+All **338 directly registered input/source hashes** match pre/post. The nine
+catalog-bundle files are identity-only; heldout/final scene contents remain
+closed. Supplemental post-run identity checks found all 18 random-100/200/300
+checkpoints and all ten Base v1/v2 checkpoints match their prior seals (not
+contemporaneous pre-run captures). No new training/data, source/dependency edit,
+commit, or push.
+
+- Episode data and selection: `outputs/exp/20261122_045531_plug_constrain_random500_validation/`.
+- Registration, raw logs, pre/post hashes, source archive, audit, tests and
+  artifact manifest: `outputs/exp/20261122_045531_plug_constrain_random500_validation_envelope/`.
+- Historical selected fixed/random results for 100/200/300/500 pools are
+  30/20, 38/21, 33/23, 37/23. Fresh Base fixed results vary (29/31/30/30),
+  so these are not causal evidence of a data-size effect. Ticket 09 remains
+  incomplete; both heldouts remain closed.
+
+## PlugCharger Round 124 — random-500 fresh Constrain training complete (validation pending)
+
+Following admission and review/authorization, one fresh seed-1 CUDA run completed
+**30,000/30,000 updates** on the exact 500-random / 1,000-fixed pools. It did not
+resume any 100/200/300 checkpoint. Runtime was **1,187.152 s trainer** and
+**1,207.809 s outer monotonic**, exit 0 on an NVIDIA GeForce RTX 5070. The
+canonical 25-file suite passed **276 before and 276 after**. All 300 logged rows
+are finite at the registered 100-update cadence; final LR is zero.
+
+Six 5k–30k validation-candidate checkpoints were strict CPU-loaded and audited.
+Each preserves all **148 frozen Base tensors bit-for-bit**; each has 100 finite
+control EMA tensors matching EMA shadow ordering and matching optimizer,
+scheduler and EMA update counts. Their hashes are:
+
+| Update | SHA-256 |
+|---:|---|
+| 5k | `c22d79d60d91637dcf4a6f98fd3f3df64f95141df82357135a7548ef67ebe155` |
+| 10k | `6415dc5cd4bae718beadcd10b2f978572e4700597c81a3cf1c6d6b4edbb34fa9` |
+| 15k | `0a550af1798b8dfe59a0653ec75af356d699ee9874b73b04dfe9b8950880913f` |
+| 20k | `49c9447beba008db2cd043429081803308368a8d4997f4c5c09e8f55ba1aee8e` |
+| 25k | `ddf2b7765c15eaae9901566c57c60300949569436426cdb3ca13d09b211b2aac` |
+| 30k | `911bd5d7be828ae06ff87ab66e6fbb67cb1a5d77a173668f9dda581acf4746a1` |
+
+Direct pre/post identities for **49 protected files** match, including all
+current/ancestor data artifacts, the frozen Base checkpoint, relevant sources,
+and all nine catalog bundle files (catalogs were identity-only; no scenes or
+outcomes were accessed). No policy queries, validation episodes, or heldout
+queries occurred. This is **training completion only**, not an efficacy claim.
+Stop for independent parent review; the only prospective next action is the
+already registered 700-episode validation roster if separately approved. No
+additional data or training is authorized.
+
+- Experiment/logs: `outputs/exp/20261122_042359_plug_orientation_constrain_random500/`
+- Weights: `outputs/ckpt/20261122_042359_plug_orientation_constrain_random500/`
+- Full raw command, stdout/stderr, UTC/monotonic times, preregistration,
+  pre/post hashes, tests, audits and summaries:
+  `outputs/exp/20261122_042359_plug_orientation_constrain_random500_envelope/`.
+- No source-code, dependency, data, or prior-checkpoint edits; no commit/push.
+
+## PlugCharger Round 123 — random-500 data admitted (data only)
+
+User-approved extension of the same experiment completed once: the immutable
+random-300 parent plus the first 200 fresh eligible NativeEE v4 expert/raw-replay
+pairs now form the 500-example pool. The 300-candidate plan (seeds
+`2026123450..2026123749`, `default_rng(1704)` draws 450–749) was sealed before
+native callbacks. **200 were admitted after 222 attempts**: 21 ordinary native
+eligibility rejections and one recorded MPLib screw-planning failure (zero
+controls), then continuation with the next sealed seed. Attempt-stage controls
+were **61,340 source + 61,340 replay**; admitted rows account for **56,914 +
+56,914**. New yaw bins `[42,35,46,40,37]`; combined 500 bins
+`[97,100,96,104,103]`.
+
+The real `PlugAdaptationDataset(expected_episodes=500)` reader validated all 500
+episodes, source/replay pairs and saved full-pose terminal predicates: **141,605
+windows**; sample shapes `(2,46)/(16,7)/(2,)`, finite, max action magnitude 1.0.
+Canonical 25-file tests passed **276 before and after**. Thirty-five protected
+input identities and all 35 archived/current source files match; nine catalog
+files were hash-only. Collection elapsed **559.530 s**, exit 0 within the
+12,000 s outer deadline. No training, policy query, validation or heldout access.
+At collection close this admitted data only and made no efficacy claim. The one
+subsequently authorized 30k run is recorded in Round 124; do not exceed 500.
+The 18 prior random-100/200/300 checkpoints match retained Round-122 identity
+seals post-run; this is not claimed as direct contemporaneous pre/post hashing.
+
+- Data: `demos/PlugCharger-orientation-random-500_20261122_035654/` — HDF5
+  `121ff0905b737e999a0299e81a62e4bf142f4306d8c1f6b242e62f3d36052197`, JSON
+  `06e568da0debbb2bb4465e8738990b4eec82cf02f613a17fc3a2fc8d3018bf05`, manifest
+  `8f88ce6ced2f0b907f2b07c63cda37e12771e6b6a15ea5af334f43e5cf3bce68`.
+- Raw logs, registrations, audits and summaries:
+  `outputs/exp/20261122_035654_plug_random500_collection/` and sibling
+  `outputs/exp/20261122_035654_plug_random500_collection_envelope/`.
+- The historic random-300 parent and the Round-121 +10 pp negative gate remain
+  unchanged. No training update or performance improvement is claimed.
+
+## PlugCharger Round 122 — one random-500 forward experiment path implemented (offline)
+
+User amendment (2026-11-22): **“增加到500条 继续相同实验”**. It prospectively supersedes Round 121's 300-example stop rule for this single 500-pool experiment only. The actual 300-row pool, prior contracts/checkpoints/results, and Round-121 +10 pp result below are historical and unchanged. Scope is immutable 300 + first 200 fresh eligible native expert/raw-replay pairs, then one fresh seed-1 30k run over 500 random / 1,000 fixed, then the same 700 validation episodes. No 400-pool training, Base variant, heldout access, final paired runner or automatic expansion beyond 500. Fixed retention and random gain gates are unchanged; old Base absolute qualification gates remain waived only as prerequisites.
+
+Offline work adds the additive `plug_orientation_adaptation_expansion500_contract.json`, 500-pool actual lineage validator, and runnable `collect-random500` / `train-expanded500` commands; existing `evaluate-validation` retains the frozen two-catalog, six-checkpoint 700-episode roster. Actual random-300 data and ancestry were read-only audited before a callback deliberately stopped pre-native. A synthetic NativeEE source/replay pool passes the real 500 lineage reader, followed by a separate two-update CPU toy training/checkpoint test. No new native controls, production updates, trained policy queries, or holdout queries occurred. Exact historical 25-file suite plus six additions: **276 passed**. Expected-red assertion was observed before implementation, but its raw initial console output was not saved; no output has been reconstructed. Review is required before collection/training/validation.
+
+- Development evidence: `outputs/exp/20261122_031224_plug_random500_development/`.
+- Runnable bounded commands and contract details are recorded in `PLUG_ORIENTATION.md`.
+- Data cap: 300 new candidates / first 200 admitted, 600 controls per teacher/replay, 180,000 controls per side, 10,800 s internal / 12,000 s outer. Training: 30,000 updates, 7,200 s internal / 9,000 s outer. Validation: 700 episodes, 21,600 s outer.
+
+## PlugCharger Round 121 — random-300 validation complete (method gate failed)
+
+The one registered 700-episode roster completed exit 0: fresh Base once per
+profile and all six Round-119 candidates on both 50-scene validation catalogs.
+Fresh Base scored **30/50 fixed, 18/50 random**. Total was **322,364 native
+controls / 13,079 s outer wall** under the 18,000 s TERM / 20 s KILL cap. The
+canonical 25-file suite passed **270 before and after** (52.92 s each).
+
+| Update | Fixed | Random | Fixed retention loss | Random gain | Eligible |
+|---:|---:|---:|---:|---:|:---:|
+| 5k | 14/50 | 7/50 | +32 pp | −22 pp | no |
+| 10k | 26/50 | 12/50 | +8 pp | −12 pp | no |
+| 15k | 33/50 | 15/50 | −6 pp | −6 pp | yes |
+| 20k | 33/50 | 19/50 | −6 pp | +2 pp | yes |
+| 25k | 33/50 | 23/50 | −6 pp | **+10 pp** | yes |
+| 30k | 34/50 | 17/50 | −8 pp | −2 pp | yes |
+
+The selector picks 25k among candidates meeting the fixed-retention boundary;
+checkpoint SHA-256 is `75226bbea156ce833da0658d54f9d565990dc7ea602e05287d76ec15778e8cca`.
+Its fixed retention passes (−6 pp loss), but randomized gain is only **+10 pp**,
+below the **+20 pp** requirement. **The bounded method study closes with no
+demonstrated prespecified gain.** No more data, training/refit, architecture
+changes, or variants; no heldout/final paired runner. Both heldout catalogs remain
+closed. Old Base absolute gates remain waived only as forward prerequisites and
+are not qualified by this run. One-seed, selection-set results are descriptive,
+not statistical significance or independent generalization.
+
+The independent audit reconciles all **700 episode journals** to scene IDs,
+seeds, controls, finite 46-D observations/7-D actions, and native `info.success`;
+the journal omits simulator terminal physical states, so independent full-pose
+terminal recomputation is not claimed. **32 registered inputs** (including all
+nine catalog files), ten experiment-side source files and 18 explicitly captured
+installed runtime source files match pre/post hashes. The 12 random-100/200
+checkpoints and ten v1/v2 Base checkpoints also match retained prior seals (not a
+new contemporaneous pre/post capture). Final/test payloads were hash-only and
+never opened as scenes.
+
+Lineage coverage caveat: Round-121's direct preregistration did not separately
+list the random-300 attempt ledger/parent-lineage JSON, fixed dataset manifest, or
+random-100 ancestor files. The first three random-300 data artifacts match
+Round-119 pre/post seals; the fixed manifest matches its original admission seal;
+random-100 HDF5/JSON/manifest match the hashes embedded in the random-200
+parent-lineage record. These prior/transitive checks are not direct Round-121
+pre-run entries; see `lineage_provenance_reconciliation.json`.
+
+- Preregistration SHA-256: `ff966a69f7ff8d508b551735a136074a4201b88723763af1434eb6e723b4800f`.
+- Full protocol, raw logs, input/source audits, decision and artifact manifest:
+  `outputs/exp/20261120_183731_plug_constrain_random300_validation_envelope/`.
+- Episode journals and evaluator selection: `outputs/exp/20261120_183731_plug_constrain_random300_validation/`.
+- No ManiSkill/dependency/source/data/checkpoint edit, checkout, commit, or push.
+
+### Random-pool validation summary (historical Base result varies by run)
+
+| Training pool | Fresh Base fixed/random | Selected checkpoint | Selected fixed/random | Fixed retention loss | Random gain | +20 pp method gate |
+|---:|---:|---:|---:|---:|---:|:---:|
+| 100 | 29/50, 18/50 | 25k | 30/50, 20/50 | −2 pp | +4 pp | fail |
+| 200 | 31/50, 18/50 | 30k | 38/50, 21/50 | −14 pp | +6 pp | fail |
+| 300 | 30/50, 18/50 | 25k | 33/50, 23/50 | −6 pp | +10 pp | fail |
+
+These are validation-set checkpoint-selection results from distinct one-seed
+training runs, not paired across datasets or evidence of statistical significance.
+The 300-pool bounded study therefore ends negative; no heldout evaluation follows.
+
+## PlugCharger Round 119 — random-300 Constrain training complete (validation pending at the time)
+
+Following the Round-118 data admission and a separate explicit parent authorization,
+one fresh seed-1 CUDA run completed **30,000/30,000 updates** on the registered
+300-random / 1,000-fixed window pools. The random pool has **84,891 windows** and
+the unchanged fixed pool **279,625**; each batch is balanced 512/512. Trainer time
+was **1,187.25 s**, outer monotonic elapsed **1,207.03 s**, exit 0 within the
+7,200 s internal / 7,230 s external TERM/KILL bounds. All 300 logged rows are
+finite and final LR is zero.
+
+This is a fresh zero-control branch over exact frozen Base v1 80k EMA
+(`ceeb68b4…a2a33d130`, EMA `ab97b69e…b2c083`), not a resume of prior Constrain
+weights. All six 5k–30k `validation_candidate` checkpoints have distinct hashes
+and pass strict CPU adapter/provenance audits without `get_action` or policy
+forward. Every checkpoint preserves all **148** frozen Base tensors bit-for-bit;
+optimizer/scheduler/EMA steps agree and 100 trainable control EMA tensors are
+finite/nonzero. The exact 25-file suite passed **270 before and after**. Forty-eight
+captured protected identities and the registered current-source closure match
+pre/post; all nine catalog bundle files are identity-only seals, with no catalog
+outcomes queried. Historical parent/source/checkpoint artifacts retain their
+earlier seals; these are not represented as new contemporaneous pre/post hashes.
+
+One setup incident is directly documented: the evidence helper's path-normalization
+error, recorded in `pretraining_setup_incident.txt` as occurring before any
+production loader/training call. A separate narrative says a first CLI attempt
+encountered a pre-created experiment directory, but its referenced `first_launch.*`
+command/stderr/exit/time files are absent; that failure's cause and zero-update
+status are therefore not independently verified. Do not count it as a verified
+zero-update incident. The successful run's own retained command, logs, empty
+experiment directory before launch, 30,000-update report, and six audited
+checkpoints establish the successful training run. No retrospective timestamp or
+missing launch log is reconstructed.
+
+At Round 119 training completed without policy actions or validation. Round 121
+has since run the registered roster and failed the method gate; the bounded study
+stops at the 300-data ceiling and final/heldout remain closed.
+
+- Logs/config/source archive: `outputs/exp/20261120_175628_plug_random300_train_r1/`
+- Weights: `outputs/ckpt/20261120_175628_plug_random300_train_r1/`
+- Commands, actual timing, pre/post tests and identities, loader/checkpoint audits,
+  results and artifact manifest:
+  `outputs/exp/20261120_175628_plug_random300_train_envelope/`; additive
+  reconciliation receipt: `outputs/exp/20261120_175628_plug_random300_train_reconciliation/receipt.json`.
+
+## PlugCharger Round 118 — random-300 collection admitted (data only)
+
+Completed one bounded continuation from the immutable random-200 pool. The
+150 sealed candidates use seeds `2026123300..2026123449` and the 150 uniform
+`default_rng(1704)` yaw draws 300–449. The first 100 source-plus-raw-replay
+eligible episodes were admitted after 107 attempts, seeds
+`2026123300..2026123406`; no retry or old candidate reuse. New-stage totals are
+29,882 source controls and 29,882 replay controls, with a 90,000 cap per side.
+The unchanged parent 200 plus new 100 yield exactly 300 episodes; new yaw bins
+`[19,25,18,14,24]`, combined bins `[55,65,50,64,66]`.
+
+The actual production loader and 300-lineage/200-parent ancestry validator pass:
+84,891 windows, finite native values, first-item shapes `(2,46)/(16,7)/(2,)`,
+action absolute maximum 1.0. The exact canonical 25-file suite passed 270 before
+and after. Collection elapsed 266.439 s, exit 0 under the 5,400 s TERM / 20 s
+KILL whole-stage timeout. Registered current source and complete parent-tree
+hashes match pre/post. Other protected historical datasets, checkpoints, nine
+catalog files, and producer archives were post-hashed against retained earlier
+identity records/seals; this is not claimed as a new contemporaneous pre/post
+snapshot for those files. HDF5 SHA-256
+`95ede016098066b535208ec2569d4c092186a242e4627206306d44137dc2fa0f`, JSON
+`129dcf74369eb95dad2e2960877024afe9f831a47bd36576dea4ce1411f1a42f`, manifest
+`e32b6914a08d41adfb7cb2e87f0af458cd4d035880373a4b51cf3fdfc175b6dc`.
+
+Data: `demos/PlugCharger-orientation-random-300_20261120_173932/`; collection
+and sealed sources: `outputs/exp/20261120_173932_plug_random300_collection/`;
+independent audit, pre/post source/tree identities, tests, timings and artifact
+manifest: `outputs/exp/20261120_173932_plug_random300_collection_envelope/`.
+This is data admission only: no training, policy query, validation or heldout
+evaluation. The random-200 method gate remains failed (+6 pp vs +20 pp); no
+method improvement is established. Ticket 09 remains incomplete and the 300
+episode ceiling is unchanged. No further expansion, training or validation is
+authorized by this collection result; final/heldout catalogs remain closed.
+
+## PlugCharger Round 116 — bounded random-300 path implemented (offline; review required)
+
+Added one registered expansion only: the immutable random-200 pool (manifest
+`3f96a3ff…ac304b`, HDF5 `eeed1e01…c510c210`, JSON
+`a5245c8d…f1ff269`) remains first; 100 new successes may be admitted from the
+first eligible rows of 150 candidates, seeds `2026123300..2026123449`. Yaws use
+one `default_rng(1704)` stream after skipping draws 0–299 and consume draws
+300–449. The collector validates the real random-200 plus random-100 ancestry
+before its first callback, archives the current source/contract, separates new
+attempt/control totals from parent ledgers, and seals current preregistration,
+journal, source/replay/case hashes and consolidated native HDF5 values. The
+reader rechecks all 200 parent rows and all 100 new source/replay rows against
+that lineage. The old random-100/200 entry points and expansion contracts remain
+registered unchanged; only 100/200/300 pools are accepted.
+
+The additive contract pins the same frozen Base v1 EMA, fresh zero-control
+initialization, 30k updates, balanced 512/512 batches, six existing checkpoints,
+700 validation episodes and unchanged method gates. It explicitly stops this
+study if either method gate fails; it authorizes no further data/code variants
+or final/heldout access. Runnable CLI stages are `collect-random300` and
+`train-expanded300`; after independent review and stage authorization, use
+timestamped paths and these bounded forms (activate the `maniskill` Conda
+environment first):
+
+```bash
+timeout --signal=TERM --kill-after=10s 6000s env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. \
+  python -m examples.baselines.constrain.plug_orientation_adaptation collect-random300 \
+  --parent-dataset demos/PlugCharger-orientation-random-200_20261120_121208 \
+  --dataset-dir demos/PlugCharger-orientation-random-300_<UTC> \
+  --exp-dir outputs/exp/<YYYYMMDD_HHMMSS>_plug_random300_collection
+
+timeout --signal=TERM --kill-after=20s 9000s env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. \
+  python -m examples.baselines.constrain.plug_orientation_adaptation train-expanded300 \
+  --random-h5 demos/PlugCharger-orientation-random-300_<UTC>/trajectory.state.pd_ee_delta_pose.physx_cpu.h5 \
+  --random-manifest demos/PlugCharger-orientation-random-300_<UTC>/dataset_manifest.json \
+  --fixed-h5 demos/PlugCharger-orientation-fixed-1000_20261119_184307/trajectory.state.pd_ee_delta_pose.physx_cpu.h5 \
+  --fixed-manifest demos/PlugCharger-orientation-fixed-1000_20261119_184307/trajectory.state.pd_ee_delta_pose.physx_cpu.json \
+  --exp-dir outputs/exp/<YYYYMMDD_HHMMSS>_plug_random300_train \
+  --ckpt-dir outputs/ckpt/<YYYYMMDD_HHMMSS>_plug_random300_train --device cuda
+
+timeout --signal=TERM --kill-after=20s 21600s env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. \
+  python -m examples.baselines.constrain.plug_orientation_adaptation evaluate-validation \
+  --ckpt-dir outputs/ckpt/<YYYYMMDD_HHMMSS>_plug_random300_train \
+  --random-catalog outputs/exp/20261119_184307_plug_orientation_catalogs/random_validation \
+  --fixed-catalog outputs/exp/20261119_184307_plug_orientation_catalogs/fixed_validation \
+  --output-root outputs/exp/<YYYYMMDD_HHMMSS>_plug_random300_validation
+```
+
+This round ran no teacher/replay/native control, production optimizer update,
+production policy action query, validation episode, or holdout query. A synthetic
+HDF5 end-to-end collector test admitted 100 ordered fresh rows through the native
+file/pair predicate without invoking a teacher or simulator. The exact historical
+25-file suite plus round-116 tests passed **269 tests** in **53.1 s**; the new
+300-row loader fixture and two-update CPU toy training use owned test bindings,
+not a production provenance bypass. The initial expected-red assertion showed
+the missing `collect_random300` API; raw output is retained, but its monotonic
+start/end timestamps were not captured and are not reconstructed. Frozen parent,
+Base/checkpoint, and random-200 contract hashes match before/after. Evidence,
+source archive/closure, exact roster/command, logs and hashes are in
+`outputs/exp/20261120_165132_plug_random300_development/`. The prior random-200
+validation remains **+6 pp**, below +20 pp; no outcome or gate is rewritten.
+Independent review remains the prerequisite to the bounded collect/admit/train/
+validation chain. No ManiSkill source/dependency change, commit, or push.
+
+## PlugCharger Round 115 — random-200 Constrain validation complete (method gate failed)
+
+The full frozen validation-only roster completed **700/700 episodes**: fresh
+Base once on each 50-scene profile and all six 5k–30k random-200 Constrain
+checkpoints on both profiles. CPU `physx_cpu`, seed `1 + scene index`, native
+stride-8 7-D actions, and the unchanged 600-control cap were used. Total work
+was **311,659 native controls / 12,517 s**, exit 0 under the 18,000 s TERM/KILL
+limit. All 700 per-control journals reconcile to the native `info.success`
+summaries and exact control counts. The exact 261-test roster passed before and
+after (**28.64 s / 35.46 s**). All 54 registered source/input identities,
+including all nine catalog bundle files, match pre-run hashes; 15 archived
+installed source-module files also match pre/post. No final/test catalog or
+heldout outcome was opened.
+
+Fresh frozen v1 Base: **31/50 fixed, 18/50 random**. Candidate results:
+
+| Update | Fixed | Random | Fixed retention loss | Random gain |
+|---:|---:|---:|---:|---:|
+| 5k | 26/50 | 9/50 | +10 pp | −18 pp |
+| 10k | 22/50 | 14/50 | +18 pp | −8 pp |
+| 15k | 36/50 | 14/50 | −10 pp | −8 pp |
+| 20k | 39/50 | 19/50 | −16 pp | +2 pp |
+| 25k | 41/50 | 17/50 | −20 pp | −2 pp |
+| 30k | 38/50 | 21/50 | −14 pp | **+6 pp** |
+
+The validation selector chooses **30k**, SHA-256
+`b0764215fb65d6c3b1bd7852788dadc39a0883d9a06ec391f3c5a73868e67167`.
+Retention passes (−14 pp loss), but randomized gain **+6 pp** is below the
+unchanged +20 pp gate. **Method gate failed; no checkpoint is frozen for final
+evaluation and no heldout evaluation is authorized by this result.** The waived
+Base absolute gate was not applied. Round 107's +4 pp result and this run are
+separate validation samples/runs; historical outcomes are not rewritten.
+
+Audit boundary: native `info.success` is retained and reconciled, but the
+evaluator journal does not save simulator terminal states, so independent
+recomputation of the full-quaternion success predicate is unavailable. This is
+one training seed and validation used for selection, not a blind significance
+claim. Full report, gate decision, source/input pre/post hashes, installed-source
+archive, exact commands/tests, runtime, timings, and artifact manifest:
+`outputs/exp/20261120_131136_plug_constrain_random200_validation_envelope/`;
+the 700 episode journals and summaries are in
+`outputs/exp/20261120_131136_plug_constrain_random200_validation/`.
+No source/dependency/data/checkpoint edits, commit, or push.
+
+## PlugCharger Round 114 — random-200 Constrain training complete (validation pending)
+
+The fresh seed-1 Constrain run completed **30,000/30,000 CUDA updates** on the
+RTX 5070 in **1,188.47 s trainer time / 1,206 s outer wall time**, exit 0. It
+used the independently admitted 200-random-episode pool (**56,481 windows**) and
+the unchanged fixed-1,000 pool (**279,625 windows**), with balanced 512/512
+windows per 1,024-item batch. This is a fresh zero-control branch over the exact
+frozen original v1 80k EMA—not a resume of random-100 weights. All 300 100-update
+log rows are finite and terminal LR is zero.
+
+All six 5k–30k checkpoints have distinct SHA-256 identities and pass CPU-only
+strict adapter/provenance checks. Every checkpoint preserves all **148** frozen
+Base tensors bit-for-bit; optimizer, scheduler, and EMA steps agree with the
+checkpoint update; the 100 trainable EMA tensors and raw zero-convolution branch
+are finite/nonzero. The run-owned contract copy binds the parent random-100
+forward-contract SHA and actual random-200 manifest SHA. The exact 261-test suite
+passed before (**28.13 s**) and after (**28.85 s**) the run; registered source and
+input hashes match pre/post. Historical producer archives remain separately
+verified against their own bytes.
+
+This is **training completion only**. No trained action was sampled and no
+validation, final/test, or heldout outcome was accessed. The prior random-100
+candidate remains at **+4 pp**, below the frozen **+20 pp** randomized-gain gate;
+that failure is unchanged. The new random-200 model has no performance result or
+method-improvement claim. Validation-only evaluation is the next gate after
+parent review; keep heldout closed.
+
+- Logs/config/source archive: `outputs/exp/20261120_123140_plug_orientation_constrain_random200/`
+- Weights: `outputs/ckpt/20261120_123140_plug_orientation_constrain_random200/`
+- Registration, exact commands, versions, data/catalog hashes, loader audit,
+  timings, test logs, input pre/post identities, six-checkpoint audit, and artifact
+  manifest: `outputs/exp/20261120_123140_plug_orientation_constrain_random200_envelope/`
+- Random data: `demos/PlugCharger-orientation-random-200_20261120_121208/`
+
+No ManiSkill source/dependency, training data, old Base/random-100 checkpoint,
+catalog, or historical result was changed. No commit or push.
+
+## PlugCharger Round 113 — float32 yaw representation repair and offline admission
+
+The expansion reader previously compared consolidated metadata yaw against the
+sealed float64 plan at `1e-12`, although that row is sourced from the native
+float32 target state. It now compares only that metadata row after float32
+round-trip; candidate-plan and attempt-ledger comparisons remain at `1e-12`, and
+sealed plan-stream verification, exact native source/replay checks, and official
+full-pose admission remain unchanged. Historical expansion source closure is
+verified against its archived bytes, not today's offline reader implementation.
+The old Round 112 rejection remains an immutable record; the fix changes no
+collection source, manifest, journal, HDF5, or replay.
+
+The production `PlugAdaptationDataset` reader now independently accepts the
+actual 200-row dataset `demos/PlugCharger-orientation-random-200_20261120_121208/`:
+200 episodes, **56,481** production windows, first-item shapes observations
+`(2,46)`, actions `(16,7)`, hint `(2,)`. Its existing validator traverses all
+200 source/replay/case references and checks expansion lineage, exact parent
+trajectory values, ordered first-eligible candidate ledger, and archived source
+closure. Collection remains 107 attempts / 100 new accepted, seeds
+2026123150–2026123256, with 30,027 source and replay controls; this is readmission
+of completed data, not new physics. The HDF5 SHA-256 remains
+`eeed1e0170702b89de1a5505f2ae863fccaf9c6c467eeec9a549ed14c510c210`; consolidated
+JSON `a5245c8de32d103cffe7c60a1f9a409badfa42c87c0d6488931c6c951f1ff269`; manifest
+`3f96a3ff54072d64023dc057271614cd09225deb5356dafb8d51785562ac304b`.
+
+Regression tests cover genuine float64-plan → float32-row acceptance and reject
+a `1e-4` yaw tamper. The exact unchanged Round 110 25-file suite plus new cases
+passes **261 tests** (27.92 s); focused lineage cases pass 4/4. No native control,
+policy/model query, optimizer update, production training, or evaluation ran.
+No commit. Data is reader-admissible for independent review; fresh control or
+training remains pending that review/authorization.
+
+## PlugCharger Round 110 — random-200 provenance/deadline blocker fixes (offline)
+
+The collector now checks the actual frozen random-100 manifest hash before any
+callback; the loader binds all 100 parent HDF5 trajectories and source/replay/case
+references to the actual frozen files, then checks the ordered 150-candidate plan,
+first 100 eligible ledger rows, candidate source hashes, and native source/replay
+pair audit before training. Toy training tests replace only this validator boundary;
+they cannot present synthetic rows as production provenance. Unknown controls on
+the recognized MPLib failure are retained as null with an auditable partial summary
+before raising. Candidate completion and final publication both recheck the monotonic
+deadline and sealed/current/archive parent inputs; late candidates are never admitted.
+
+The exact historical 25-file regression roster passes **257 tests** (27.63 s); the
+focused adaptation module passes **18 tests**. Raw suite stdout/stderr, exact command,
+UTC and monotonic timing are retained at
+`outputs/exp/20261120_110001_plug_random200_blockerfix/`. Evidence is offline only: no callback,
+native controls, training update, model query, or evaluation was run. This is code
+ready for independent review only, not a completed or authorized production dataset.
+Parent data and frozen checkpoints are unchanged. No commit or push.
+
+## PlugCharger Round 109 — bounded random-200 support (offline implementation)
+
+Added the separate `collect-random200` and `train-expanded` entry points while
+leaving the historical random-100 contract/checkpoints untouched. The 200-pool
+registration is an additive amendment pinned to the original random-100 dataset,
+its full source/replay tree, manifest, collection preregistration and archived
+source closure. It retains the original 100 episodes first and admits only the
+first 100 eligible new episodes from seeds `2026123150..2026123299`; one
+`default_rng(1704)` stream records all 150 yaw draws after skipping original draws
+0–149. No old unused candidate seeds are reused. Current-attempt counters exclude
+all parent attempts/controls; the separate parent lineage ledger preserves source
+metadata and attempts without merging those counters into this collection.
+
+The new prospective contract fixes the same exact frozen Base v1 EMA, fresh
+zero-control initialization, 30k updates, balanced 512/512 windows, six validation
+checkpoints, frozen validation catalogs, 600-control episodes and unchanged method
+gates. Validation accepts only legacy 100 or this exact registered 200 lineage;
+it rejects unregistered sizes and inconsistent checkpoint rosters. This does not
+implement/open a final heldout runner. The prior random-100 validation stays at
+Base 18/50 vs selected Constrain 20/50 (+4 pp); the +20 pp method gate remains
+failed. No collection, production optimizer update, production evaluation, test
+catalog access or ManiSkill-source/dependency change occurred in Round 109.
+
+Focused new tests first failed on the absent 200 entry points/count registration;
+the exact unchanged 25-file historical command roster plus new cases then passed **253 tests**
+in **25.58 s**. An offline audit traversed the real immutable 100-demo parent and
+all archived source identities, then stopped at a fake callback before any teacher
+action. Synthetic HDF5 tests verify parent-first exact payload values, immutable
+parent hashes, and rejection of a bad parent hash before callback. A two-update CPU
+toy train consumes a lineage-checked 200-row fixture and writes count/parent
+provenance. Raw logs, test command and timing, source archive, contract and hash audit are in
+`outputs/exp/20261120_100123_plug_random200_development/`. The original parent
+dataset hashes remain manifest `5e084199…11198`, HDF5 `2df8ffa9…2fe26c`, and JSON
+`77e9fed3…6c0f`; the frozen Base checkpoint hash is unchanged. No commit or push.
+
+After independent review and explicit production authorization, collection should
+use the bounded CLI with timestamped output paths and an external whole-stage
+deadline (the code also enforces its internal 5,400 s collection deadline):
+`timeout --signal=TERM --kill-after=10s 6000s env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. python -m examples.baselines.constrain.plug_orientation_adaptation collect-random200 --parent-dataset demos/PlugCharger-orientation-random-100_20261120_041640 --dataset-dir demos/PlugCharger-orientation-random-200_<UTC> --exp-dir outputs/exp/<YYYYMMDD_HHMMSS>_plug_random200_collection`.
+No such collection has started. Training/evaluation remain subsequent separately
+authorized stages; use `train-expanded` with the completed dataset manifest and
+the unchanged fixed-1000 inputs only after review.
+
+## PlugCharger Round 108 — Round 107 validation diagnosis (offline)
+
+Read-only paired-journal analysis at `outputs/exp/20261120_091212_plug_random100_validation_diagnosis/` verified all 760 Round 107 artifact SHA-256s both before and after. Against fresh Base, 25k is 10 wins/9 losses fixed (29→30/50) and 9/7 random (18→20/50); random-bin net changes are `[+5,-3,-1,0,+1]` with occupancy `[13,13,14,7,3]`. Thus the +4 pp is concentrated in the lowest-yaw bin, not broad; the existing 100-demo TRAIN yaw-bin occupancy `[18,18,20,23,21]` is already balanced. The positive-edge validation sample is thin, but that does not prove a training coverage hole. Failure-phase findings are limited to an explicitly nonofficial position-only observation proxy; no terminal states/contact evidence or implementation bug was identified. Method gate still fails; no holdout access, qualification, source/data/checkpoint change, native controls, training, or commit. The diagnosis includes a prospective, not executed/authorized-here, bounded 200-effective-demo plan.
+
+## PlugCharger Round 107 — Constrain random-100 validation (gain gate not met)
+
+The complete validation-only roster finished **700/700 episodes**: fresh frozen
+Base once on each 50-scene profile, plus all six Constrain checkpoints on all 50
+fixed and 50 random validation scenes. CPU inference used the unchanged official
+stride-8 sampler, seed `1 + catalog index`, native 7-D actions, and a 600-control
+episode cap. Work was **324,694 controls** in **13,431.92 s** (outer timeout
+18,000 s; exit 0). Exact 248-test suite passed before (**30.94 s**) and after
+(**30.29 s**). Source, all nine catalog-bundle files, frozen Base, and all six
+checkpoint hashes remained unchanged. Neither final/test catalog was opened.
+
+Fresh validation Base: **29/50 fixed, 18/50 random** (the historical Base result
+remains 30/50 and unqualified). The frozen retention-constrained selection is
+25k, **30/50 fixed, 20/50 random**, checkpoint SHA-256
+`c6b933083d19b68bbcb42ee4449f40fe95fcdc4efb7c0b1e89b836a25deb5735`. Its fixed
+retention loss is −2 pp and passes the ≥27/50 rule. Random gain is only **+4 pp**
+(2/50), below the unchanged **+20 pp** method gate. Thus this is a validation
+frontier candidate, **not a method-gate pass or qualification**; no heldout run is
+authorized/opened. One training seed does not support a statistical-significance
+claim.
+
+The evaluator's per-control journals retain actions, observations, and native
+`info.success`; those flags reconcile with every arm summary. They do not retain
+simulator terminal states, so an independent terminal-state recomputation of the
+full-quaternion 5 mm / 0.2 rad predicate was not possible. The preregistration
+sealed 14 experiment-side source files and runtime package versions, but did not
+archive installed ManiSkill/Diffusers source bytes; no stronger installed-source
+byte-identity claim is made. The full caveats, raw journals, exact CLI/test logs,
+selection, audits, timings, and artifact hashes are retained at
+`outputs/exp/20261120_050952_plug_constrain_random100_validation/` and its sibling
+`outputs/exp/20261120_050952_plug_orientation_constrain_random100_validation_envelope/`.
+No source, dependency, data, or checkpoint was changed; no commit or push.
+
+## PlugCharger Constrain random-100 adaptation — 30k training complete
+
+The authorized seed-1 run completed **30,000/30,000 CUDA updates** on the RTX
+5070 (trainer 1,181.54 s; outer 1,196.62 s; exit 0). It used the admitted random
+100 + frozen fixed 1,000 episodes with balanced 512/512 windows per batch. All
+300 logged loss/LR rows are finite and terminal LR is 0. Six distinct
+5k–30k `validation_candidate` checkpoints passed CPU strict-load, provenance,
+finite-weight, optimizer/scheduler/EMA-step, and frozen Base checks. All 148
+frozen v1 Base tensors match the selected 80k EMA bit-for-bit in every
+checkpoint; EMA control parameters are nonzero. No policy action was sampled and
+no validation, test, or heldout outcome was accessed. This is training completion
+only—not method improvement or qualification; Base remains the historical 30/50
+and unqualified.
+
+Run logs/config/source closure: `outputs/exp/20261120_043914_plug_orientation_constrain_random100/`;
+weights: `outputs/ckpt/20261120_043914_plug_orientation_constrain_random100/`;
+sealed protocol, input/catalog hashes, exact commands, pre/post 248-test records,
+checkpoint audit, timing, and artifact ledger:
+`outputs/exp/20261120_043914_plug_orientation_constrain_random100_envelope/`.
+Inputs were the admitted random data at
+`demos/PlugCharger-orientation-random-100_20261120_041640/` and unchanged fixed
+data at `demos/PlugCharger-orientation-fixed-1000_20261119_184307/`. The actual
+run-seeded sequential random-yaw deviation is documented and was not retrofitted
+into the old preregistration or contract. Next step is parent audit, then
+validation-only evaluation; heldout outcomes remain closed until a candidate is
+frozen. No commit or push was made.
+
+## PlugCharger Round 105 — randomized adaptation-100 collection admitted
+
+Completed the explicitly authorized first-100 randomized-yaw source + exact
+native-EE replay collection once. **118 ordered attempts** yielded the first
+**100 eligible** cases; 17 failures were `lift_tracking_failed`, one was
+`align_failed`. Native controls were **31,925 source + 31,925 replay** across all
+attempts in **274.29 s**. Accepted five-bin occupancy is `[18,18,20,23,21]`;
+actual accepted yaw range is `−0.387467…+0.392201 rad`. The existing
+`PlugChargerOrientation-v1` environment class was used with each random target
+yaw actually overridden and preserved in case/native/consolidated metadata.
+
+Independent audit confirms all 100 source/replay outcomes against the unchanged
+native 5 mm / 0.2 rad full-pose predicate, finite T+1 observations/states and
+bounded 7-D actions, exact raw action streams, exact initial states/observations,
+and exact consolidated source trajectory values. Dataset construction yields
+28,202 random and 279,625 fixed windows; the production first item has `(2,46)`
+observations, `(16,7)` actions, and `(2,)` hint. Random training HDF5 SHA-256:
+`2df8ffa9b95c27e2ef9f7a471edefb68f73c8f6123769e9858eb9fa53f2fe26c`; JSON:
+`77e9fed3070ad326b0323ace70b6b7015ad4394bf374a71193487685db4f6c0f`.
+
+The exact 25-file suite passed **248 tests before and after** (23.61 s / 22.68 s).
+All 32 archived source closure files match current bytes; frozen data, contract,
+Base checkpoint, and catalog-set bundle identity remain unchanged. The run
+archive includes exact test list/logs, preregistration, wrapper command/exit/time,
+post hashes, collection summary, and independent admission audit:
+`outputs/exp/20261120_041640_plug_random_adaptation_collection_envelope/`;
+source/replay attempts and consolidated admitted data:
+`demos/PlugCharger-orientation-random-100_20261120_041640/`.
+
+**Collection RNG deviation:** requested per-case
+`default_rng(candidate_scene_seed + 1703)` was implemented as one sequential
+`np.random.default_rng(collection_run_seed=1 + 1703)` stream for all 150 planned
+yaws. The exact list predates physics in the unchanged preregistration. Uniform
+`±pi/8` support, disjoint ordered 118-scene eligibility/coverage, and admission
+rules are unchanged; selection was not based on policy outcomes. Admit the 100
+rows for forward study only under the actual run-seeded algorithm. No rerun,
+new data, reselection, old-preregistration adaptation, or source fitting was
+performed. See the envelope's `collection_rng_deviation.md` for the full record.
+
+Protocol caveat: pre/post tests completed within the 180 s cap using Python's
+subprocess timeout rather than a TERM-then-KILL shell wrapper; no timeout signal
+was needed. UTC starts/elapsed are recorded but individual monotonic subprocess
+starts were not captured. The frozen catalog bundle was reconciled to its
+historically pinned catalog-set SHA; individual catalog files were not separately
+snapshotted in the pre-run registration, so no direct per-file pre/post claim is
+made.
+
+**No optimizer update, training checkpoint, trained-policy inference, validation
+or test scene, or heldout outcome was run.** This admits data only; it is not a
+method-improvement claim and does not alter the historical frozen Base 30/50
+result or its unqualified status. Continue only with the authorized 30k balanced
+512/512 adaptation training; leave final/test splits closed. No commit or push.
+
+## PlugCharger Round 104 — frozen Base adapter alias fix (offline)
+
+The adapter now snapshots the pinned Base tensors before loading a candidate
+checkpoint, then verifies the loaded tensors against that independent snapshot.
+The public-adapter regression changes one `base_net` weight while leaving frozen
+Base metadata unchanged: genuine RED failed because the adapter accepted it, and
+the fix rejects it. The existing real frozen-Base zero-control equivalence test
+also passes unchanged. Exact 24-file historical suite plus adaptation tests:
+**248 passed in 23.93 s**.
+
+Evidence (raw RED/GREEN logs, exact test list, runtime, execution record and source
+SHA-256s):
+`outputs/exp/20261120_041213_plug_adapter_frozen_base_fix/`. Round 103's prior
+missing historical RED archive remains disclosed and was not reconstructed. No
+native/production collection, training, or evaluation outcome was run; no
+ManiSkill source, checkpoint, or historical Base contract was changed.
+
+## PlugCharger Round 103 — initial frozen-v1 Constrain chain (offline implementation)
+
+The additive forward contract and initial collector/train/validation implementation
+are in `plug_orientation_adaptation.py` and
+`plug_orientation_adaptation_contract.json`. Exact 80k Base-v1 checkpoint and EMA
+identities are pinned; the historical v1 contract, results, v2/v3 artifacts and
+closed Base test are unchanged. The final heldout runner is deferred until a
+candidate passes validation.
+
+Development evidence and exact 24-file historical suite list plus adaptation tests:
+`outputs/exp/20261120_035615_plug_adaptation_development/` (**247 passed** in
+22.60 s). This includes fake-physics collector/validation fixtures, two toy
+optimizer updates, and the real frozen Base CPU sampler equivalence smoke. No
+production collection, native simulator controls, production optimizer updates,
+or final/test outcome was run; no checkpoint was trained or saved for production.
+Independent review is required before running the documented production CLIs.
+
+## PlugCharger Goal-loop Round 100 — fresh v2 scaled-model training complete (validation pending)
+
+One authorized fresh seed-1 v2 run completed **100,000/100,000 CUDA updates** on
+the RTX 5070 in **3,314.40 s** outer wall time (exit 0). TRAIN-only max-absolute
+scales were freshly fit before training from all 280,625 rows in the admitted
+1,000-episode HDF5:
+`[0.05000000074505806, 0.05000000074505806, 0.05000000074505806,
+0.283505916595459, 0.2955075800418854, 0.30000001192092896, 1.0]`;
+full-row action SHA-256 is
+`fa8db7e570b15e475385a0398af66e142439cf9d7246d7ebe427b8400b1a44f3`. All five
+distinct v2 checkpoints (20k–100k) passed CPU-only format/config/provenance,
+finite-weight, exact raw/EMA float32 scale-buffer, optimizer-step, EMA-step, and
+SHA-256 audits. The 1,000-row finite training log ends at update 100,000 and LR
+0. The exact required 24-file suite passed **239 tests both before and after**.
+
+Logs/config/source archive:
+`outputs/exp/20261119_235008_plug_orientation_base_scaled_v2/`; model weights:
+`outputs/ckpt/20261119_235008_plug_orientation_base_scaled_v2/`; preregistration,
+exact commands, scale fit, input/source hashes, timings, regression logs, and
+checkpoint audit:
+`outputs/exp/20261119_235008_plug_orientation_base_scaled_v2_envelope/`.
+Admitted data and frozen catalog identities, old v1 contract/checkpoints, and
+current source closure remained unchanged. No trained-policy inference,
+validation/test scene, or holdout outcome was run. Original v1 remains unchanged
+at 30/50 with its fixed test closed; v2 training completion is not validation or
+qualification. Parent review precedes full v2 fixed validation (gate ≥40/50); its
+fixed test requires that gate, and qualification requires ≥80/100. No
+Constrain/09 training is authorized. No commit or push was made.
+
+## PlugCharger Goal-loop Round 99 — v2 scaled-buffer and fixed-test admission correction
+
+The v2 checkpoint validator now requires the raw and EMA state dictionaries to
+contain exact, finite, positive float32 `(7,)` action-scale buffers matching the
+validated TRAIN scale. This check runs before strict restore and before evaluation
+backend/environment construction. Strict EMA restoration is covered with distinct
+raw/EMA model parameters and confirms the source checkpoint's raw state is
+unchanged. Genuine expected-red coverage reproduced both raw and EMA scale-buffer
+mismatches before the fix.
+
+The exact required 24-file suite passes **239 tests**. A bounded fake-backed
+public fixed-test integration validates the complete v2 five-checkpoint selection
+and full 50-scene summary/catalog identities, then records exactly one call to the
+shared rollout backend; only that backend is stubbed. Raw logs, test list, source
+archive, and SHA-256 records are in
+`outputs/exp/20261119_234116_plug_scaled_minimal_review_fix/`. No physical/native
+rollout, production model query, optimizer update, training, holdout outcome,
+commit, or push occurred. v1 contract and checkpoint identities remain unchanged;
+v2 remains offline-only, untrained, and unqualified.
+
+## PlugCharger Goal-loop Round 98 — distinct action-scaled v2 implementation (offline only)
+
+Implemented the prospectively authorized corrective model family
+`plug_orientation_fixed_base_dp_action_scaled_v2`; the frozen v1 Base contract,
+checkpoint bytes, 30/50 validation selection, summaries, and closed fixed-test
+gate remain untouched. The additive v2 contract explicitly describes one fresh
+seed-1/100k from-scratch run using the same admitted 1,000 TRAIN demonstrations.
+Its sole intended model change is symmetric per-channel max-absolute action
+normalization fit from all full TRAIN rows and the matching native-unit decode
+using the same registered scale buffer. Observation representation, native
+controller/actions, horizons, architecture, optimizer/schedule, EMA and stride 8
+remain fixed. v2 checkpoints/adapters and validation/test selection are family-
+and scale-bound; v1 selection cannot open v2 test evaluation. The ≥40/50 v2
+validation gate and ≥80/100 qualification gate are unchanged.
+
+Scale fit used all **280,625** rows from the hash-admitted TRAIN HDF5, and no
+validation/test outcomes or fitted statistics. Exact scale is
+`[0.05000000074505806, 0.05000000074505806, 0.05000000074505806,
+0.283505916595459, 0.2955075800418854, 0.30000001192092896, 1.0]`; full-row
+action SHA-256 is
+`fa8db7e570b15e475385a0398af66e142439cf9d7246d7ebe427b8400b1a44f3`.
+All input/addendum and output identities are in `scale_statistics.json`.
+
+The exact 24-file historical regression set plus the new scaled-family tests
+passes **229 tests** in 19.92 s. Evidence and scale file:
+`outputs/exp/20261119_232310_plug_action_scaled_development/`. Tests include a
+synthetic CPU wrapper scale/decode and the longstanding uninitialized CPU sampler
+smoke; there were zero training updates, native controls, collection, trained
+checkpoint/model queries, or holdout/test access. This is a distinct corrective
+method—not a pass or replacement of the original identity-action baseline—and
+does not qualify Base or authorize Constrain/09. No commit was made.
+
+## PlugCharger Goal-loop Round 97 — stride gate repair and offline action-scale audit
+
+Repaired the original-v1 gate hole: fixed-validation selection and authorized
+test summary verification now reject any explicitly recorded execution stride
+other than 8; summaries written before the field existed remain readable as
+stride 8. A direct authorized-test evaluation with stride 1 rejects before policy
+or environment construction. Genuine expected-red output records both gate
+regressions before the fix; the exact 23-file regression suite passes **221
+tests** after the fix (180 s timeout, TERM then 10 s KILL grace). Original
+Round-96 paired diagnostic artifacts, summaries, checkpoints and traces were not
+rewritten.
+
+Offline-only TRAIN action analysis used the frozen 1,000-episode HDF5/JSON
+(280,625 action rows; 279,625 actual dataset windows) and the already-saved
+80k fixed-validation events. The analysis made no model/policy query and used no
+environment, native control, training update, test catalog, or test outcome.
+Motion-channel raw
+TRAIN action std is **0.0189–0.1613** versus gripper **0.9715**; TRAIN-only
+late-insertion selection yields 27,231 rows. In 20 saved 80k failures, last-50
+mean absolute +X policy action is **0.00630**, compared with **0.02065** source
+mean +X action in the TRAIN late-insertion region; 19/20 failures have the
+observed ~−16 mm X stall. This supports (but does not prove) an action-scale
+representation hypothesis. Installed Pinocchio IK docs expose default
+`eps=1e-4`; controller omits `eps` and supplies 100 iterations, so no 1 mm
+dead-band is assumed.
+
+The **proposed only, not trained or authorized** follow-up is a separate v2
+format with per-channel symmetric max-absolute scales fit solely on the frozen
+TRAIN actions, identity observation normalization and exact native action
+inverse transform; then one fresh seed-1, 100k run with five checkpoints and the
+same full 50-scene validation gate (≥40/50 to open fixed test; ≥80/100 to
+qualify). The current v1 result remains 30/50 and unqualified; its test stays
+closed. Full actual per-channel tables, failure-vs-source comparison, hashes,
+commands, suite list/logs and bounded proposal are in
+`outputs/exp/20261119_225137_plug_action_scale_audit/`. No commit was made.
+
+That Round 97 directory additively marks the failed Round 96 stride-1 arm
+`candidate_rejected` / `diagnostic_only` / `candidate_qualified: false`; no old
+Round 96 artifact was edited.
+
+Protocol clarification: the 23-file regression suite includes the longstanding
+uninitialized CPU Agent sampler smoke (`test_official_agent_sampler_contract_smoke`),
+which does make a synthetic random-agent forward call. No trained/candidate
+checkpoint or policy was queried; the saved-trace analysis itself makes zero
+model calls. This distinction is explicit in the round evidence.
+
+## PlugCharger Goal-loop Round 96 — execution-cadence correction diagnostic (FAIL; test closed)
+
+The prospectively registered six-scene paired diagnostic compared the original
+8-control execution cadence with executing one predicted control before querying
+the unchanged official CPU DP sampler again. Both arms used the locked 80k
+checkpoint (`ceeb68b4…a2a33d130`), the same fixed-validation catalog scenes
+`plug-fixed_validation-{000,001,002,003,005,009}`, and per-scene inference seeds
+`1 + catalog index`. The model still receives `(1,2,46)` and predicts `(1,8,7)`;
+only the number of committed actions changed. No training, checkpoint selection,
+new data, test/holdout access, dependency change, or ManiSkill-source edit occurred.
+
+The matched stride-8 rerun completed **2/6** (and reproduced both original
+successes); stride 1 completed **0/6**, recovering **0/4** original failures and
+regressing **both** original successes. The four failures still reached a closest
+position error of about **16.0 mm**; at their best same-control pose points full
+rotation error ranged **0.00075–0.00755 rad**. Thus this intervention is not a
+candidate improvement and advances no gate. This bounded sample does not establish
+a contact cause; the pending hypothesis is contact geometry/native IK dead zone
+near the observed ~16 mm stall. The first policy input and first action matched
+exactly in all six pairs. Later queries consume different DDPM noise draws, so the
+comparison is cadence **plus** sampler-stream divergence, not an isolated causal
+test of feedback cadence.
+
+Native work was **6,471 controls** (2,871 stride 8 + 3,600 stride 1), within the
+7,200 cap; elapsed evaluator time was 709.69 s. All 12 arm traces are complete.
+The 23-file regression suite passed **219 tests** before and after. A separate
+source-archive setup invocation failed before adapter/environment construction
+and executed zero controls; its incident metadata is retained and disclosed
+(the initial console traceback was not separately archived), then the corrected
+pre-action archive verification passed. Locked checkpoint, contract, validation
+catalog, original 30/50 results, source closure and checkpoint-embedded dataset
+hashes reconcile unchanged. The fixed Base test remains unopened because the
+registered gate is still **30/50 < 40/50**.
+
+Registration, source archive, exact commands/logs, paired arm results, per-control
+events, pose diagnostics and post-execution audit are in
+`outputs/exp/20261119_221526_plug_base_execution_correction_v1/`. No commit was
+created. Next step is parent review of this failed correction and the bounded
+contact-geometry/native-IK-dead-zone hypothesis—not full-50 validation or test.
+
+## PlugCharger Goal-loop Round 94 — Base fixed-validation gate (FAIL; test unopened)
+
+All five registered from-scratch Base checkpoints completed their full 50-scene
+fixed-validation cohorts once, on the same catalog identities (seeds
+2026124100–2026124149). Independently recomputing the native success predicate
+from each saved terminal simulator state confirms the recorded outcomes:
+20k **2/50**, 40k **17/50**, 60k **27/50**, 80k **30/50**, 100k **27/50**.
+Total work was **115,851 controls** in **2,789.52 s**. Selection was frozen by
+the registered max-success/latest-update-tie rule: update 80k, **30/50**. Since
+the required test-opening gate is 40/50, the fixed Base test was not opened;
+neither fixed Base qualification nor Constrain/09 is established. The random
+final-test catalog remains unopened.
+
+The exact 22-file regression suite passed **216 tests before and after**. Run
+outputs and all per-control actions, observations and native states are in
+`outputs/exp/20261119_205526_plug_orientation_base_validation/`; preregistration,
+independent terminal-state audit, source/input hashes, timing, logs and artifact
+inventory are in sibling
+`outputs/exp/20261119_205526_plug_orientation_base_validation_envelope/`.
+The validation selection SHA-256 is
+`80436f6f0c6c524837b0da496a21f69915236a0c824158dd8e4f6ce8b972655c`.
+Continue diagnosis using validation evidence only; do not inspect or use final
+test outcomes to choose or adapt a policy.
+
+## PlugCharger Goal-loop Round 93 — from-scratch Base training complete
+
+The authorized seed-1 production run completed **100,000/100,000** updates on
+the NVIDIA RTX 5070/CUDA in **3,348.13 s** outer elapsed time (exit 0). The
+frozen dataset and all four pretraining scene catalogs remained hash-identical;
+the exact 22-file regression suite passed before and after the run. The 1,000-row
+training log is finite, and all five registered checkpoints (20k–100k) passed
+format, config, provenance, finite-weight, optimizer/EMA-step and SHA-256 audits.
+No validation or test policy outcome was measured, so this is training completion,
+not Base qualification. Training outputs:
+
+- Logs/config/source archive: `outputs/exp/20261119_194656_plug_orientation_base/`
+- Weights: `outputs/ckpt/20261119_194656_plug_orientation_base/`
+- Preregistration, exact command/wrapper, run logs, hashes and audit evidence:
+  `outputs/exp/20261119_194656_plug_orientation_base_envelope/`
+
+Next: run the five-checkpoint fixed-validation cohort (50 scenes). The fixed Base
+test remains unopened unless the registered validation gate is reached (≥40/50);
+qualification requires ≥80/100 on that test. No Constrain/09 run is authorized.
+
+## PlugCharger Goal-loop Round 90 — fail-closed Base/data corrections
+
+Fixed the four reviewed Ticket 08 implementation failures: repeat a nonempty
+training loader to the exact update target; bind evaluation to current contract,
+training data, dataset manifest, and complete frozen catalog identities before
+environment/policy construction; reject duplicate checkpoint bytes and bind the
+five candidates to the fixed-validation catalog and complete hashed evaluation
+summaries; and continue after only the
+precisely recognized native 600-control-cap failure while retaining its partial
+source count. Collection has an actual callback wall timer, per-control deadline
+guards, and post-callback/admission/finalization deadline checks. Unknown failures
+remain fail-fast. No native control, collection/replay, production update, policy
+evaluation, or ManiSkill-source edit occurred. All frozen numeric controls and
+budgets remain unchanged.
+
+The exact historical 22-file single-threaded regression suite passes **215 tests**
+in 20.79 s under a 180-second timeout with TERM and 10-second KILL grace. This includes the
+official CPU DDPM sampler shape/finite smoke (zero optimizer steps), real public
+multi-epoch training-loop coverage with optimizer/scheduler/EMA counts, dataset/
+contract rejection before environment construction, the 600-cap partial-failure
+continuation, and callback/per-control timeout checks. Logs and source archive are
+retained at `outputs/exp/20261119_182600_plug_base_round90_fixonly/`.
+
+## PlugCharger Goal-loop Round 89 — Ticket 08 implementation (offline only)
+
+Added the fixed native-EE collection, scene-catalog, 46-D from-scratch Base DP,
+and validation-gated fixed-test orchestration in `plug_orientation_data.py`,
+`plug_orientation_scenes.py`, and `plug_orientation_base_dp.py`. Usage and
+fresh-output/timeout commands are in [`PLUG_ORIENTATION.md`](PLUG_ORIENTATION.md).
+The two new offline data/Base test modules pass **4/4** and **9/9**. The 20-file
+historical Peg+Plug/Base regression set passed **195 tests**; with the new modules,
+the 22-file suite passed **208 tests** (18.58 s, single-threaded). A real official
+DP Agent CPU sampler smoke was finite at `(1, 8, 7)`, with no optimizer update.
+No native collection, production training, checkpoint evaluation, or fixed-test
+opening was run. Production 1,000-case collection and 100,000-update training
+remain for the next reviewed round; no production experiment, checkpoint, or data
+artifact was created. Offline development evidence (including the source archive,
+test list/logs, RED/green record, and sampler smoke) is retained at
+`outputs/exp/20261119_180756_plug_base_development/`.
+
+## PlugCharger Goal-loop Round 87 — prospective-seal implementation (offline only)
+
+The v4 runner now creates its prospective registration and archives a declared,
+finite source closure before the first physical callback; it refuses prior
+registration/archive/result output and verifies current/archive SHA-256 identities
+before cases. Planned yaws and five-bin planned/accepted coverage are distinct
+report fields. Because Round 86 results were already viewed, any subsequent run is
+explicitly nonblind confirmation, not a new blind test. Round 86's quantitative
+20/20 result remains intact, but its missing preregistration is not repaired or
+certified retroactively. No physical execution or training was performed in this
+implementation slice.
+
+The exact 19-file offline Peg+Plug suite passes **192 tests** in 22.46 s pytest /
+23.66 s outer, with 180 s timeout, TERM, then KILL after 10 s. Raw stdout,
+timing, command and UTC timestamps are retained under
+`outputs/exp/20261119_163707_plug_v4_preregistration_fix/`.
+
+## PlugCharger Goal-loop Round 86 — v4 align-budget candidate (quantitative pass, protocol exception)
+
+Only the align phase cap changed (100 → 180); the 600-control episode cap and
+all controller, force/contact, IK/grasp, geometry, target and official success
+logic remained fixed. The 19-file suite passed 193 tests (23.45 s; rerun 25.14 s
+after the final setup guard). Pair: both preregistered seeds as specified by the
+execution plan passed expert and exact replay, 1,316 controls / 5.646 s. Full 20:
+fixed 10/10 and random 10/10 expert successes; replay 10/10 in both profiles;
+ten distinct random target yaws covering five bins at `[2,2,2,2,2]` including
+endpoints; 12,194 total controls / 50.609 s.
+Independent HDF5 audit passed finite shape, exact-action, T+1 and initial-state /
+observation checks with zero initial error in every case; official full-pose
+evaluation passed throughout. Details: `outputs/exp/20261119_161534_plug_nativeEE_v4_preflight/`
+and `demos/PlugCharger-nativeEE-v4-preflight_20261119_161534/`.
+Captured runner stdout is empty; structured case JSON, aggregate JSON, HDF5 and
+independent audit JSON are the retained records.
+
+**Not a certified Ticket 07 PASS.** The pre-action immutable preregistration files
+were not persisted before the pair/full stages because the shell heredoc piped
+through `conda run` did not execute. The omission was identified after collection;
+the audit marks quantitative gates PASS but protocol gate FAIL and records only
+post-run source identities. No retroactive registration was created and no
+training was started. The zero-action runner-setup attempt is retained under
+`outputs/exp/20261119_161229_plug_nativeEE_v4_preflight/`; the corrected run used
+fresh output locations. ManiSkill source and dependencies were not changed.
+
+## PlugCharger Goal-loop Round 85 — v3 object-pose lift gate (diagnostic mixed)
+
+Removed only the pre-lift native `is_grasping` abort and the object-loop
+classifier-false abort. The classifier remains diagnostic. Existing 12-control
+close, 80-control lift, native 7-D EE controller/targets, full charger-pose
+tracking tolerances and official 5 mm / 0.2 rad predicate are unchanged. The
+30 mm lift target is derived from the live initial charger pose. No contact or
+physics intervention, controller tuning, dependency/model operation or
+ManiSkill-source edit occurred.
+
+The exact 19-file regression suite passed **193 tests**. Both fixed diagnostic
+seeds ran once, followed by exact raw-action replay once per case: **1,098 total
+controls**, **1/2 expert successes**, **1/2 replay successes**. Seed 2026113003
+reached the +30 mm lift target to 1.257 mm / 0.000684 rad pose error, with
+28.763 mm measured charger-height progress, but failed after the unchanged
+100-control align cap (78.651 mm official position error); replay failed too.
+Seed 2026113001 succeeded officially and its independent replay succeeded
+(0.294 mm / 0.000442 rad final error). Both replays preserve exact 7-D action
+arrays, T+1 state/observation alignment and exact initial observation match.
+The first native `is_grasping=true` appears on the first lift control in both
+traces; this and the observed object movement do not establish a contact
+mechanism. Outer start UTC was not captured; monotonic elapsed is 5.165 seconds.
+
+**Not a Ticket 07 PASS, no data are training-admitted, and no training started.**
+Full registration, bounded logs, source archive/closure, hashes, phase-level
+reconciliation and traces:
+`outputs/exp/20261119_154809_plug_ee_lift_v3_pair/` and
+`demos/PlugCharger-EE-lift-v3_20261119_154809/`. Historical rounds remain
+immutable.
+
+## PlugCharger Goal-loop Round 84 — streamed native EE teacher v2 (diagnostic FAIL)
+
+Changed only the experiment-side planned-path execution: every FK target is
+issued once, the final planned TCP target is held for 10 controls, then the
+gripper closes for 12 controls while holding that same planned target. Intermediate
+tracking errors are logged rather than used as a per-waypoint abort gate. The
+actual native grasp predicate and official 5 mm / 0.2 rad success thresholds are
+unchanged. Per-control traces include planned and bounded targets, measured TCP
+before/after, waypoint/hold metadata, controller configuration, clipping, native
+grasp state, hint and official errors. Teacher/replay provenance identifies
+`native_ee_stream_final_target_hold_v2`.
+
+The exact 19-file Peg+Plug suite passed **190 tests**. Both preregistered fixed-yaw
+cases ran once and each exact action stream was independently replayed: historical
+fail seed `2026113003` ended `charger_not_grasped` (121 expert + 121 replay
+controls); historical pass seed `2026113001` also ended `charger_not_grasped`
+(141 + 141). Both source/replay state-0 and observation-0 checks matched exactly;
+7-D actions were identical and T+1 state/observation counts matched. Replay also
+failed the unchanged official predicate. Combined work was **524 controls**.
+Thus this two-case candidate does not pass and is not ready for the full 20-case
+validation. The deepest common failure is grasp closure, not a tracking abort;
+both traces show `native_is_grasping=false` throughout. For seed 3003, final
+grasp-phase TCP tracking was about 1.05 mm / 0.0011 rad, while closing moved the
+charger and ended at official errors 288.090 mm / 0.492774 rad. For seed 3001,
+the final grasp-phase tracking error was about 1.26 mm / 0.0020 rad; closure ended
+at 193.191 mm / 0.939330 rad. This is not a success, Ticket 07 pass, training
+admission, or authorization to train.
+
+Registration, archived source closure and matching post-run hashes, per-seed
+expert/replay records and the native traces are retained in
+`outputs/exp/20261119_153718_plug_ee_stream_v2_pair/` and
+`demos/PlugCharger-EE-stream-v2-diagnostic_20261119_153718/`. No ManiSkill source,
+dependency, model or checkpoint was changed; no full 20-case run, training,
+commit, or push occurred. Historical Rounds 83 and earlier remain intact.
+
+## PlugCharger Goal-loop Round 83 — bounded native EE teacher pair (diagnostic FAIL)
+
+Fixed the bounded-target pose-type mismatch and flat HDF5 observation handling;
+added source/replay state and initial-observation gates before the first replay
+action, explicit per-seed planner RNG setup, native controller calibration through
+the real `_step`, and fake HDF5/torch run-case coverage. The exact 19-file suite
+passed **188 tests**. One authorized run of the two fixed-yaw cases used seeds
+2026113003/2026113001 and the unchanged 600-control cap. Both expert attempts
+ended in `grasp_tracking_failed` at 212/207 controls; neither passed the unchanged
+full-pose predicate (terminal errors 290.564 mm / 0.483186 rad and 193.191 mm /
+0.939333 rad). Exact diagnostic replay of both retained action streams matched
+state 0 and observation 0 exactly, preserved all 7-D actions and T+1 alignment,
+and also failed the native predicate. Total teacher/replay controls: 838. No
+training admission or Ticket 07 pass is claimed.
+
+Attempt logs, replay audit, test list/results and hashes:
+`outputs/exp/20261119_152051_plug_ee_teacher_native_pair/`. Raw expert/replay HDF5s
+and full step traces:
+`demos/PlugCharger-EE-teacher-native-pair_20261119_152051/`. Prior Round 82 and
+all historical counts/outcomes remain unchanged. No training, ManiSkill source
+edit, dependency installation, commit, or push occurred.
+
+## PlugCharger Goal-loop Round 82 — online native EE teacher (INCOMPLETE; setup cap reached)
+
+Implemented `plug_orientation_ee_expert.py` as a privileged-goal online teacher
+with planned reach/grasp motions executed only through native `pd_ee_delta_pose`
+controls, followed by closed-loop lift/alignment/insertion. Added exact-action
+independent replay capture/verification and native controller/full-pose regression
+tests. The exact 19-file Peg+Plug selection passed **185 tests in 15.36 s**;
+the new focused module passed 5 tests. Source RED/green, source hashes, runtime,
+test list and native traces are retained under
+`outputs/exp/20261119_145706_plug_ee_teacher_diagnostic/` and
+`demos/PlugCharger-EE-expert-diagnostic_20261119_145706/`.
+
+The bounded native pair did **not** reach a physical control: three setup-level
+errors stopped the fixed historical-fail seed `2026113003` with zero controls
+and zero replay. The first was MPLib's ndarray base-pose binding (fixed by the
+existing experiment-side compatibility adapter); the next two were a mismatch
+between SAPIEN `Pose` and the shared `PoseValue` interface in the new target
+encoder. Both repair attempts were also zero-control. The preregistered maximum
+of two diagnosed zero-action setup repairs is now exhausted; no further native
+attempt was made. The seed `2026113001`, all independent replays and the overall
+two-case candidate remain unrun. **No Ticket 07 PASS, training admission, or
+training authorization is claimed.** No ManiSkill source, dependency, data, or
+checkpoint was modified. Raw exceptions, immutable partial recordings, and
+attempt accounting are preserved; this is not physical feasibility evidence.
+
+## PlugCharger Ticket 07 Round 81 — deterministic native preflight (FAIL)
+
+The exact registered 18-file suite passed **180 tests in 15.49 s wall time**.
+One official-solver 20-case preflight then completed all four stages in 31.47 s
+outer wall time (29.77 s pipeline-reported). It used paired fixed/random seeds
+2026113000–2026113009, official solver default 15° grasp tilt, no threshold or
+budget changes, and CPU EE replay. Results:
+
+| Profile | Official expert | EE replay | EE replay rate | Expert controls | Replay controls |
+|---|---:|---:|---:|---:|---:|
+| Fixed | 8/10 | 4/8 | 50.0% | 1,887 | 3,112 |
+| Random | 5/10 | 3/5 | 60.0% | 1,905 | 1,944 |
+
+Combined expert/replay controls were **3,792 / 5,056**. The 3 accepted random
+targets occupy **3/5** yaw bins and include no endpoint. The six native EE replay
+failures are retained with full traces; fixed source IDs 3, 6, 7, 8 miss full
+pose with position error 17.27–17.73 mm (rotation 0.173–0.224 rad), while
+random source IDs 3 and 6 miss at 17.44/17.62 mm (0.186/0.194 rad). The strict
+95% replay gate therefore fails in both profiles, and random expert feasibility
+also misses the 8/10 gate. No threshold relaxation, retry, or candidate selection
+was performed. **Ticket 07 FAIL; no data is training-admitted and Ticket 08 did
+not start.**
+
+Independent audit verified the 20-attempt denominator and saved episode IDs,
+successful-source-only replay selection, finite native trajectories, T+1 state
+alignment, 7-D EE actions, exact unchanged actions between raw and aligned replay
+files, retained raw copies/alignment seals, destination initial-state capture,
+46-D observation contract, and unchanged archived/current source hashes. The
+same-seed fixed/random initial charger, robot, and goal-center fields matched.
+Full machine-readable audit, per-episode outcomes, hashes, and summaries:
+`outputs/exp/20261119_143359_plug_orientation_preflight_deterministic_envelope/`
+(`independent_audit.json`, `gate_decision.json`, `results_summary.md`); native
+pipeline record/source archive:
+`outputs/exp/20261119_143359_plug_orientation_preflight_deterministic/`;
+all source and replay HDF5s:
+`demos/PlugCharger-orientation-preflight-deterministic_20261119_143359/`.
+The next slice is parent review and expert/replay failure diagnosis, not training.
+
+## PlugCharger Ticket 07 Round 80 — strict replay provenance blocker fix
+
+Replay now requires explicit boolean success provenance from the saved-attempt
+map or source episode metadata (`expert_success`, `final_success`, or `success`);
+missing or contradictory declarations fail closed. Destination initial-state
+capture is accepted only when the actual replay environment reports
+`pd_ee_delta_pose`. The exact 18-file regression suite passed **180 tests**.
+RED/green logs and reproducibility metadata are in
+`outputs/exp/20261119_141853_round80-minimal-blockerfix/`. This is implementation
+verification only: no native planner, simulator control, collection, replay,
+training, checkpoint load, or policy query was run. No physical thresholds,
+solver, tolerances, or control budgets changed; native preflight remains gated
+on independent review.
+
+## PlugCharger Ticket 07 Round 79 — deterministic replay/collection development
+
+Planner RNGs (Python, NumPy, Torch and MPLib) are initialized from the paired
+planned scene seed before reset and reapplied after solver reset before planner
+creation. Every nonempty expert attempt is retained with success metadata and its
+actual sparse episode ID; replay filters to expert-success IDs while preserving
+the failure denominator. Public replay now captures the destination's true
+pre-action state/observation, validates it against canonical source state 0, and
+aligns only the new converted file while retaining the raw conversion and
+unchanged actions. `.alignment.json` sidecars seal raw/corrected/action hashes and
+the initial-capture fingerprint. The official 15° solver is still default and
+explicit tilt is forwarded through the pipeline.
+
+The canonical 16-file Peg suite plus both Plug test modules (18 files total)
+passed **178 tests**; raw expected-red/green logs, file list and timing are under
+`outputs/exp/20261119_235000_plug_round79_development/`. This is offline
+implementation verification only: no native planner, control, collection, replay,
+training, or policy query. Ticket 07 is **not passed**; independent review must
+precede the same-20-case native preflight. User authorization permits Ticket 08
+training only after that PASS; Ticket 09 remains unauthorized.
+
+## PlugCharger Ticket 07 Round 76 — reconstructed source-state EE candidate
+
+Three experiment-only native candidates derive world TCP targets from retained
+source `env_states[t+1]` by Pinocchio FK and issue native EE controls, with source
+gripper commands and a fresh T+1 recorder. All six fixed fail/pass outcomes fail
+the official 5 mm position threshold (terminal error 17.38–18.60 mm); no method
+preserved the expected fail/pass split. Controls: 2,367 total, 596 maximum per
+trajectory, within 6,000/600 caps. The 17-file Peg+Plug suite passes 171 tests.
+**No Ticket 07 pass, training data admission, or training authorization.** Full
+run reports, immutable source snapshots, target hashes, before/after traces and
+metrics: `outputs/exp/20261119_230000_plug_replay_reconstruction_r76/`. New
+trajectory artifacts are in the siblings `demos/PlugCharger-orientation-
+reconstruction_r76_20261119_230000/`, `..._one_control_20261119_230000/`, and
+`..._two_controls_20261119_230000/`. No original HDF5/JSON or ManiSkill source
+was edited.
+
+## PlugCharger Ticket 07 Round 75 — native replay diagnosis
+
+The bounded fixed fail/pass pair was run through source-joint and official EE
+replay. Source episode 2 / seed 2026113003 fails both ways (17.737 mm / 0.18859
+rad joint; 17.734 mm / 0.18865 rad converted); episode 0 / seed 2026113001
+passes both (1.350 mm / 0.000761 rad; 1.401 mm / 0.002681 rad). Failure source
+replay diverges from the recorded charger path at post-action 97, although the
+initial qpos/qvel/charger pose match exactly. This points away from a
+conversion-only cause and toward source trajectory replay/contact/physics.
+All-13 offline audit also found the converted saved state row 0 equals source
+row 1 in 13/13, an independent recorder-alignment defect that does not alter the
+live first physical state. **No fix, feasibility pass, training admission, or
+final contract freeze is claimed.** Native asserted run: 1,287 controls / 6.45
+s; 3,930 cumulative including the invalid harness attempt, below 6,000. Exact
+17-file suite: 166 passed. Additional fail-case instrumentation found source FK
+and native converted target agreement within 0.31 µm / zero rotation error for
+all 203 controls; source/destination grasp checks agree (grasp maintained), while
+TCP target tracking error reaches 14.50 mm. Total controls including all
+instrumentation and the initial misindexed run were 5,826/6,000. Full report and traces:
+`outputs/exp/20261119_203000_plug_replay_diagnosis_r3/`.
+
+## PlugCharger Ticket 07 Round 74 — compatibility-v2 preflight paused
+
+Fresh authorized same-plan preflight completed 10 fixed + 10 stratified-random
+expert attempts and isolated EE CPU replay of all 13 expert-success episodes.
+Expert results: **8/10 fixed, 5/10 random**; replay accepts **4/8 fixed,
+3/5 random**. Random accepted replay outcomes cover only three yaw strata.
+All 10 reset-pair comparisons pass; observation width is 46, converted replay
+actions are finite 7D, and the unchanged native full-pose threshold is 5 mm / 0.2
+rad. Actual control counts are 3,792 expert + 5,056 replay, within the respective
+12,000 caps; pipeline elapsed 28.860 s. The exact 17-file suite passed **166
+tests both before and after**. All 16 source-closure archive/current hashes
+match. This **fails** random-expert and replay acceptance gates: **Ticket 07 is
+paused, no training contract is frozen, and no training data are admitted**.
+Round 72's 0/10 + 0/10 failure remains historical and unchanged. Tickets 08/09
+remain unauthorized; no model/checkpoint query or ManiSkill source edit occurred.
+Full reports, native attempt journals, independent audit and hash list are in
+`outputs/exp/20261119_105049_plug_orientation_preflight_compat_v2/`, its sibling
+`..._envelope/`, and
+`demos/PlugCharger-orientation-preflight-compat_v2_20261119_105049/`.
+
+## PlugCharger Ticket 07 Round 73 — compatibility development only
+
+Reused Peg's existing experimental MPLib adapter at the default Plug collector
+boundary, before loading the official solver. A strict fake official planner
+exercises actual `collect()` default setup with the binding's ndarray rejection
+and `use_point_cloud` signature constraint: regression red before the change,
+green after. Full unexpected per-attempt tracebacks are now journaled. The
+prospective source closure adds the adapter and installed base motion-planner
+source. Exact 17-file Peg+Plug regression suite: **166 passed in 13.53 s**. The development
+archive, runtime versions, source hashes, raw suite output and timing are in
+`outputs/exp/20261119_104118_plug_mplib_compat_development/`. No native planner
+or physics/control, collection, replay,
+training, policy/checkpoint query, or ManiSkill source edit occurred. Round 72
+remains unchanged; fresh native preflight requires parent review and explicit
+authorization.
+
+## PlugCharger Ticket 07 Round 72 — native preflight paused
+
+The single preregistered native pipeline completed its 10 fixed + 10 stratified
+random expert attempts, but every attempt failed before the first control with
+an `mplib.Pose` versus float32 NumPy pose `TypeError` in the official
+PlugCharger solution. Expert successes: **0/10 fixed, 0/10 random**; controls:
+0; isolated CPU replay episodes: 0; replay successes: 0. The supervisor's
+zero-source replay completion is not a pass. Independent reset-pair checks
+passed all 10 seed pairs for charger/robot/goal-center independence, and all 13
+registered source hashes matched. No usable live hint, replay dimension, or
+full-pose success evidence was produced.
+
+**Disposition: Ticket 07 paused; no training contract frozen.** The historic
+Peg negative result is unchanged. No retry, training, policy query, Ticket 08/09
+work, or ManiSkill source edit occurred. Exact budgets, commands, partial/failed
+attempt evidence, hashes, and the bounded next-review requirement are in
+`outputs/exp/20261119_102856_plug_orientation_preflight_envelope/`; native
+artifacts are in `outputs/exp/20261119_102856_plug_orientation_preflight/` and
+`demos/PlugCharger-orientation-preflight_20261119_102856/`. Focused pre-run
+tests passed **23**; the exact 17-file Peg+Plug regression suite passed **164**.
+
+## PlugCharger Ticket 07 Round 71 — offline minimal corrections
+
+Fixed the replay preflight's observation-shape error using ManiSkill's public
+`BaseEnv.get_obs(unflattened=True)` API; its fake environment now returns the
+default flattened tensor unless explicitly asked for the observation dict.
+Timeouts now retain phase records and captured stdout after process-group
+termination, with unknown controls for unreported work and explicit measured
+completed controls. The prelaunch source archive has a finite enumerated source
+closure with package-preserving paths, runtime version metadata and source/archive
+hash validation before the first child. These hashes are only preparation for a
+future native run; no native source archive/run evidence is claimed here.
+
+Verification: the full fake Plug orchestration suite passes **23 tests**. No
+expected-red run was retained for Round 71; this is not reconstructed. No native
+physics, collection, replay, training, checkpoint load, or commit occurred.
+
+## PlugCharger Ticket 07 Round 70 — offline supervisor implementation
+
+Added `plug_orientation_pipeline.py`: one CLI runs four isolated child phases
+(fixed/random expert collection, then fixed/random official CPU replay), creates
+an immutable preregistration and source snapshot before starting children, shares
+expert/replay control caps across both profiles, enforces combined 3,600-second
+stage and 9,000-second whole-run deadlines, and terminates timed-out process
+groups with TERM then KILL after 20 seconds. Worker fixes include initialized
+cross-episode replay control accounting, initial saved target-yaw derivation,
+finite converted action/state/observation checks, T+1 observation alignment,
+and observation leak checks.
+
+The 21-test Plug suite passed offline, including calls through the actual
+`collect()` and `replay_successes()` worker functions with fake recorder,
+Gymnasium environments and public replay API, plus four-stage fake-child budget,
+nonzero-stop, timeout-cleanup and no-overwrite coverage. This is **not** native
+coverage or execution evidence. The implementation awaits independent review. No native
+expert, simulator, collection, replay, training, model/checkpoint load or query
+ran. Ticket 07 remains unvalidated; Tickets 08/09 remain blocked. The green log,
+current source archive, and SHA-256 list are retained under
+`outputs/exp/20261119_231500_plug_round70_supervisor/`. No expected-red log was
+captured for this round and none is reconstructed.
+
+## PlugCharger Ticket 07 preflight foundation — development only
+
+Added `plug_orientation.py`, a yaw-only subclass with native PlugCharger success
+semantics and the strict state-observation boundary, plus
+`plug_orientation_preflight.py` for paired 10-scene fixed/random plans, injected
+target options on the stock expert's own reset, post-reset state capture,
+per-attempt 600-control guarding, and failure journaling. The task-specific draft
+contract and proposed (not frozen) acceptance/data/training gates are in
+`PLUG_ORIENTATION.md`. Exact task source was inspected read-only. No ManiSkill
+source was modified. No native expert, simulator, replay, training, or policy
+query occurred. The eight new task/runner regressions pass; the exact 16-file Peg
+suite plus this test passed **149 tests** (including failure-analysis and
+excluding `test_constrain_adapter.py`). Red/green output, source snapshot and
+UTC timing are retained in `outputs/exp/20261119_094707_plug_orientation_development/`.
+Ticket 07's
+forward user exception does not alter Ticket 06's negative Peg outcome or
+authorize Tickets 08/09.
+
+## Peg orientation random-500 update-30k vs terminal update-50k scorer development
+
+Added `peg_orientation_entry_continuation_eval.py`, a frozen three-arm roster
+(Base, random-500@30k, random-500@50k) over the existing 60-case outside-entry
+bank and three paired inference seeds: 180 groups / 540 arms. Base and 30k→50k
+are the only registered comparisons; the shared Base is evaluated once per
+draw. The runner uses explicit 334,800-control / 16,200-second stage / 21,600-
+second whole-stage caps for both prefix preparation and suffix execution. Existing
+six-arm defaults remain unchanged. This is scorer implementation only: no
+native physics, fresh policy outcomes, training, data, or ManiSkill-source edits.
+
+The 16-file Peg regression suite passed **141 tests** (14.47 s pytest / 15.71 s
+outer). All three real frozen adapters passed a one-row offline `(1,2,39)` →
+finite `(1,8,7)` smoke using the bank's recorded live relative-yaw hint; the
+50k adapter reports step 50,000. Checkpoint SHA-256 values match before/after.
+Logs, timings and smoke record are under
+`outputs/exp/20261119_164500_peg_entry_50k_eval_development/`. The first smoke
+logging attempt stopped after successful queries while formatting a missing
+Base metadata `step` field; the corrected offline smoke is separately retained.
+The initial test collection also caught an indentation error, and a subsequent
+three-arm assertions were corrected; an intermediate suite failure was observed
+before final verification, but its raw log was overwritten by the final pass and is
+not reconstructed. Earlier console-only collection failure was not captured.
+No native evaluation was run.
+
+### Round 66 continuation scorer minimal fixes (offline only)
+
+The generic aggregator now retains its prior adjacent curve edges and adds
+deduplicated Base-versus-every-Constrain edge counts; the full fake three-arm
+run asserts the `base->cn500_50k` paired counts. The public continuation entry
+point constructs its own three adapters when none are supplied; its regression
+patches the continuation factory and fails if the six-arm factory is called.
+The six-arm roster, defaults and budgets remain unchanged. The exact 16-file
+suite passed **141 tests** (13.35 s pytest; 180 s timeout, TERM then KILL after
+10 s). Archive of the final current runners and test, raw suite output, UTC
+times, outer timing and SHA-256 hashes are retained in
+`outputs/exp/20261119_063023_peg_entry_continuation_round66/`. The earlier
+development directory does not contain the source archive previously claimed;
+this round archives the current bytes and makes no retrospective claim about
+that earlier smoke. No expected-red log for these two defects was retained or
+reconstructed. No native physics, model query, training, data/checkpoint change,
+or ManiSkill-source edit occurred; the continuation remains unapproved for
+native rollout.
+
+## Peg orientation random-500 continuation — goal-loop round 64
+
+Completed the authorized update-30,000 → terminal update-50,000 continuation:
+20,000 new updates, exit 0, **625.432 s**. Terminal checkpoint
+`outputs/ckpt/20261119_135500_peg_orientation_random500_extend50k/update_50000.pt`
+SHA-256 `1e0b6246c7b01f7939f4e65d74255295cfd38e7c17982df0fb14ab7430bb060a`;
+35k/40k/45k provenance checkpoints share that `outputs/ckpt/` run directory.
+Experiment registration, command, raw logs, 200-row loss series, source archive,
+environment, pre/post 139-test suite records, input hashes, and offline
+checkpoint/state audit are under
+`outputs/exp/20261119_135500_peg_orientation_random500_extend50k/`.
+Parent AdamW/EMA and the frozen Base/data/model/hint were retained; sampler
+cursor restart is disclosed. Because the prior cosine schedule ended at zero,
+the extension used its own 500-warmup/20k-cosine LR phase. It is not a 50k
+from-scratch schedule, and no validation/native physics or policy query was run.
+Terminal evaluation remains required before any policy-improvement claim.
+
+## Peg orientation fix-only Round 63 — fresh initialization seed ordering
+
+Moved fresh-only Python/NumPy/Torch seeding before Base/CN model construction,
+making randomly initialized hint-encoder state reproducible for seed 1. Resume
+still restores checkpoint RNG/state after all construction and before loader
+iteration. The actual fresh `train()` seam regression was captured RED before
+the fix and passes afterward; the existing parent-RNG restore regression also
+passes. Round 62's original expected-red log was missing and is not reconstructed.
+Its independent actual review result remains **138 tests**; this corrected Round
+63 16-file suite (including failure-analysis and entry-scaling, plus existing
+Peg/Constrain tests) passes **139 tests in 13.45 s**. Exact expected-red, harness
+failures, suite logs and timing are retained at
+`outputs/exp/20261119_180000_peg_entry_scaling_development/round63/`. A different
+initial 16-file list's 140-test result is retained but is not represented as the
+required suite. No training, native physics, checkpoint/data/source mutation,
+full baselines suite, or commit occurred.
+
+## Peg orientation native round 61 — outside-entry checkpoint/data-size comparison
+
+Fresh run: `outputs/exp/20261119_025526_peg_entry_data_scaling_v2/`. All
+**180/180 groups and 1,080/1,080 arms** completed once (exit 0), using **306,628
+native controls including full replay** in **7,203.799 s**. It stayed below the
+669,600-control, 32,400-s native, 43,200-s whole-stage, and 300-s/arm budgets.
+No retries, new scenes, videos, training, checkpoint selection, or retuning.
+
+Primary Base / 100@30k / 200@30k / 500@30k all-condition outcomes: random
+**11/90 / 30/90 / 27/90 / 25/90**, fixed **62/90 / 60/90 / 57/90 / 60/90**.
+Secondary Base / 100@15k / 200@30k / 500@25k: random
+**11/90 / 33/90 / 27/90 / 27/90**, fixed **62/90 / 60/90 / 57/90 / 57/90**.
+Per-condition counts/rates, per-seed results, primary and secondary binary
+success patterns, monotonicity and paired model transitions are retained in
+`results_summary.md`/`.json`; transitions were recomputed from the final raw
+per-arm suffix traces, including Base-vs-200 and Base-vs-500 edges.
+
+Interpretation is deliberately descriptive: condition/profile response is mixed,
+not consistently monotonic, and does not establish a scaling law. Six origins
+per profile recur across all conditions and seed offsets; one training seed per
+size and incomplete retrospective provenance for the historical 100-demo
+checkpoints preclude an isolated data-count effect or inference. No model was
+selected as “best” and no full-task gate is claimed.
+
+Independent audit confirms all 21 registered inputs and 38 source-closure files
+match their sealed hashes; all 60 bank rows match raw pair action hashes and
+prefix lengths, with source IDs resolved by seed-to-`episode_id` (not catalog
+index). Handoff history is exactly matched, measured physical-state error is 0
+(≤1e-5), and exposed controller state keys are empty; hidden environment state
+is not claimed. Original zero-native setup and failed-validator records remain
+unchanged; the fresh v2 validator cardinality correction is explicitly
+documented. Pre-suite 135 tests were reused by hash from the zero-native setup;
+the actual post-run suite independently passed **135 tests in 13.32 s**. Raw
+execution records, exact command/timing, input/source posthashes and final
+artifact hashes are in that experiment directory. No ManiSkill/source/data/
+checkpoint edits or videos. See `PEG_ORIENTATION.md` for the fuller caveats.
+
+## Peg orientation fix-only round 60 — scaling replay budget repair
+
+The six-model scorer now applies its 669,600-control / 32,400 s limits to full
+prefix replay, without changing the paired scorer's default two-arm limits of
+223,200 / 10,800. Real `_prepare` boundary regressions pass, and the exact
+16-file Peg suite passed **133 tests in 16.46 s**. Expected-red, collection
+failure, and full-suite logs are retained in
+`20261119_180000_peg_entry_scaling_development/round60_*.log`. No native
+execution or ManiSkill source changes. The Round 59 expected-red raw log was
+missing and was not backfilled; this round captured the newly found regression
+red before implementation.
+
+## Peg orientation round 59 — offline six-model scaling scorer development
+
+Audit, source configs, offline six-adapter smoke logs and runner evidence are in
+`outputs/exp/20261119_180000_peg_entry_scaling_development/` (`comparability_table.md`,
+`checkpoint_comparability_audit.json`, raw configs and `adapter_smoke.json`). Six checkpoint
+identities are distinct and unchanged. All adapters return finite `(1,8,7)` for
+39-D observations; the Constrain adapters verify the frozen Base EMA. Coverage
+manifests establish random seed nesting 100→200→500, but historical checkpoint
+metadata does not establish complete provenance for every 100-demo input. No
+full-provenance or isolated data-count claim is made.
+
+The new `peg_orientation_entry_scaling_eval.py` uses all 60 bank rows for three
+independent inference draws, giving 180 groups / 1,080 arms. Base and CN200@30k
+are shared between the preregistered primary and validation-selected secondary
+curves. Tests exercise full preparation/suffix orchestration with fake physics,
+not mocked preparation/suffix: **129 passed in 14.36 s** in the exact required 16-file
+suite. No native rollout or training was started. The six-model execution is
+pending independent parent review. It reports paired transitions and descriptive
+binary monotonicity patterns but no fitted scaling law or inferential tests. It is
+explicitly a three-size, single-training-seed comparison, not a formal
+scaling-law discovery.
+
+## Peg orientation round 58 — outside-entry paired policy comparison
+
+The fresh native run is `outputs/exp/20261118_174230_peg_entry_policy_comparison/`.
+All **180 pairs / 360 arms** completed once; native exit 0, **104,383 physical
+controls** including both full-prefix replays, and outer monotonic elapsed
+**2,318.40 s**. Frozen Base and Constrain checkpoints are identified in the
+registration and input hashes; neither was modified. All pair handoffs matched
+their paired history/controller/physical replay checks at maximum error **0**.
+Independent trace recomputation confirms every official-success outcome and all
+180 unique `(profile, condition, catalog index, replicate)` keys. Read-only
+seed-to-source-episode audit confirms all 60 bank prefixes and complete action
+hashes exactly match the original source trajectories.
+
+The bank starts 19.8247–20.4765 mm outside the true front entry plane
+`x=-peg_half_length`, unlike the older near-hole bank already inside the channel.
+Pooled repeated draws per condition (six origins × three draws) are random
+Base/Constrain: aligned **2/6**, lateral +5 **2/5**, lateral −5 **2/7**, yaw +5
+**3/6**, yaw −5 **2/3**; fixed: **10/8**, **13/15**, **17/16**, **13/12**,
+**9/6** respectively (each denominator 18). Random aggregate across conditions
+is **11/90 vs 27/90 (+17.78 pp)** and fixed **62/90 vs 57/90 (−5.56 pp)**, purely
+descriptive because the same origins recur in all conditions. There is no general
+Constrain advantage: random results lean Constrain, fixed results are mixed and
+favor Base on aligned and both yaw conditions. This conditional study is not a
+formal gate, end-to-end result, causal claim, or Plug evidence. Three inference
+draws are not independent scenes; pose-window admission does not imply zero
+instantaneous velocity (bank sample diagnostics: peg linear 20.544–29.469 mm/s,
+angular 0.590–1.314 rad/s). No video was preregistered or captured.
+
+The historical 15-file list passed **130 tests**, but substituted
+`test_constrain_adapter.py` for the required failure-analysis test. The correct
+required 15-file list passed **123 tests in 11.42 s** after review, with raw logs,
+exact command and 180-second TERM / 10 s KILL timing retained under
+`post_review_required_suite/`; this is not retroactive pre-run coverage.
+The historically substituted list also has a bounded post-completion rerun.
+Pre-suite raw logs are retained, but its outer UTC/monotonic timing
+and shell timeout wrapper were not captured; this deviation is disclosed in
+`preregistration_deviations.json`. All **94** registered input hashes and **33**
+finite source-closure hashes match pre/post. Detailed per-seed/per-condition
+tables, raw pair traces, native timing, logs, environment versions and independent audit are in `results_summary.md`,
+`results_summary.json`, `native_attempt_001/`, `independent_audit.json`, and
+`source_prefix_mapping_audit.json`.
+
+## Peg orientation round 57 — outside-entry source episode mapping repair
+
+Corrected `peg_orientation_entry_perturb_eval.py` to resolve each source HDF5
+episode by matching the validation catalog scene seed to the original source
+trajectory JSON's `episode_seed`. The numeric suffix in `source_scene_id` is a
+catalog index, not a source episode ID. A real `run_comparison` regression first
+reproduced the wrong loader arguments for random catalog 2 and fixed catalog 5
+(2 and 5 instead of source episode 1); both pass after the fix. The unchanged
+actual source JSON/HDF5 data were checked read-only: all 60 bank prefixes match
+their resolved source trajectory exactly. Unique mappings and input hashes are
+retained in `outputs/exp/20261118_173544_peg_entry_source_mapping_repair/`.
+Its `migration_map.json` maps the original date-only directory while preserving
+all original file bytes and historical internal paths.
+The 15-file suite passed **123 tests**. No source bank or ManiSkill source was
+changed; no native physics or policy inference was run.
+
+## Peg orientation round 56 — outside-entry scorer implementation only
+
+Added `peg_orientation_entry_perturb_eval.py` for the separate round-55
+outside-entry pose-window bank at
+`outputs/exp/20261119_164500_peg_entry_pose_window_initialization_v2/`; it does
+not use the older inside-hole bank. The scorer validates all 60 admitted rows,
+replays the complete recorded expert prefix plus initializer from each canonical
+catalog scene, and checks physical state, actual latest-two observations, and
+the public controller extent before policy inference. Its next-run design is 2
+profiles × 5 conditions × 6 origins × 3 repeat draws, paired Base vs Constrain
+(360 arms), with separate 223,200-control / 10,800-second native-stage and
+14,400-second whole-stage caps. This round ran no native physics or policy
+rollout. Both real frozen EMA adapters passed only an offline `(1,2,39)` to
+`(1,8,7)` checkpoint contract smoke; checkpoint hashes were unchanged. The
+actual `run_comparison` entrypoint was exercised across 30 pairs / 60 fake-physics
+arms (2 profiles × 5 conditions × 3 seeds), using the real bank parser, prefix
+replayer, suffix loop and result finalizer with strict adapter shape checks. The
+tests also verify pre-inference paired-state checks, retained handoff geometry,
+wrapper/archive setup, no-inference replay mismatch, and journaling/control
+accounting after an injected Constrain failure. The exact 15-file suite passed
+**121 tests**. This is implementation verification, not a performance result,
+new gate, or authorization to run the scorer.
+
+Round-55 v1 clarification: the runner stopped its candidate search too early,
+but its final predicate still enforced the full 11-frame pairwise geometry
+bounds. Its historical result was **0/60 admitted**, not false early admissions;
+historical records and the separate v2 bank remain unchanged.
+
+## Peg orientation round 55 — outside-entry pose-window initializer bank
+
+The valid fresh attempt is
+`outputs/exp/20261119_164500_peg_entry_pose_window_initialization_v2/`.
+All **60/60** cases independently pass the prospective 11-control pose-window
+admission (random/fixed each 6/6 for aligned, signed hole-Y ±5 mm, and world-Z
+yaw ±5°). No replacement, policy inference, checkpoint load, training, data
+change, formal test, or Plug work occurred. The legacy instantaneous-velocity
+mode remains the unchanged default; new `pose_window` admission records those
+velocities diagnostically and must not be described as zero-substep motion.
+
+Across admitted windows: maximum head/peg-center diameter **0.2464/0.2264 mm**,
+full-quaternion rotational diameter **0.1498°**, arm-joint qpos range **0.001969
+rad**. Realized lateral deltas are −4.327…−3.809 mm and +5.669…+6.176 mm; realized
+relative yaw is −5.556…−5.200° and +4.443…+4.799°. Instantaneous velocity ranges
+are peg linear **20.544–29.469 mm/s**, angular **0.590–1.314 rad/s**, and maximum
+arm qvel **0.00102–0.05283 rad/s**. They are reported as measured diagnostics,
+not as evidence of stationary instantaneous physics.
+
+Totals: **8,225 prefix + 1,370 initializer = 9,595 native controls**, 59.52 s
+runner / 62.86 s wrapper. Pre/post input/source identities (57 entries) and both
+checkpoint-reference hashes reconcile; weights were never loaded. Exact 14-file
+suite passed **113 tests** pre/post (12.08/12.14 s). The earlier v1 run is
+retained separately: its candidate search stopped too early, while its final
+predicate still enforced full-window bounds, yielding historical 0/60 admission.
+It is not pooled or reclassified; its expected-red raw log was unavailable. Full independent
+per-case recomputation and provenance are in the v2 `independent_audit.json`,
+`post_execution_audit.json`, journals, source archive and timing files. Historical
+rounds 52–54 and gate outcomes remain unchanged.
+
+## Peg orientation round 54 — paired initializer settling calibration
+
+The fresh model-free run is `outputs/exp/20261119_000000_peg_entry_settling_calibration/`.
+It paired the original continuous initializer against one immutable actual-world
+TCP-pose latch on the first pose-only-qualified state, for the first selected
+random/fixed source-bank scene (ID 0 each) and all five frozen conditions. The
+case/condition/strategy order, signed lateral bands, unchanged pose/yaw/velocity
+criteria and five-control stability rule were registered before native actions.
+No model was loaded or queried; there was no training, data, formal-test, policy,
+or Plug work.
+
+All 20 cases completed once: continuous **0/10 admitted**, fixed-TCP **0/10**.
+Native controls reconcile to **2,650 prefix + 1,300 initializer = 3,950**;
+27.35 s runner / 29.70 s outer elapsed. Every paired post-withdraw state/history/
+head and prefix hash matched exactly; all 20 prefixes and native yaw preflights
+passed. Outside clearance was 19.920–20.667 mm. Last-five peg linear speed was
+22.855–23.690 mm/s and angular speed 0.597–0.863 rad/s, both over unchanged
+limits; arm qvel remained below its unchanged limit. Fixed TCP had higher final
+head error (2.331–3.682 mm) than continuous feedback (1.256–1.776 mm), with no
+observed velocity-stability improvement. This bounded sample supports no
+policy/root-cause inference and does not authorize changing thresholds.
+
+Checkpoint bytes were hashed before/after but never loaded; all registered
+source/input hashes reconcile. Per-control target/phase/action hashes and the
+explicit per-control-timestamp omission are documented in `independent_audit.json`.
+The exact 14-file suite passed **111 tests** pre/post. Raw expected-red and
+green logs, command, timing, source archive, 20 case journals and analysis are
+retained in the run directory. This is calibration only, not a bank admission,
+formal gate, or learning result; rounds 52–53 and historical gate outcomes stay
+unchanged.
+
+## Peg orientation round 52 — physical perturbed outside-entry initialization
+
+Fresh bounded attempt: `outputs/exp/20261118_152038_peg_entry_perturb_initialization/`.
+The fixed six-ID cohort per validation group was random `[0,2,3,4,6,7]` and
+fixed `[0,5,6,7,10,11]`, selected from already-admitted source-bank IDs before
+new outcomes. It registered 60 cases across aligned, lateral ±5 mm in hole-frame
+Y, and world-Z yaw ±5° (one perturbation at a time). All 60 replayed the expert
+prefix and withdrew to measured true entry clearance 19.824–20.476 mm, but all
+exhausted the 60-control perturb/settle allowance. **Admitted: 0/60**; final
+head-position error was 1.256–2.690 mm, above the frozen 1 mm bound. Terminal
+five-control velocity/yaw metrics were omitted by the runner's cap-return path,
+so admission is unavailable and no policy scoring may follow from this bank.
+No rerun/replacement or policy inference occurred; any repaired fresh native
+attempt needs parent review.
+
+Native work reconciles as 8,225 prefix replay + 3,900 scripted controls =
+12,125; 72.10 s runner / 74.58 s outer elapsed. Prefix action hashes and
+registered source/input hashes reconcile. Exact 14-file tests passed 106/106
+pre and post. Native controller scale/frame and positive/negative yaw were
+calibrated against the installed public controller. See `PEG_ORIENTATION.md`,
+`analysis_report.md`, `initialization_reconciliation.json`, and `journal.jsonl`
+for detailed evidence and missing-trace disclosure.
+
+This run corrects the former “near mouth” interpretation: old bank x values
+−0.04 to −0.05 m were already inside the true entry plane
+`x=-peg_half_length`; official success x≥−0.015 m is near box center. Historical
+round-46 eligibility/counts and round-50 policy outcomes are unchanged. No
+training, data collection, checkpoint change, formal gate, or Plug work.
+
+## Peg near-hole round 51 — hold control setup failure (no native action)
+
+The authorized model-free control at
+`outputs/exp/20261118_142454_peg_near_hole_hold_control/` stopped before
+environment creation: the runner attempted to create an output directory that
+had already been initialized for regression artifacts. Exit was 1; **0 native
+controls, 0 prefixes, 0 arms**; no retry occurred. Raw traceback, outer timing,
+wrapper, source archive/closure, and post-failure input hashes are retained.
+The exact 13-file test suite passed **99 tests** pre/post (11.41 s / 11.33 s).
+At that initial-failure point, the 15 random + 11 fixed one-pass hold outcomes remained unmeasured; this failure
+does not update round 50, the 500-demo 23/54 results, or formal statuses.
+
+Round-51 completion addendum: the parent authorized only the minimal setup fix
+and one fresh attempt, retained at
+`outputs/exp/20261118_143004_peg_near_hole_hold_control_v2/`. All **26/26** frozen
+branches completed once: **0/15 random, 0/11 fixed** official successes; all
+retained grasp and exhausted the 200-control suffix. Totals: **3,537 prefix +
+5,200 hold = 8,737 native controls**, 46.18 s runner / 48.19 s outer elapsed.
+Actual actions and replay checks reconcile exactly (max error 0); both in-pass
+videos decode to 201 frames. Bank/catalog/demo/source hashes match round 50; the
+exact 13-file suite passed **101 tests** both pre and post. This is only a
+controller-hold conditional observation, not proof that all velocity confounds
+are removed or that learned commands are generally necessary. No checkpoints
+were loaded; model outcomes and gate statuses remain unchanged. Details and
+limitations are in `analysis_report.md` and `independent_audit.json`.
+
+Near-hole interpretation note: round 50 used moving, grasped, expert-prealigned
+handoffs, not stationary randomized resets. All arms succeeded within 3–4
+controls; expert residual motion and ceiling effects have not been excluded.
+Seed labels 1/1001/2001 are offsets added to the catalog index, not training
+seeds. Conditional success does not establish that learned actions are needed.
+
+## Peg orientation round 50 — near-hole Base vs Constrain scoring completed
+
+The fresh, parent-authorized CUDA attempt completed all **78/78 pairs** (156
+policy arms) in
+`outputs/exp/20261118_220128_peg_near_hole_policy_comparison_v2/`. On each of
+the 15 random and 11 fixed eligible expert-reachable validation branches, both
+frozen policies succeeded for all three draws: per seed `1`, `1001`, and `2001`,
+random Base/Constrain **15/15 vs 15/15**, fixed **11/11 vs 11/11**. Descriptive
+pooled counts are random **45/45 vs 45/45** (45 draws over 15 scenes) and fixed
+**33/33 vs 33/33** (33 draws over 11 scenes); every paired table is
+Base-only/Constrain-only/both/neither = **0/0/N/0**. Repeated draws are not
+independent scenes. The other 14 of the frozen 40-scene catalog were bank-
+ineligible/unconstructed, not policy failures.
+
+All 78 unique pair keys and full arm traces reconcile. Native work was **21,222
+prefix-replay + 486 suffix = 21,708 controls** (78,000 maximum), 181.72 s runner
+elapsed / 183.94 s wrapper-monotonic elapsed; native and wrapper exit 0, with no
+failed/partial attempt. Replay physical/history/head error was 0 (≤1e-5); public
+controller `get_state()` was empty on both arms, so equality covers only that
+empty public extent, not hidden controller buffers. Both modes stayed
+`pd_ee_delta_pose`; both real histories were equal before inference. Four
+preregistered in-pass videos decode to four frames each; hashes and the full
+audit are in `independent_audit.json`. The exact 12-file regression passed 97
+tests both before and after. Registered source closure and 55 selected
+checkpoint/bank/data/catalog hashes reconcile.
+
+This is near-hole conditional evidence on already-grasped, closely aligned
+expert prefixes, not end-to-end performance, a formal gate, or Plug evidence.
+It is not directly comparable to round 40's separate random **23/100** / fixed
+**54/100** whole-task results and does not establish why whole-task performance
+is difficult. The bank's retrospective fixed-stage amendment and unavailable
+initial historical source bytes remain disclosed; this run does not repair that
+provenance limitation. Full row-level results, hashes, timing, command, videos,
+and interpretation are in the experiment directory's `results.json`,
+`pairs.jsonl`, `analysis_report.md`, `independent_audit.json`, and
+`preregistration.json`. No training, new data, weight/source edits, full-task
+test, or Plug work occurred; historical gate outcomes are unchanged.
+
+## Peg orientation round 49 — near-hole policy input batching repair (no native)
+
+`_run_suffix` explicitly batches the identical latest-two 39d observation
+history for both Base and Constrain adapters as `(1, 2, 39)`. A strict full-run
+fake-adapter test captured the old `(2, 39)` failure then passed after the
+minimal fix. The exact 12-file suite passed **97 tests**. Red/green logs,
+commands, timings, and test list are in
+`outputs/exp/20261118_215301_peg_near_hole_batching_repair/`. This fixes policy
+input shape only; native scoring remains pending and round 47's failed attempt
+is unchanged.
+
+Near-hole bank source/timing and command-document provenance corrections are
+additively recorded in
+`outputs/exp/20261118_122546_peg_near_hole_initialization/provenance_correction.json`.
+The amendment is retrospective; historical source bytes are not authenticated.
+Near-hole policy scoring still requires replay-based controller, physical and
+actual-history equality checks; no policy performance is reported by the bank.
+
+## Peg orientation round 48 — near-hole comparison runner repair (no native)
+
+Round 47's failed attempt and artifacts at
+`outputs/exp/20261118_130407_peg_near_hole_policy_comparison/` are immutable.
+The bounded runner repair fixes the actual task predicate call, preserves prefix
+metadata for final geometry, hashes/archives the current outer wrapper rather
+than a historical runner, recursively normalizes 0-D NumPy values, and records
+global physical controls plus completed arm results on exceptions. Native stage
+and whole-stage wall limits are 7,200 s and 10,800 s. The exact 12-file suite
+passed **97 tests** in final pre/post runs; raw red/green stdout/stderr, command, timing, file list and
+fake-environment orchestration coverage are retained in
+`outputs/exp/20261118_132711_peg_near_hole_eval_repair/`. It exercised real
+runner preparation/suffix/finalization with fake envs/adapters, not native
+physics, actual checkpoints, or policy scoring. No native action, training, data
+mutation, or Plug work occurred. This repair does not authorize retrying round
+47. The old failure evidence and formal / random-500 comparison outcomes are
+unchanged.
+
+## Peg orientation round 47 — near-hole comparison setup failure
+
+The registered Base-vs-Constrain near-hole comparison is at
+`outputs/exp/20261118_130407_peg_near_hole_policy_comparison/`. The exact
+12-file suite passed 91 tests before and after. Its sole native attempt replayed
+142 controls from random validation index 0, then exited before policy inference:
+the runner called the task-level one-argument `near_hole_eligible` with three
+geometry arguments. Failure logs, empty first-pair journal, timing, source
+archive/closure and a post-execution failure audit are retained. No policy result
+or video exists, and no native retry/source edit occurred. This setup defect is
+not a policy failure; a new native attempt requires a parent decision. Round 40's
+random 23/100 and fixed 54/100 and all formal gate outcomes are unchanged.
+
+## Peg orientation round 46 — near-hole initialization bank (no policy evaluation)
+
+Registration, per-attempt logs and reports are in `outputs/exp/20261118_122546_peg_near_hole_initialization/`; expert-only diagnostic data/replay artifacts are in `demos/PegInsertionSide-near-hole-diagnostic-random_20261118_122546/` and `demos/PegInsertionSide-near-hole-diagnostic-fixed_20261118_122546/`. The held-out validation catalog indices were frozen at 0–19 in each profile (40 scenes; no replacement). Expert collection was random 15/20 and fixed 12/20; official EE replay accepted random 15/15 and fixed 11/12. The near-hole bank has 15/20 random and 11/20 fixed eligible branches. Every ineligible scene remains represented; these are expert-reachable conditional denominators, not whole-catalog policy rates.
+
+The first eligible post-action state used the official hole-frame peg-head geometry, native grasp and noninserted checks. Head-x/radius ranges are random `[-0.049854,-0.040661] m` / `[0.040805,0.049920] m`, fixed `[-0.048915,-0.041266] m` / `[0.041382,0.049018] m`. Expert prefixes are replayed in `pd_ee_delta_pose`; future policy suffix remains capped at 200 controls. Neither frozen policy has been scored yet. Any next comparison must replay and verify the same prefix/history/controller state for both arms and must be reported only as near-hole conditional paired evidence, not end-to-end or formal gate evidence. Experts have already aligned yaw closely (ranges recorded in geometry audits); disclose this initialization easiness.
+
+Random branch native work was not repeated after a summary-finalizer error: all per-scene progress was journaled and the JSON bank was reconstructed offline after fixing NumPy normalization and ensuring no-source scenes are logged. The fixed-stage runner amendment and all setup/native errors are preserved. Eleven-file Peg suite passed **88 tests in 11.39 s**. Historical 500-demo data, checkpoints, and prior round 37/40/gate outcomes are unchanged. No training, test/retention access, policy inference, or Plug work occurred.
+
+## Peg orientation round 45 — bidirectional takeover diagnostic
+
+The fresh, immutable registration and completed native diagnostic are in
+`outputs/exp/20261118_102350_peg_orientation_bidirectional_takeover_v2/`.
+The study now binds `validation_random_scenes` directly and checks the catalog
+manifest split before registration; source closure and all five frozen input
+hashes reconcile after execution. Eight selected training branches triggered:
+recorded suffix and live official expert each succeeded 8/8; the frozen policy
+succeeded 7/8. On all 12 random-validation scenes, 5 succeeded before the
+control-296 handoff and 7 formed matched pairs. Policy continuation succeeded
+0/7; live expert succeeded 4/7 (the other 3 completed planning without native
+success), yielding both/expert-only/policy-only/neither = 0/4/0/3. Maximum
+matched-prefix numeric error was 0. The run used 10,365 native controls in
+263.90 s and retained 55 hashed progress journals. Expert controller-mode
+switch/reset is a confound; this is not a formal gate result, OOD-cause claim,
+or recoverability theorem. Full row-level analysis, pre-native setup incidents,
+limitations and audit are in `analysis_report.md` and `attempt_native_actual_once/`.
+The exact ten-file suite passed **83 tests** before native execution (11.53 s)
+and afterward (12.30 s); command and stdout/stderr captures are retained beside
+the registration.
+
+Round 43 remains unreconciled: its exact outcomes and aggregate controls are
+unavailable; do not infer 8,021 from its thin ledger. Its fixed-catalog binding
+and validation seed/timing deviation are historical and are not pooled with
+this corrected fresh run. This diagnostic does not rescore or change round 40's
+met numerical gates (+20pp random, +2pp fixed) or its nonblind, single-seed and
+provenance limitations; it does not authorize Plug work.
+
+## Peg orientation runner repair — development only, no native execution
+
+Goal-loop round 44 fixes four diagnostic-runner defects in
+`peg_orientation_takeover_study.py`: recursive NumPy scalar normalization (also
+applied to the preceding takeover preflight finalizer), unique full-row progress
+journals linked from the execution ledger, validation policy seed `1+index`
+applied after scene restoration while preserving the policy RNG stream across
+the 296-control handoff, and validation analysis of the expert arm's own
+`status="native_success"` field. Training remains seeded `10000+episode_id`.
+No native planner, environment step, or study attempt was run in this repair.
+
+The focused ten-file regression reproduced five expected failures before the
+fix (**77 passed, 5 failed**) and passed afterward (**83 passed**, 11.49 s).
+Raw stdout, exact command, TERM/10-second-KILL deadline, timing, and source
+closure check are retained in
+`outputs/exp/20261118_100309_peg_orientation_takeover_runner_repair/`.
+The source-closure regression includes the runtime and both takeover test files.
+
+The failed round-43 study at
+`outputs/exp/20261118_175052_peg_orientation_bidirectional_takeover/` is
+unchanged. Its finalizer raised while hashing `np.bool_`, then failed again
+serializing the failure record; it retained only a thin progress ledger and no
+full per-arm result rows/traces. Therefore exact native outcomes, native
+success totals, and a definitive aggregate control total (including a claimed
+8,021) are unavailable; no rows or outcomes are reconstructed from control
+counts. Round-42's separate, fully retained two-positive-control result remains
+2/2 in each arm, 571 controls, 6.21 s; it is not pooled with round 43.
+
+The failed preregistration recorded the validation seed as `10000+episode_id`
+and the attempt seeded before scene restoration. Round 44 corrects the runner
+for a future **newly registered** main study to use validation seed `1+index`
+after restore, with actual restored observation history and an uninterrupted
+policy RNG stream across control 296. This is a development note only, not a
+new preregistration or native-run authorization/claim. Fresh registration is
+required before any future native study. No formal gate or Plug status changes.
+
+## Peg orientation round 42 — live expert-continuation handoff preflight
+
+The frozen two-episode training-set positive-control study is registered at
+`outputs/exp/20261118_092013_peg_orientation_takeover_preflight/`; runner and
+registered source snapshots, the package lock, preregistration, exact commands,
+raw logs, native ledger, post-execution audit and post-hoc reconciled results are
+retained there. The existing random-500 dataset and update-25,000 candidate were
+unchanged; the candidate checkpoint was not loaded and there was no training,
+data collection, policy rollout, validation/test/retention access, or Plug work.
+
+Both preregistered training demonstrations (IDs 0/1; seeds 2026112000/2026112002)
+reached the frozen native-grasped, not-yet-inserted head-x trigger. Their recorded
+suffix positive controls succeeded in **2/2** (8/9 suffix controls); stock live
+official expert continuation succeeded in **2/2** (47/35 suffix controls). Each
+paired branch replay matched its two-observation history, robot qpos/qvel/root,
+TCP, peg and hole poses at max absolute error **0**; the public switch from
+`pd_ee_delta_pose` to `pd_joint_pos` also used zero physical controls, preserved
+grasp, and changed those physical snapshots by **0**. This is two selected
+training-branch feasibility evidence, not a general recoverability estimate or a
+policy effect: the live arm has a controller-mode/target-reset confound.
+
+All four arms completed: **571 controls / 6.21 s**. The runner then exited 1 in
+post-rollout result hashing because a planner result contained a NumPy array. The
+original failure and log are preserved; a read-only post-hoc reconciliation
+retains the already-complete arm rows at `attempt_001/results_posthoc_reconciled.json`
+and documents the reporting fault in `reporting_reconciliation.json`. There was
+no native retry. The exact nine-file regression passed **70 tests** before and
+after. Internal controller target-state snapshots were not serialized; this
+limitation is disclosed in the post-execution audit. See
+`examples/baselines/constrain/PEG_ORIENTATION.md` and the topic README for details.
+
+## Peg orientation round 40 — random-500 candidate nonblind comparison
+
+The frozen random-500 update-25,000 candidate was compared with frozen Base in
+all six registered 100-episode cohorts at
+`outputs/exp/20261118_061124_peg_orientation_random500_comparison/`. Random
+Base/correct/fixed-standard/shuffled scored **3/23/4/4**; fixed Base/correct
+scored **52/54**. Paired correct-vs-Base random Base-only/correct-only/both/neither
+is **1/21/2/76** (**+20pp**),
+meeting the ≥20pp threshold exactly; fixed retention is **+2pp** (`4/6/48/42`),
+within the −5pp loss limit. Both numerical gates are met on this comparison.
+It is explicitly nonblind due to prior test exposure and single-seed; prior
+formal +18pp/+6pp and round-37 +12pp/−3pp outcomes remain separate and unpooled.
+No Plug work was started.
+
+The six cohorts completed once: 600 episodes, 158,647 controls, 7,015.80 s;
+scene-0 videos were captured in-pass. 554 registered source files and 22 inputs
+reconciled. The exact eight-file regression passed 64 tests before and after.
+Full per-scene results, hashes, paired tables, yaw bins, timing, and audit are in
+the experiment directory's `results.json`, `results.md`,
+`execution_ledger.json`, `post_execution_audit.json`, and regression artifacts.
+Two pre-native failures (Base output-directory collision; fixed-standard CLI
+label typo) are disclosed in the ledger. Their stderr hashes/exit metadata remain,
+but retry log-path reuse overwrote their raw stdout/stderr bytes; they are not
+retained. Each corrected cohort ran once. Current report corrections and artifact
+stability hashes are in `reporting_correction.json` and
+`reporting_artifact_audit.json`.
+
+## Peg orientation round 39 — random-500 fresh training and validation
+
+The admitted 500-demo package received the preauthorized fresh seed-1, 30,000-update run and all 12 validation cohorts at `outputs/exp/20261118_035943_peg_orientation_random500_study/`; six checkpoints are at `outputs/ckpt/20261118_035943_peg_orientation_random500_study/`. Training elapsed 933.76s; validation totaled 600 episodes / 132,933 controls / 6,174.02s. Random/fixed validation scores at updates 5k–30k were **15/27, 18/32, 19/33, 18/34, 18/34, 18/32**. The fixed≥34, maximize-random, latest-tie rule selects update 25k EMA (**18/50 random, 34/50 fixed**), SHA-256 `73834286ff5e94fc3bf157d602174522365a9cb3bbb638c6e05579806b82b7df`.
+
+The candidate is validation-only: paired net vs reused Base is +14/50 random and −2/50 fixed; aligned raw-score changes vs historical random-100 and random-200 candidates are respectively (+3, −4) and (−2, 0) successes. Neither old candidate was rerun. This does not show a causal sample-count effect or alter the historical negative formal gate. All 555 source paths and 13 inputs reconciled; the eight-file regression passed 64 tests both before and after the run. No final-test, fixed-retention, data collection, or Plug work occurred. Full records: `preregistration.json`, `results.json`, `results.md`, `execution_ledger.json`, `candidate_freeze.json`, and `post_execution_audit.json`.
+
+## Peg orientation round 38 — random-500 data expansion (data-only)
+
+The forward user objective expanded Peg random demos to 500; this does not
+rewrite the round-37 negative gate, qualify Peg, authorize Plug, or imply that
+training has improved. `demos/PegInsertionSide-orientation-random-500/` contains
+the original random-200 HDF5 episodes byte-identically followed by the first 300
+accepted rows from `demos/PegInsertionSide-orientation-random-additional300_20261118_033057/`.
+Collection obtained 350 expert successes in 544 attempts; official CPU replay
+accepted 325/350 and rejected 25. The extra accepted 25 are retained in the
+additional source. Package HDF5 SHA-256 is
+`1fe27c25346d1117442d14bdadaf6037717943ea0b86090bcece2556ee008044`; JSON
+`097bd41280296444db05df6a6030ac2f86bc9ccae799545fdd43e40d231dbf39`; coverage
+`ad7011bdf53f60fa4ac8dc61dd5ef281a456bfa7f30206976ccb66f568d7f3c3`.
+Registration, commands, logs, timing, independent audit and bounded deviations
+are in `outputs/exp/20261118_033057_peg_orientation_random500_data/`. A minimal
+coverage-composition seam was added after a failing audit and a red/green test;
+the required eight-file regression passed 64 tests. This round did not train,
+evaluate policies, access final-scene outcomes, select a checkpoint, or work on
+Plug. The prospective fresh 30k-update training/validation protocol is recorded
+in the registration only; its execution is a separate next stage.
+
+## Peg orientation round 37 — corrective nonblind formal retest (gate not passed)
+
+The one authorized post-diagnosis corrective retest completed all six fresh
+cohorts in `outputs/exp/20261117_230000_peg_orientation_corrective_retest/`:
+random Base/correct/fixed-standard/shuffled and fixed-retention Base/correct.
+The frozen update-30,000 random-200 correction was used without further
+selection; unchanged Base counts reproduced 3/100 random and 52/100 fixed.
+Candidate scores are 15/100 random and 49/100 fixed retention: paired random
+gain **+12pp (fails ≥+20pp)**; fixed delta **−3pp (passes ≤−5pp-loss bound)**.
+Thus the final gate is **not passed**, Ticket 06 has a negative outcome and Plug
+remains blocked. Correct-vs-fixed-standard is +12pp and vs shuffled +8pp,
+diagnostic only. The prior candidate's +18pp/+6pp result is immutable and not
+pooled. The retest is expressly nonblind due to historical random-test exposure.
+
+All six cohorts ran once: 600 episodes, 160,418 controls, 6,884.48 s total;
+all commands exited 0, with no cleanup or retry. Scene-0 video was captured
+within each cohort's native pass. The old formal experiment remains unchanged;
+new videos do not backfill its missing-video record. Registration, exact
+identities, ledger, per-episode rows, video hashes, yaw bins and summaries are
+in the experiment directory. No training, data collection, tuning, further
+checkpoint selection or Plug work occurred.
+
+## Peg orientation round 36 — random-200 corrective run
+
+The authorized fresh 30,000-update correction is registered and fully reported
+under `outputs/exp/20261117_211300_peg_orientation_random200_correction/`; six
+EMA checkpoints are under the matching `outputs/ckpt/` path. Training uses the
+unchanged Base EMA plus a fresh zero-control branch, random-200 + unchanged
+fixed-1,000 data, seed 1, and exact 512/512 windows per batch. All six checkpoints
+were evaluated once on random/fixed validation-50 (12 cohorts, 600 episodes,
+131,670 controls); no final-test or retention cohort was run.
+
+| Update | Random validation | Fixed validation |
+|---:|---:|---:|
+| 5k | 19/50 | 31/50 |
+| 10k | 21/50 | 33/50 |
+| 15k | 17/50 | 37/50 |
+| 20k | 16/50 | 35/50 |
+| 25k | 14/50 | 33/50 |
+| 30k | **20/50** | **34/50** |
+
+Frozen fixed-feasibility rule (≥34/50; maximize random, ties latest) selects
+update 30,000 EMA, SHA-256
+`6fa85080d06025ba9283e062e411acfc7fa7e8cc8e936f970180400b8677f1e7`. Paired
+against reused Base validation 4/50 random and 36/50 fixed, the result is
+random +16/50 and fixed −2/50; against the old mixed random-100/fixed-1,000
+candidate it is +5/50 and −4/50 on aligned validation scenes. These are
+validation results only. The historical formal gate stays unchanged at +18pp
+random (below +20pp) and +6pp fixed; no formal outcome for the new candidate is
+claimed. No Plug work. See `PEG_ORIENTATION.md` for budgets and limitations,
+and the experiment's `results.json`, `execution_ledger.json`, and
+`candidate_freeze.json` for complete provenance and selection evidence.
+
+## Peg orientation round 34 validation motion probe (diagnosis only)
+
+The already-authorized validation-only probe completed once on existing random-validation indices 6–11 with the frozen update-15,000 EMA and correct hint: 2/6 native successes, 1,472 controls, all six grasped. All 187 actual sampler-call hints match live yaw geometry (maximum absolute error `1.97e-7`); all six native controller frames/bounds match the inspected root-translation delta contract. Per-control normalized action, physical root/world/hole request, realized TCP/head motion, video, and source/input audits are in `outputs/exp/20261117_201647_peg_orientation_validation_motion_probe/`.
+
+The data do not support a controller-frame or hint implementation patch: action requests are often small, and late behavior varies between small/backtracking requests and positive requests that realize little head/TCP progress under contact. The existing trace label `commanded_translation_in_hole` omits positional scaling; the offline analysis recomputes physical commands independently and does not treat this measurement-field caveat as a runtime mapping bug. The validation video is not the missing formal preregistered scene-0 video. Formal random +18pp remains below +20pp; fixed retention +6pp remains within its bound. Ticket 06 is still incomplete and Plug blocked. A model/data corrective slice requires an explicit parent decision and training/checkpoint plan.
+
+## Peg orientation random-200 corrective data
+
+`demos/PegInsertionSide-orientation-random-200/` retains the original 100
+trajectories unchanged and adds the first 100 official replay acceptances from
+`demos/PegInsertionSide-orientation-random-additional100_20261117_204638/`.
+Audits and collection registration are under
+`outputs/exp/20261117_204638_peg_orientation_random200_data/`.
+184 attempts yielded 120 expert successes and 113 replay-valid trajectories;
+the combined HDF5 SHA-256 is
+`1e662966292e20549039fca8a65ad584a53b28be758e089a37ac2cc3cb8f1c96`.
+The saved registration and execution both use 2050/750-second outer caps;
+2000/700 were parent task limits, not a different retained registration.
+See `timeout_provenance_clarification.json`. Data admission passed review;
+training is a separate stage and the formal +18pp result is unchanged.
+
+## Peg orientation Ticket 06 formal paired gate (2026-11-17; not passed)
+
+Round 32 completed all six preregistered native cohorts (600 episodes, 157,747
+controls) under `outputs/exp/20261117_153824_peg_orientation_formal_gate/`.
+Frozen Base / correct-hint Constrain results were **3/100 / 21/100** on random
+test (+18pp, below the required +20pp), and **52/100 / 58/100** on fixed
+retention (+6pp, within the maximum −5pp loss). Fixed-standard and shuffled
+random-test hints scored 7/100 and 5/100, diagnostic only. Ticket 06 is
+**awaiting targeted diagnosis/correction before final rejection**, not completed;
+Plug remains blocked. The accepted Base prerequisite is 36/50 fixed validation
+(not 72/100); the old Base ≥80/100 threshold remains waived only as a blocker.
+Full registration, results, paired tables/bins, source and episode audit, command
+ledger, regression evidence and limitations are in `preregistration.json`,
+`results.json`, `post_execution_audit.json`, `execution_ledger.json`, and
+`results.md`. No video was captured despite its preregistered plan; first-two
+foreground cohorts lack contemporaneous per-cohort timing/source ledgers. Both
+limitations are disclosed. No outcome-based rerun or retuning followed.
+
+### Round 33 — retained-trace diagnosis (offline; no correction established)
+
+The reproducible runner is `examples/baselines/constrain/peg_orientation_failure_analysis.py`; its TDD fixture is `tests/test_peg_orientation_failure_analysis.py`. Frozen analysis plan, complete per-episode derived measurements/raw episode SHA-256 identities, and concise report are in `outputs/exp/20261117_164500_peg_orientation_failure_diagnosis/`. It reads all 600 retained round-32 rows, includes every preaction and postaction official peg-head-in-hole sample plus terminal exactly once, and verifies source row hashes unchanged. The source-defined geometry is `(box_hole_pose.inv() * peg_head_pose).p`; official insertion is x ≥ −0.015 m with y/z each within the actual hole radius. Reported 3D/lateral distances and wrapped peg local +X minus box local +X yaw are descriptive only; no yaw threshold or XY≤0.10 m phase is introduced.
+
+Random-correct failures (79) have median closest head distance 0.1044 m, head x −0.1044 m, lateral yz 0.0092 m, and absolute wrapped yaw 0.0601 rad at that closest sample. Correct-hint successes (21) have corresponding medians 0.0102 m, −0.0097 m, 0.0030 m, and 0.0187 rad. The recorded native insertion boolean appears in 21/21 successes and 0/79 failures. All random profiles grasped in all 100 rows; contact-loss transitions were 61 Base / 31 correct / 48 fixed-standard / 38 shuffled. This suggests approach/head geometry as the main next probe, but is exploratory outcome association, not causal attribution. Fixed retention shows 36 Base vs 10 correct contact-loss transitions, consistent with no measured fixed-skill regression in this trace summary, not proof of mechanism.
+
+Hint trace coverage is only first-two plus final sampler call, not every hint/action. Requested action vectors, TCP pose and force are not present in these retained rows, so translation command-vs-motion and contact-blocking cannot be quantified here. No implementation bug or correction was established. Next smallest validation-only probe, if separately authorized: existing random-validation catalog indices **6–11**, one frozen correct-hint checkpoint, seeds `1+i`, max 300 controls/episode, zero optimizer updates, and per-control requested 7D action, TCP/peg/hole pose, official head geometry, and live hint capture. The falsifiable candidate is a late-approach frame-mapping error: it predicts persistent grasp plus a consistent requested-to-realized head-axial direction/scale mismatch; absence falsifies a mapping correction. If requested motion itself is small, do not change the controller mapping; a later training-budget decision would require authorization. Indices 0–5 are excluded from this next probe because the earlier six-scene stage diagnosis already used them. No native action was run in round 33. Formal +18pp random result still misses +20pp; fixed +6pp remains within its loss bound; Ticket 06 and Plug status do not change.
+
+The continuation instruction already authorizes the bounded validation-only
+6–11 probe above (six episodes, ≤1,800 controls, zero updates); no additional
+approval is needed. This supersedes its separate-authorization wording and the
+original analysis plan's test-index 0–5 proposal. Training is outside this probe.
+
+## Peg orientation gate preparation and candidate freeze (2026-11-17; no native evaluation)
+
+Round 30 records the user-authorized Base prerequisite amendment and a read-only audit/freeze at `outputs/exp/20261117_151022_peg_orientation_gate_preparation/`. The accepted Base is the existing fixed-validation **36/50 (72%)**, not an independent 72/100 measurement. The old Base ≥80/100 requirement is waived only as a blocker; the final paired fixed-retention ≤5pp and random-test ≥20pp gates remain unchanged.
+
+The selected validation-only candidate is mixed-replay update 15,000 EMA, SHA-256 `522be233a68123e2a4afae882d84cf5e87cab26844054059585d74ffac820898`: random validation 15/50 vs Base 4/50 (+22pp), fixed validation 38/50 vs Base 36/50 (+4pp). Training combined random-100 with fixed-1000 at 512 windows each/update for 30,000 updates; do not describe it as pure random-100 training or same-information fine-tuning. No final scene content/outcome was loaded and no native command was run. The final random test and fixed-retention tests remain pending; historical fixed-catalog exposure from an earlier Base is disclosed in the freeze record. Round 31 reconciles Tickets 04/05 as complete under revised bounded criteria; Ticket 05 overfit assessment is unknown, not proven absent. Ticket 06 is ready for formal preregistration, not completed; Plug remains blocked.
+
+### Round 31 status reconciliation (docs-only)
+
+No artifact identity, quote, historical outcome, or experiment record was rewritten. Ticket 04 acceptance is supported by retained paired validation scores/five angle-bin summaries, correct/fixed/shuffled hint intervention, and six-scene grasp/insertion traces. A numeric yaw sample is not required: frozen `not_reached` remains a valid proximity-trigger-only value and must not be read as no physical insertion. Ticket 05 diagnosis is bounded by angle coverage, hint interventions, frozen-Base/sampler equivalence, action/replay contract audits, and stage traces; overfit assessment is explicitly unknown because single-seed validation selection cannot prove absence, and is not treated as a required acceptance gate. Ticket 02 accepted value is 36/50 validation only, not 72/100. The unchanged formal gates are random-test gain ≥20pp and paired fixed-retention loss ≤5pp. Ticket 06 is preregistration-ready but still unrun; Plug is blocked. Additive machine-readable status: `outputs/exp/20261117_151022_peg_orientation_gate_preparation/readiness_round31.json`.
+
+## Peg evaluator stage-geometry trace (2026-11-17)
+
+The evaluator now supports opt-in pre/post native geometry snapshots through
+`--record-stage-geometry`; without the flag the normal Constrain evaluation does
+not add phase/geometry trace output. Stage tracing implies phase tracing so each
+executed control receives both snapshots. The focused fixture verifies mutation
+across controls and wrapped yaw across ±π; the required seven-file regression
+passed 58 tests. The fresh six-scene stage diagnosis is retained at
+`outputs/exp/20261117_153000_peg_orientation_stage_diagnosis/`: Base 0/6 and
+selected Constrain 3/6, descriptive only. No episode reached the frozen XY
+center-distance ≤0.10 m trigger; three Constrain episodes nevertheless achieved
+official insertion, illustrating that the diagnostic label is not a physical
+non-insertion claim. No yaw causality or general performance claim follows. See
+`PEG_ORIENTATION.md` and the experiment `results.md` for details.
+
+## Peg dynamic-yaw hint interventions (2026-11-17; exploratory only)
+
+The selected replay-trained 15,000-update EMA was frozen and evaluated once on
+each of three paired 50-scene **random validation** cohorts. The run is
+`outputs/exp/20261117_115044_peg_orientation_hint_interventions/`; it records a
+pre-registration, validation-only shuffled-target assignment, 150 episode
+rows, identity checks, and full paired/bin summaries. Correct dynamic hint
+reproduced **15/50**; live fixed-standard-90° scored **2/50**; live shuffled
+validation targets scored **4/50**. Correct vs fixed paired outcomes were 2
+both / 13 correct-only / 0 fixed-only / 35 neither (+26 pp); correct vs
+shuffled were 2 / 13 / 2 / 33 (+22 pp). The assignment used seed 1703, with no
+self-matches or identical target-yaw matches. Correct also reproduced its
+prior Base comparison (3 both / 12 correct-only / 1 Base-only / 34 neither,
++22 pp).
+
+The third pair table is retained in `fixed_shuffled_pair_addendum.json`: fixed
+vs shuffled has 0 both / 2 fixed-only / 4 shuffled-only / 44 neither (−4 pp).
+It was aggregated from the existing 50 aligned rows per mode after review;
+no scene was rerun and original result files remain unchanged.
+
+This is validation-only, single-checkpoint exploratory evidence; it does not
+establish general causality or method-level stability. All 150 frozen
+pre-insertion diagnostics were `not_reached`, so no yaw-performance or physical
+insertion-phase claim is made. No final random-test/fixed-retention scenes,
+training, data collection, or checkpoint selection occurred. Base and Ticket
+04 remain unqualified/incomplete; Tickets 05/06 and Plug remain blocked. See
+the run's `results.md` and `.scratch/orientation-conditioned-insertion/issues/04-peg-constrain-pilot.md`.
+
+## Peg orientation balanced fixed/random replay continuation (2026-11-17; exploratory only)
+
+The user authorized autonomous bounded exploration without changing the formal
+qualification contract. Run artifacts are under
+`outputs/exp/20261117_003640_peg_orientation_replay_exploratory/`; trained raw
+weights and metadata-complete evaluation copies are under
+`outputs/ckpt/20261117_003640_peg_orientation_replay_exploratory/`. The complete
+pre-registration, per-cohort audit, paired transitions, checkpoint hashes,
+commands, runtime versions and limitations are in that experiment's
+`preregistration.json`, `results.json`, `validation_commands.json`,
+`checkpoint_metadata_enrichment.json` and `results.md`.
+
+One fresh-Base/zero-control-branch run completed exactly 30,000 updates, seed 1,
+batch 1,024, with 512 windows/update from unchanged random-100 data and 512 from
+the already-retained fixed-1000 data. Base weights were bit-exact through
+training. This is not a pure replay-mixture comparison: fixed training data was
+added and random windows/update were halved relative to the earlier pilot.
+
+| Profile | Random validation / 50 | Fixed validation / 50 |
+|---|---:|---:|
+| Fresh selected Base | 4 | 36 |
+| Constrain update 5,000 | 13 | 31 |
+| Constrain update 10,000 | 10 | 32 |
+| Constrain update 15,000 (frozen-rule selection) | **15** | **38** |
+| Constrain update 20,000 | 12 | 39 |
+| Constrain update 25,000 | 12 | 35 |
+| Constrain update 30,000 | 10 | 34 |
+
+The preregistered fixed feasibility boundary was at least Base fixed count −2;
+feasible updates were 15k, 20k, 25k and 30k. Among them, update 15k maximized
+random success. Its paired transitions were random Base-only 1 / Constrain-only
+12 / both 3 / neither 34 (**+11/50, +22 pp**), and fixed Base-only 3 /
+Constrain-only 5 / both 33 / neither 9 (**+2/50, +4 pp**). Thus the declared
+exploratory target (random gain ≥10/50 plus fixed feasibility) was met on these
+validation cohorts. This does not qualify the Base, formally complete Ticket
+04, complete Tickets 05/06, or unlock PlugCharger. The original Base remains
+unqualified; no random-test-100 or fixed-retention-100 episodes were run.
+
+All 14 Base/candidate cohorts (700 episodes total) exited successfully under
+the preregistered 300-control protocol. The diagnostic was `not_reached` in all
+episodes; this means its proximity trigger did not fire, not that physical
+insertion was never reached. Package versions were recorded before evaluation;
+direct runtime source hashes and all training/catalog inputs match before and
+after each cohort. Package versions were not captured in the pre-optimization
+registration, a documented provenance limitation. See `results.md` for
+preflight/evaluation failures and bounded cleanup; no validation cohort was
+repeated.
+
+## Peg orientation ConstrainNet exploratory pilot (2026-11-16; unqualified Base waiver)
+
+The user explicitly authorized this **exploratory-only** run despite the current
+Base being unqualified. This narrow waiver does not qualify Ticket 02, measure
+the independent 80/100 fixed-retention criterion, complete Ticket 04, unlock
+Tickets 05/06, or authorize PlugCharger. The Base remains 36/50 on fixed
+validation; its formal retention test was not run. The original thresholds remain
+unchanged.
+
+The frozen preregistration and input identities are in
+`outputs/exp/20261116_164019_peg_orientation_constrain_exploratory/preregistration.json`.
+The run starts from the current selected Base EMA
+`outputs/ckpt/20261116_123901_peg_orientation_base_official_config/update_100000.pt`
+(SHA-256 `067a4f5cda35ce91151b12b8095c136673d6d9f3afd6f742c7aa164f8b62beea`)
+and the unchanged random-100 dataset (HDF5 SHA-256
+`c4d6d2c9a8f85ebb39bcb003a987f7bd29baed24ff7a680d7eaf3726b5786f25`). Training
+used seed 1 and exactly 30,000 updates, saving six checkpoints every 5,000;
+the preflight's two optimizer updates were discarded and training restarted
+from scratch. It uses Peg's full 39d hidden-target state and native 7d actions,
+not the generic StackCube 48d/4d adapter. No random test or fixed-retention test
+scenes were used.
+
+Base validation under the consistent 300-control protocol was random **4/50**
+and fixed **36/50**. Checkpoint selection used random validation only and chose
+update 25,000 (**16/50**, SHA-256 recorded in `results.json`); random paired
+outcomes were Base-only 0, Constrain-only 12, both 4, neither 34 (**+24 pp**).
+The selected checkpoint scored **21/50** fixed validation versus Base 36/50;
+paired fixed outcomes were Base-only 18, Constrain-only 3, both 18, neither 11
+(**−30 pp**). Thus this exploratory sample shows a random-validation gain and a
+substantial fixed-validation loss; it does not pass the original retention
+criterion or support formal completion. The yaw diagnostic was unavailable
+(`not_reached` for all episodes); this does not establish that physical
+insertion was never reached, and no sampled yaw-error claim is available. Five preregistered
+equal-width random target-yaw bins and all per-episode records are in
+`results.json` and the validation directories. The full command/timeout/failure
+record and pair metrics are in that file; the test suite passed 53 tests.
+
+Recovery addendum: `recovery_verification_report.json` reconciles all nine
+retained 50-episode cohorts, seeds, caps, native counts, summaries, and paired
+outcomes without modifying episode records, preregistration, or `results.json`.
+It separates hashes verifiable now from missing historical checkpoint/source/
+catalog identities. The 5,000-update cohort's checkpoint association remains
+unverified and its selection contribution provisional; pre-execution source
+hashes were not recorded for any cohort. No historical hashes are backfilled or
+represented as contemporaneous evidence. Forward episode headers capture
+evaluator/checkpoint/catalog identities at evaluation time.
+
+## Official PegInsertionSide-v1 Diffusion Policy baseline (2026-11-12)
+
+This is the unmodified official state baseline, not the fixed-yaw 39d custom
+base and not a qualification of Ticket 02. The run is
+`outputs/exp/20261112_181319_peg_official_dp/`; weights are physically in
+`outputs/ckpt/20261112_181319_peg_official_dp/` through the pre-created
+`checkpoints` symlink. Official selection saved `best_eval_success_once.pt`
+at TensorBoard step 85000, which is after 85,001 optimizer updates:
+**36/100** `success_once` (SHA-256
+`1d25af0f585ee696162eff049ed95e43bed99493acecced61bf06fbb6f0b2e6c`).
+`best_eval_success_at_end.pt` from that same eval is **34/100** (SHA-256
+`44097e9bad6d9310154f9219ce5c8e7a57600ac5dcdacb2998f60f26fc1f6561`).
+The closing eval after exactly 100,000 updates scored 15/100 and 12/100 on the
+then-current weights; it is not a reload of the saved best checkpoint. No
+independent re-evaluation was added. The custom 80/100 fixed-retention gate
+was not used. `review_corrections.md` in the experiment directory corrects the
+original audit's evaluation-seed explanation: 0..9 seed spaces, not environment
+resets. Details are in
+`.scratch/orientation-conditioned-insertion/issues/00-official-peg-baseline.md`.
+
+## Fixed-yaw Base with official Peg training config (2026-11-16)
+
+This resumes Ticket 02. It is not the official 43d baseline and does not qualify
+the base. The historical 30,000-update run remains the first budget. The new
+from-scratch run is `outputs/exp/20261116_123901_peg_orientation_base_official_config/`;
+weights are in `outputs/ckpt/20261116_123901_peg_orientation_base_official_config/`.
+Training used the resolved official Peg optimizer, model, and 100,000-update
+budget, with the documented method exceptions: fixed 90° yaw, 39d hidden-goal
+observations, the existing 1,000 demos, frozen 50-scene validation, and a 300/300
+native cap. It finished in 2,076.12 s with exactly 100,000 optimizer updates.
+All 20 checkpoints were validated. The latest-tie selection is update 100,000
+at **36/50**, EMA SHA-256
+`067a4f5cda35ce91151b12b8095c136673d6d9f3afd6f742c7aa164f8b62beea`.
+That is below 40/50, so retention was not run and this is not a formal 80/100
+measurement. Ticket 02 stays paused and Ticket 04 blocked. The 13/50 result at
+500 controls is not directly comparable. A round-21 accounting-only evaluator
+fix now records completed actions per chunk. The historical
+`executed_chunk_lengths` entries in 483/1,000 validation records were planned
+lengths, so their sums overstate completed controls for early-success chunks;
+the retained `executed_controls` values, scores, selected checkpoint, and hashes
+are unchanged. No evaluation was rerun and no historical record was rewritten.
+See `round21_accounting_review.md` in the experiment directory and Ticket 02
+Execution.
+
+## Peg orientation-conditioned insertion BaseDP (2026-11-11)
+
+Ticket 02's data prerequisite now has exactly 1,000 officially replay-verified
+fixed-yaw rows at `demos/PegInsertionSide-orientation-fixed-1000/`: the original
+50 remain unchanged, with 950 new rows. Combined trajectory HDF5 SHA-256 is
+`54b4a0dd7a62ef9cdd61ca5d5545051e3c769a3a179f0f7f965fddc8fe453631`;
+manifest and full yaw/geometry coverage are in the dataset directory. Six
+additional/recovery source packages retain expert attempts and native replay
+acceptance/rejection audits. Batch logs and the additive fixed-seed reservation
+supplement are in
+`outputs/exp/20261111_174907_peg_orientation_base_data/`. The original frozen
+split and scene catalogs were not rewritten. BaseDP has now completed its
+preregistered 30,000-update from-scratch run but failed the qualification gate.
+The original all-six 0/50 comparison and update-30,000 selection used an invalid
+100-step cap and are retained as historical outcomes only. The corrected
+validation-only checkpoint comparison is recorded below. The selected base is
+not qualified for downstream use; Ticket 02 is paused and Ticket 04 blocked.
+
+The timestamped run is `outputs/exp/20261111_184900_peg_orientation_base/`;
+weights are in `outputs/ckpt/20261111_184900_peg_orientation_base/`. The
+pre-registration, six validation results, selected checkpoint identity, full
+fixed-retention episode records, failure diagnostics, and test-exposure note are
+in `preregistration.json` and `selection_and_gate.json`. Selected update-30,000
+EMA SHA-256 is
+`db6184ca4a467cc4a2163c82cc27e5f64e7dd17148757d64ec727539751597f4`. The
+100-episode rollout video is
+`outputs/exp/20261111_184900_peg_orientation_base/fixed_retention_selected_30000_run2/rollouts.mp4`
+(SHA-256 `6a64fe44da3b4a2183b83b1ac89bafb36c17c82cb8517ddd95e9dabbbcd09189`).
+See `.scratch/orientation-conditioned-insertion/issues/02-peg-base.md` for
+commands, the 0/100 outcome, the representative grasp/transport diagnostic,
+regression evidence, and the disclosed partial first test attempt.
+
+Round 8 corrected the evaluator's pre-insertion diagnostic capture: the prior
+`preinsertion_not_reached` labels were sticky first-sample metadata, not verified
+native failure types. The original native outcomes remain 0/50 validation and
+0/100 retention, unchanged. A zero-update checkpoint probe (128 training
+windows; four frozen validation initial states) is recorded at
+`outputs/exp/20261111_203000_peg_orientation_base_diagnosis/`; it found close
+EMA/online denoising losses. The initial positive gripper output was matched
+against phase-equivalent expert starts and is correct for the open phase.
+Follow-up found sampler-dependent gripper timing at the first close boundary,
+but did not establish that as the 0% root cause: four policy chunks around one
+successful training grasp all grasped within two controls of expert. A successful
+native expert replay validated the saved-state observation/action chain. Root
+cause remains unestablished; `followup_diagnosis.json` records measurements,
+exact commands, and its noise-only next-test proposal (superseded below). No
+optimizer updates were used.
+
+The subsequent training-only horizon audit found that 999/1000 expert trajectories
+exceed 100 actions and 973/1000 native successes occur after action100. A
+training-derived 250-action horizon was preregistered before one selected-checkpoint
+validation rerun. That run scored **9/50** at pinned seed1907; it is below the
+independent 80/100 gate and cannot be compared causally to old 0/50 because the
+old sampling seed was not registered. It confirms the 100-step cap was a protocol
+blocker, but the remaining 41/50 failures leave Base unqualified. Full audit,
+preregistration, results, and command are in
+`outputs/exp/20261111_221500_peg_orientation_base_horizon/`. Fixed retention
+remains 0/100 and was not rerun; no optimizer updates or test scenes were used.
+
+The authorized round-9 controlled validation used per-scene sampling seeds
+`1907 + scene_index` and a fixed 1,000-control environment TimeLimit, with
+evaluator caps 250/500/1000. The selected checkpoint scored **12/50, 13/50,
+13/50**; first successes after control 250 consisted of one scene at control 367,
+with no additional success through 1000. The run therefore plateaus at 13/50 on
+this validation cohort and remains unqualified; fixed-retention scenes were not
+accessed. Preregistration, per-scene records, result hashes, logs, and exact
+commands are in
+`outputs/exp/20261111_210357_peg_orientation_extended_horizon/`. The evaluator
+records actual control counts and first native success control. Required
+regressions passed **32 tests** before the runs. Ticket 02 remains paused and
+Ticket 04 blocked.
+
+Round 10 froze five ranked hypotheses and a deterministic 12-episode training
+sample before probing. Pinned teacher-forced preinsertion predictions show
+8-action rotation-Z MAE 0.0427 versus first-action MAE 0.0162, which is not
+physical closed-loop evidence for chunk drift. A follow-up used separate
+environments with expert-prefix replay to establish actual native contact before
+each branch. Eight matched post-grasp branches across two training episodes all
+retained contact for eight controls; policy-2 replanning improved XY progress in
+one paired comparison and regressed in two. Thus the preregistered chunk-drift
+criterion was not met, and no validation horizon comparison or inference
+correction was made. The 500-control cap was reached; an additional prefix ended
+midway only because the budget was exhausted, not because of a task failure. The
+then-authorized continuation compared full policy rollouts from six exact training
+initial states, with 500 controls per arm. Execute-8 achieved **5/6** native
+successes versus **1/6** for replan-2; both grasped and reached the XY proximity
+trigger in 6/6, while contact-loss transitions were **1 vs 18**. This is evidence
+that the combined frequent-replanning profile harms post-grasp stability on this
+sample, not proof that it explains the validation plateau; RNG draw frequency
+and observation replanning remain confounded. The preregistered improvement gate
+for validation was not met, so no validation run or inference correction was
+made. Full traces, hashes, and the remaining causal question (noise resampling
+versus observation cadence) are in
+`outputs/exp/20261111_214832_peg_orientation_base_diagnosis/` and Ticket 02
+Execution. The required suite passed **33 tests**; Ticket 02 remains
+paused and Ticket 04 blocked.
+
+### Round 11 — corrected fixed-validation checkpoint re-selection
+
+The original six-way checkpoint selection was invalidated because all six
+checkpoints tied at 0/50 under the incorrect 100-step cap; the training audit
+showed 973/1,000 native expert successes after step100. Before new rollout, the
+reselection preregistration froze all six checkpoint hashes, data/catalog and
+evaluator identities, seed rule, native success metric, and selection rule. The
+common budget is 500 controls, justified by validation-only update30000 results
+of 13/50 at both 500 and 1000, with no success after control 500. All six were
+compared on the same fixed 50 validation scenes with per-scene seed `1907 + i`
+and unchanged 8-action inference; the existing update30000/500 result was reused
+after exact provenance verification. Scores were **0/50, 5/50, 6/50, 10/50,
+10/50, 13/50** at updates 5k through 30k. Corrected selection remains update
+30,000 EMA SHA-256
+`db6184ca4a467cc4a2163c82cc27e5f64e7dd17148757d64ec727539751597f4`.
+
+This validation-informed score is below the independent 80/100 qualification
+gate and below the 40/50 validation marker for every checkpoint. No retention or
+test scenes, new training, data collection, or checkpoint mutation occurred.
+Ticket 02 remains paused-below-qualification and Ticket 04 blocked. Preregistration,
+per-scene rows, logs, all result hashes and the full selection decision are in
+`outputs/exp/20261111_223000_peg_orientation_base_reselection/selection_and_results.json`
+and the neighboring run artifacts. The five new evaluation commands each
+returned zero under a 3,600-second timeout; no cleanup was required.
+
+### Round 12 — fixed-validation stage diagnosis
+
+Before rollout, five hypotheses and cohort indices 0..5 were frozen for the selected
+update-30000 checkpoint at 500 controls, 8-action inference, and seed `1907+index`.
+Index 0 reproduced the known official failure (expected diagnostic exit 3), including
+the historical terminal distance. A zero-control restore then showed the diagnostic
+hole slice started at index 35, which is the hole radius; the hole center is at
+36:39. That label was corrected before indices 1..5. Scene 0 was not rerun.
+
+The six scenes have **0/6** official successes. All six acquire and hold native
+grasp, move the peg closer after grasp, and remain at least 0.142 m from the hole.
+Five end farther than their closest approach while still grasped. Replan-2 was not
+used. This is not qualification and not a controlled comparison with the training
+execute-8 successes. Evidence is in
+`outputs/exp/20261112_010814_peg_orientation_validation_phase/`. Ticket 02 remains
+paused and Ticket 04 blocked. The required suite passed **36 tests**.
+
+### Round 13 — scene 0 insertion-window trace
+
+Before rollout, hypotheses and a 200-control budget were frozen for scene 0 only.
+The replay matched the round-12 pose at control 191 exactly (`0.1419355650506847` m)
+and did not need the remaining 300 controls. The official peg head is about 20 mm
+short of the axial insertion threshold and already inside the hole radius in y/z;
+peg-center XY is not that residual. All nine following translations are below the
+preregistered stall cutoff. No large insertion command was available to test a
+contact block. The base remains unqualified. Evidence is in
+`outputs/exp/20261112_013447_peg_orientation_scene0_insertion_window/`. The
+required suite passed **38 tests**.
+
+### Round 14 — scene 0 hole-+X intervention
+
+One authorized diagnostic arm, not a policy score. After the frozen policy
+matched the round-13 scene-0 branch at control 190, controls 191..198 replaced
+only translation with a 5 mm hole-+X request. Rotation and gripper stayed the
+stored baseline values. Official success did not occur. The request was unclipped,
+but TCP motion was 0.2–0.8 mm per control and official head x advanced 2.2 mm,
+leaving an 18.1 mm axial gap. This does not establish contact and does not
+qualify the base. Evidence is in
+`outputs/exp/20261112_103851_peg_orientation_scene0_hole_x_intervention/`.
+The required suite passed **39 tests**.
+
+### Round 15 — expert translation scale, read-only
+
+No native control, training, or intervention. Before extraction,
+`outputs/exp/20261112_110405_peg_orientation_expert_translation_scale/analysis_plan.json`
+froze the [0.04, 0.06] band, all 1,000 episodes, the T/T+1 TCP comparison, and
+the quantile rule. On gripper-request-negative rows the expert median realized
+TCP is 1.47 mm against a 4–6 mm physical request; the median ratio is 0.294, so
+the broad 5 mm-request-to-5 mm-TCP assumption is refuted. The intervention's
+largest step, 0.843 mm, is below the expert 10th percentile, 0.927 mm. None of
+those 8,168 rows is in the frozen insertion-proximal window, so the comparison
+does not identify contact or IK. Details are in
+`examples/baselines/constrain/PEG_ORIENTATION.md`.
+
+### Round 16 — proximal expert requests, read-only
+
+No native control, training, or intervention. Before extraction,
+`outputs/exp/20261112_112038_peg_orientation_proximal_expert_requests/analysis_plan.json`
+froze the round-15 head predicate, pre-action timing, and the median comparison
+to the 0.05 intervention request and the round-13 window maximum 0.0373341420915306.
+All 1,652 proximal states are actionable; none is a terminal state without an
+action, and none is in `[0.04, 0.06]`. Their median stored translation request
+is 0.303, so the frozen rule calls the expert requests larger than both anchors.
+That is descriptive only and does not identify the 13/50 cause. Details are in
+`examples/baselines/constrain/PEG_ORIENTATION.md`.
+
+### Round 17 — proximal policy first actions, offline
+
+No native control, training, or intervention. Before inference,
+`outputs/exp/20261112_113926_peg_orientation_proximal_policy_first_actions/analysis_plan.json`
+froze the same 1,652-row predicate, official 39d history `t-1, t`, first executed
+action from `Agent.get_action`, seed 1907, and fixed batch 64. The batched noise
+profile is not the closed-loop scene RNG. The update-30000 EMA median translation
+norm is 0.302, above 0.05, so the frozen rule says the low-command profile is
+not reproduced on these expert states. Zero rows are at or below 0.05. This does
+not identify the 13/50 cause. Details are in
+`examples/baselines/constrain/PEG_ORIENTATION.md`.
+
+### Round 18 — scene 0 actual sampler history
+
+One unchanged 200-control replay of validation scene 0. No intervention, training,
+retention, or test scene. Before physics,
+`outputs/exp/20261112_115958_peg_orientation_scene0_sampler_history/preregistration.json`
+froze the update-30000 EMA, seed 1907, execute-8, and the two scheduled sampler
+calls covering controls 185..200. The replay matched the round-13 anchors exactly,
+including control 191 pose XY `0.1419355650506847` m. Both captured histories match
+native qpos, TCP, peg, and hole center at max absolute error 0. Restoring the
+saved pre-call RNG and calling the official sampler reproduces both executed
+chunks at error 0. The mismatch prediction is falsified. The call before control
+193 still requests translation L2 0.0336, while round 17's teacher-forced proximal
+median is 0.302. That is not a matched comparison and not an out-of-distribution
+proof. No implementation bug was found. The base remains unqualified and Ticket 04
+blocked. Details are in `examples/baselines/constrain/PEG_ORIENTATION.md`.
+
+Ticket 01's fixed-yaw and random-yaw datasets are retained separately; each
+contains exactly 50 officially replay-verified `pd_ee_delta_pose` episodes.
+Collection used the native joint-position expert and ManiSkill's official
+joint-to-EE conversion/replay path. The complete paired analysis, attempt
+coverage, and runtime evidence are in
+`outputs/exp/20261111_164512_peg_orientation_preflight/summary.json`; task
+schema, reproduction commands, and findings are in
+`examples/baselines/constrain/PEG_ORIENTATION.md`.
+
+| Dataset | Valid episodes | Final trajectory HDF5 SHA-256 | Provenance |
+|---|---:|---|---|
+| `demos/PegInsertionSide-orientation-fixed/` | 50 | `715f76393b661f70ba8958b9c87ace0f0a23192b216c6d4ebf1c1407115d1606` | `dataset_manifest.json`, `collection_report.json`, `replay_audit.json` |
+| `demos/PegInsertionSide-orientation-random/` | 50 | `ab04a2ccd3d640e1aff40f1e2efd8b59888c26023bee3ba5a5851895bc034940` | `dataset_manifest.json`, `collection_report.json`, `replay_audit.json` |
+
+Ticket 03 preserves that random 50-row package byte-for-byte and adds
+`demos/PegInsertionSide-orientation-random-100/` (100 unique officially
+replay-verified episodes; combined HDF5 SHA-256
+`c4d6d2c9a8f85ebb39bcb003a987f7bd29baed24ff7a680d7eaf3726b5786f25`). Its
+manifest records the original and new source identities; `training_coverage.json`
+records all episode seeds, yaw and geometry coverage. The additional random
+collection/recovery sources remain in their own demo directories with complete
+attempt and replay journals. Frozen validation/test/retention scenes and the
+hint intervention assignment are under
+`outputs/exp/20261111_172604_peg_orientation_adaptation/`; see
+`examples/baselines/constrain/PEG_ORIENTATION.md` and Ticket 03 Execution for
+scene counts, identities, split chronology, and verification.
+
+The bounded source-expert collection yielded 65/100 fixed and 63/100 random
+expert successes. Official converted replay then accepted 62/65 and 62/63,
+respectively; rejected expert/replay attempts remain recorded and were excluded
+from the two final 50-episode HDF5 files. Across 100 paired seeds, maximum
+fixed-vs-random hole-center difference was `1.49e-8 m`.
+
 ## One best result per experiment and method (2026-11-03)
 
 Each task and method now has one retained result. Non-best ConstrainNet
@@ -17,7 +2542,7 @@ experiment video.
 | Wristcam BaseDP | `outputs/exp/Wristcam/BaseDP/` | `outputs/video/Wristcam_BaseDP/` |
 | Wristcam ConstrainNet | `outputs/exp/Wristcam/ConstrainNet/` | `outputs/video/Wristcam_ConstrainNet/` |
 
-`outputs/exp` now contains only these four experiment directories. Old timestamp paths are historical sources; the move map is `outputs/exp/migration.json`.
+As of 2026-11-03, `outputs/exp` contained only these four experiment directories. Old timestamp paths are historical sources; the move map is `outputs/exp/migration.json`. The later Peg preflight is indexed above.
 
 ## Retained results and inspection videos (2026-11-03)
 
@@ -4944,3 +7469,110 @@ Final constrain suite: **537 passed, 28 warnings**; `compileall` and
 This is a repeated-development-set result, not formal/generalization evidence.
 The gate permits **parent review before formal08 preparation only**; no formal
 08 evaluation or new scene/data run was started.
+
+## Round 67 — terminal random-500 50k paired entry-bank observation
+
+Fresh registration and source archive:
+`outputs/exp/20261119_063749_peg_entry_50k_comparison/`. This observation
+compares Base, random-500 update-30k, and the preregistered terminal random-500
+update-50k checkpoint on the existing 60-case pose-window initialization bank.
+The historical bank directory and contents were not changed. Three inference
+draws per case produced **180 unique paired groups / 540 arm outcomes**. Native
+execution completed exit 0 in 3,446.54 s with **155,029 / 334,800** registered
+physical controls. Independent reconstruction verified all 180 complete
+groups, source episode/seed joins, exact handoff-state equality, and unchanged
+registered checkpoint/input/source hashes. Results and the full condition,
+seed, paired-transition, and control tables are in `results_summary.md` and
+`independent_audit.json`.
+
+Successes: Base **73/180**, 500/30k **85/180**, 500/50k **84/180**. Terminal
+50k minus 30k is **−0.6 percentage points** overall; by profile it is random
+**28/90 vs 25/90 (+3.3 pp)** and fixed **56/90 vs 60/90 (−4.4 pp)**. Across
+conditions the 50k-minus-30k deltas vary in sign; paired results are descriptive
+repeated draws from six origins per profile (12 total), not 180 independent
+scenes. This is a terminal-checkpoint comparison, not a pure update-count
+causal/scaling claim: the continuation schedule changed during the additional
+20k. No intermediate checkpoint evaluation, checkpoint selection, training,
+bank regeneration, ManiSkill source edit, or commit was performed. The
+post-run focused suite passed **141 tests**.
+
+## PlugCharger Ticket 07 Round 69 review blockers — development only
+
+Corrected actual receptacle orientation (preserving sampled center) and custom
+state restoration for both `(4,)` and `(1, 4)` target records. Replay now uses the
+verified public replay output naming rule because `replay_trajectory.main()`
+returns `None`; replay controls share a stage counter across created environments.
+Behavioral regression tests plus the required 16-file Peg suite passed **151
+ tests**. Raw suite log and Round 69 code snapshots are in
+`outputs/exp/20261119_095824_plug_orientation_round69/`. No native work ran.
+Important: external TERM/KILL supervision and one wall-clock budget spanning
+multi-stage orchestration are still absent; this is not authorization or a
+native-ready run protocol. Tickets 08/09 remain blocked.
+
+## PlugCharger Ticket 07 Round 77 — reset/state/live-expert isolation
+
+The preregistered A/B/live comparison completed both fixed cases in the order
+reset-only, restore-source-row-0-once then replay the exact source joint-action
+stream, and a fresh official motion-planning solve. It used **1,281 controls**
+within the per-case 600, aggregate 6,000, and outer 1,800 s TERM / 20 s KILL
+caps. For source episode 0, both open-loop arms and the live solve succeeded
+(222/222/226 controls). For episode 2, both open-loop arms failed at 17.737 mm
+goal distance after 203 controls, while the fresh official live solve succeeded
+at 1.961 mm after 205 controls. Captured common pre-action physical and
+controller fields match between A and B in each case. Source-row-0 restoration
+does not explain this pair's outcome. Fresh live execution differs, but generated
+trajectory, planner stochasticity and execution pathway were not isolated; its
+mechanism remains unresolved. This does not establish hidden buffer identity.
+
+The fresh expert outputs are diagnostic-only. The historical source bundle is
+unchanged; Ticket 07 is **not passed**, and no training was started. The new
+online expert records require a separate replay/acceptance audit before any data
+admission. Registration, source archive, traces, outputs and full discussion:
+`outputs/exp/20261120_000000_plug_reset_live_diagnosis_r77/`. Required Peg+Plug
+suite initially reported 160 passes using a noncanonical selection. Independent
+review ran the correct 17 modules: **171 passed in 13.55 s**, raw output retained
+as `reviewer_canonical_17_suite.raw.log`. Focused Plug suite: **30 passed**.
+For each A/B pair, captured initial snapshots differ only by at most 1.49e-8 in
+one exposed qpos scalar (state-restore roundoff); outcomes are identical.
+
+## PlugCharger Ticket 08 — Goal-loop Round 92 fixed-data production collection
+
+- Dataset: `demos/PlugCharger-orientation-fixed-1000_20261119_184307/`.
+- Collection logs, source archive, independent data admission, pre/post regression
+  tests, timing and catalog audit:
+  `outputs/exp/20261119_184307_plug_orientation_collection_envelope/`.
+- Native collection registration/results:
+  `outputs/exp/20261119_184307_plug_orientation_collection/` (1,066 ordered
+  attempts; first 1,000 eligible accepted; 2,581.512 s outer wall; exit 0).
+- Frozen reset-only catalog set:
+  `outputs/exp/20261119_184307_plug_orientation_catalogs/` (50 fixed validation,
+  50 random validation, 100 random final test, 100 fixed Base test/retention).
+- Dataset HDF5 SHA-256:
+  `d909986dd2319f41e5a3e098b13744cb6eda5e3caf2b779d66fe3340165d11c1`;
+  JSON SHA-256:
+  `190dd31f0787b58871fe4963e36931ab65c33ab7b3eb05a6dd160a29a8b8088f`;
+  catalog-set SHA-256:
+  `3f75e6ec5d3729e142e87117e34bfd00a39f921283c21000486e30800f34481f`.
+- Independent admission passed all 1,000 source/replay pairs and the official
+  dataset reader (279,625 windows). All 300 reset/restore observations are
+  finite 46-D and restore within 1.1921e-7; all target-yaw roundtrips match
+  within 1.45e-8 rad. Required 22-file test suite passed
+  216 before and after; source hashes were unchanged. No training/checkpoint or
+  policy evaluation was run. Ticket 08 remains in progress; exact next Base
+  command and gates are recorded in `PLUG_ORIENTATION.md` Round 92.
+
+## PlugCharger Ticket 08 — Goal-loop Round 95 saved-validation diagnosis
+
+- Offline failure-phase analysis of the unchanged 250 traces from all five fixed
+  validation checkpoints is in
+  `outputs/exp/20261119_220651_plug_base_validation_failure_analysis/`.
+- The bundle contains per-episode/per-control geometric landmarks, same-control
+  position/quaternion errors, 80k-vs-100k paired seeds, event/input hashes,
+  execution/source hashes, and the exact 23-file regression log. Result:
+  exploratory post-hoc only; native controls/model queries/training were zero.
+- Dominant failure signature: aligned near-goal position stall around −16 mm on
+  world X for 20/23 (60k), 19/20 (80k), and 21/23 (100k) failures. Missing contact
+  force/grasp telemetry prevents causal attribution. The 80k selection and 40/50
+  fixed-validation gate remain unchanged; neither test catalog was opened.
+- Full phase breakdown and the separately proposed, unexecuted next diagnostic are
+  recorded in `PLUG_ORIENTATION.md` Round 95 and the bundle's `diagnosis.md`.

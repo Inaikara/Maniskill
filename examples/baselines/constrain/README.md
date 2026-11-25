@@ -1,5 +1,28 @@
 # StackCubeObstacle action-first data generation
 
+## Current PlugCharger orientation frontier
+
+The latest user amendment resumes the method study using the original frozen v1
+Base (80k, 30/50 fixed validation) without claiming that Base met its historical
+qualification gates. See the forward-only
+[`plug_orientation_adaptation_contract.json`](plug_orientation_adaptation_contract.json)
+and [`PLUG_ORIENTATION.md`](PLUG_ORIENTATION.md). Adaptation pipeline seams are
+offline implementation only; the random-100 collector, production training, and
+heldout policy evaluation have not run. The initial chain is implemented; final
+heldout evaluation remains deferred until a candidate passes validation.
+Historical Base validation/test gates and all v1/v2 outcomes remain unchanged.
+
+Round 88 independently verified the sealed NativeEE v4 confirmation and froze
+the historical Ticket 08 fixed-data/Base contract. Read
+[`PLUG_ORIENTATION.md`](PLUG_ORIENTATION.md) for the evidence and
+[`plug_orientation_contract.json`](plug_orientation_contract.json) for exact
+budgets, disjoint seed catalogs, evaluation gates, and exclusions. The
+confirmation is nonblind preflight evidence only; no policy is qualified. The
+later user amendment waives Base's absolute qualification gates as prerequisites
+for this forward method study only. Round 89 delivers the
+offline collection/catalog/training/evaluation implementation and seam tests;
+it did **not** start physical 1,000-episode collection or production gradients.
+
 ## Current retained outputs
 
 The post-cleanup comparison of all three tasks is in

@@ -1,0 +1,53 @@
+{
+  "format": "plug_orientation_independent_heldout_contract_v1",
+  "created_utc_date": "2026-11-23",
+  "post_validation_gate_heldout_authorized": true,
+  "authorization_note": "Forward authorization to evaluate the already validation-selected checkpoint only. The random-validation gain was +10 pp, the frozen +20 pp gate was not met, and this run is not a passing-gate confirmatory test. Heldout outcomes are unseen and may not select or retrain checkpoints.",
+  "validation_selection": {
+    "path": "outputs/exp/20261122_045531_plug_constrain_random500_validation/validation_selection.json",
+    "sha256": "4580aa98f02576459f3e6ff5eb63e419ef10abc591e731d222e84722b92e7f3b",
+    "selected_update": 30000,
+    "selected_random_episode_count": 500,
+    "recorded_random_gain_pp": 10.0,
+    "method_gates_met": false
+  },
+  "checkpoint": {
+    "path": "outputs/ckpt/20261122_042359_plug_orientation_constrain_random500/checkpoint_030000.pt",
+    "sha256": "911bd5d7be828ae06ff87ab66e6fbb67cb1a5d77a173668f9dda581acf4746a1",
+    "update": 30000,
+    "random_episode_count": 500
+  },
+  "frozen_base": {
+    "sha256": "ceeb68b4838ced6e6ffa43646bcc3cfc47538469e02264c4bc80a2542a33d130",
+    "ema_sha256": "ab97b69e3bf62d77de030dd745ed2f416691589a22b67c20efdefac791b2c083",
+    "update": 80000
+  },
+  "adaptation_contract": {
+    "path": "examples/baselines/constrain/plug_orientation_adaptation_expansion500_contract.json",
+    "sha256": "42ca38e2e69e8b51a5ac63199a5e277b78e3ab3fa44f1fea17f46088b115e5d3"
+  },
+  "catalogs": {
+    "catalog_set_sha256": "3f75e6ec5d3729e142e87117e34bfd00a39f921283c21000486e30800f34481f",
+    "random_final_test": {"manifest_sha256": "0aadaa8efb7425e646c50ee0adf0df5113dca9745e3a1c7a96f365b13e3232e2", "episodes": 100, "seeds_inclusive": [2026125000, 2026125099]},
+    "fixed_base_test": {"manifest_sha256": "c3771b97a55bc9192b72bc4770b7bcd1c47276cc50fcfbdc9b773841334cef38", "episodes": 100, "seeds_inclusive": [2026125100, 2026125199]}
+  },
+  "evaluation": {
+    "device": "cpu",
+    "cohorts_in_order": ["random_final_test/base", "random_final_test/constrain_correct", "random_final_test/constrain_fixed_standard", "random_final_test/constrain_shuffled", "fixed_base_test/base", "fixed_base_test/constrain_correct"],
+    "episodes_per_cohort": 100,
+    "episodes_total": 600,
+    "seed": "1 + catalog index; reset Python/numpy/torch RNG after each restore and before each episode sampler",
+    "history_shape": [1, 2, 46],
+    "action_chunk_shape": [1, 8, 7],
+    "execution_stride": 8,
+    "control_cap_per_episode": 600,
+    "time_limit": 1000,
+    "diffusion_steps": 100,
+    "shuffled_assignment": "one numpy.default_rng(1703) permutation of random_final_test target-yaw catalog entries, generated before rollout and reused unchanged; retain self-matches",
+    "success_source": "native info.success only",
+    "terminal_state_recomputation": "unavailable; evaluator journals do not retain simulator terminal physical states",
+    "video": "not recorded; no existing compatible per-arm RecordEpisode path was established"
+  },
+  "budgets": {"native_controls_max": 360000, "stage_wall_seconds": 21600, "outer_wall_seconds": 25200, "term_grace_seconds": 20},
+  "state": "authorized_not_executed"
+}

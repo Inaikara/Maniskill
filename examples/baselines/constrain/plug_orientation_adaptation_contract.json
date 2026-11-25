@@ -1,0 +1,88 @@
+{
+  "base_absolute_gate_waived": true,
+  "base_qualification_claim": false,
+  "data": {
+    "candidate_seed_range_inclusive": [
+      2026123000,
+      2026123149
+    ],
+    "expansion_reserved_seeds_inclusive": [
+      2026123000,
+      2026123599
+    ],
+    "hint_shuffle_seed": 1703,
+    "initial_random_episodes": 100,
+    "max_candidates": 150,
+    "max_future_episodes": 300,
+    "official_success": {
+      "full_quaternion_angle_rad_max": 0.2,
+      "position_m_max": 0.005
+    },
+    "source_and_replay_control_cap_each": 90000,
+    "wall_clock_cap_seconds": 5400,
+    "yaw_plan": "default_rng(seed+1703), uniform[-pi/8,+pi/8]"
+  },
+  "evaluation": {
+    "episode_control_cap": 600,
+    "execution_stride": 8,
+    "final_splits": [
+      "random_final_test",
+      "fixed_base_test"
+    ],
+    "hint_modes": [
+      "correct",
+      "fixed_standard",
+      "shuffled"
+    ],
+    "validation_only_splits": [
+      "random_validation",
+      "fixed_validation"
+    ]
+  },
+  "format": "plug_orientation_adaptation_contract_v1",
+  "frozen_base": {
+    "ema_agent_tensor_sha256": "ab97b69e3bf62d77de030dd745ed2f416691589a22b67c20efdefac791b2c083",
+    "format": "plug_orientation_fixed_base_dp_v1",
+    "path": "outputs/ckpt/20261119_194656_plug_orientation_base/checkpoint_080000.pt",
+    "sha256": "ceeb68b4838ced6e6ffa43646bcc3cfc47538469e02264c4bc80a2542a33d130",
+    "update": 80000,
+    "validation_episodes": 50,
+    "validation_successes": 30,
+    "weights": "ema_agent"
+  },
+  "historical_base_validation": {
+    "episodes": 50,
+    "selected_update": 80000,
+    "successes": 30
+  },
+  "method_gates": {
+    "fixed_retention_loss_pp_max": 5,
+    "randomized_gain_pp_min": 20
+  },
+  "training": {
+    "batch_size": 1024,
+    "betas": [
+      0.95,
+      0.999
+    ],
+    "checkpoint_steps": [
+      5000,
+      10000,
+      15000,
+      20000,
+      25000,
+      30000
+    ],
+    "ema_power": 0.75,
+    "fixed_windows_per_batch": 512,
+    "lr": 0.0001,
+    "optimizer": "AdamW",
+    "random_windows_per_batch": 512,
+    "scheduler": "cosine",
+    "seed": 1,
+    "updates": 30000,
+    "warmup_updates": 500,
+    "weight_decay": 1e-06
+  },
+  "user_amendment": "\u4e0d\u7528\u4e25\u683c\u9650\u5b9abase\u7684\u6210\u529f\u7387 \u53ea\u8981\u662f\u6309\u7167\u5b98\u65b9\u8981\u6c42\u8bad\u7ec3\u7684\u5c31\u597d \u91cd\u70b9\u770b\u6211\u4eec\u7684\u65b9\u6cd5\u6709\u6ca1\u6709\u4f18\u5316 \u5c31\u6309\u7167\u7b2c\u4e00\u7248\u7684base\u6a21\u578b\u7ee7\u7eed\u5427"
+}

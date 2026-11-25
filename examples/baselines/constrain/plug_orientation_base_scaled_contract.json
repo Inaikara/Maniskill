@@ -1,0 +1,23 @@
+{
+  "contract_id": "plug_orientation_ticket08_action_scaled_corrective_v2",
+  "format": "plug_orientation_fixed_base_dp_action_scaled_v2",
+  "status": "prospective_addendum_not_trained_or_qualified",
+  "base_contract": "plug_orientation_contract.json",
+  "base_contract_sha256": "ef3f13b077f50605c9459e7b86fc2c3345d505237aa1f221427d61fa0af52517",
+  "authorization": "One additional fresh seed-1 100000-update run, authorized after the original v1 validation selected 30/50 and failed its 40/50 gate. This correction is a distinct model family and cannot retroactively qualify or replace v1.",
+  "training_data": {
+    "episodes": 1000,
+    "hdf5_sha256": "d909986dd2319f41e5a3e098b13744cb6eda5e3caf2b779d66fe3340165d11c1",
+    "json_sha256": "190dd31f0787b58871fe4963e36931ab65c33ab7b3eb05a6dd160a29a8b8088f",
+    "dataset_manifest_sha256": "a6744fd41d388dd2dce0d85f9f80a0bf2f74ce731600c5d837b492f2d172c850",
+    "catalog_set_sha256": "3f75e6ec5d3729e142e87117e34bfd00a39f921283c21000486e30800f34481f",
+    "action_rows": 280625,
+    "normalization": "Per-channel symmetric max-absolute fit over every full native TRAIN action row only; normalized action = native action / scale; floor 1e-6; no clipping, offset, validation/test fitting, or post-inference gain."
+  },
+  "only_model_change": "Training action representation and matching inference decode; all v1 architecture, observations, dataset windows, optimizer, schedule, seed, update count, EMA, horizons, and execution stride remain unchanged.",
+  "checkpoints": [20000, 40000, 60000, 80000, 100000],
+  "validation": "All five checkpoints on the unchanged complete fixed_validation 50-scene catalog; selection is maximum successes, latest-update tie, strictly within this v2 family. Fixed test opens only at v2 >=40/50.",
+  "fixed_test": "Complete unchanged fixed_base_test 100-scene catalog, v2 selected checkpoint only; qualification requires >=80/100. Neither holdout is opened by this addendum itself.",
+  "evaluation_execution_stride": 8,
+  "prohibited": ["v1 artifact mutation", "new demonstrations", "validation-fitted scales", "clipping", "z-score/offset normalization", "Constrain training", "ManiSkill source changes", "dependency changes"]
+}
